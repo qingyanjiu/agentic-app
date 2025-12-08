@@ -1,0 +1,17 @@
+{
+    "redis": {
+        "host": "localhost",
+        "port": 36379,
+        "db": 11,
+        "username": "",
+        "password": ""
+    },
+    "dify": {
+        "datasets_api_key": "dataset-3dwC5VAiVum9GooOuN3ZlKpE"
+    },
+    "memory_persistor": {
+        "type": "sqlite",
+        "memory_buffer_window": 3
+    }
+
+}

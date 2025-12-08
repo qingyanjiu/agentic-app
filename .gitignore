@@ -4,7 +4,6 @@
 key.sh
 *.log
 .DS_Store
-*.json
 *.png
 *.pyc
 __pycache__/
@@ -14,7 +13,6 @@ __pycache__/
 *.swp
 .env
 .venv/
-!global-config*.json
 memory_store.json
 memory_store.db
 *.png

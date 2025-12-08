@@ -1,0 +1,77 @@
+{
+  "data": [
+    {
+      "name": "query_knowledge_base",
+      "description": "根据问题在知识库中进行语义检索，返回候选片段列表。参数是一个由数字、字母、-组成的字符串，不包含任何其他字符。",
+      "endpoint": "http://192.168.100.59/v1/datasets/7f0d26c3-dbe8-44a3-9ee0-541430244052/retrieve",
+      "method": "post",
+      "parameters": {
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "查询关键词"
+          }
+        },
+        "required": [
+          "query"
+        ]
+      }
+    },
+    {
+      "name": "list_datasets",
+      "description": "获取知识库列表",
+      "endpoint": "http://192.168.100.59/v1/datasets?page={page}&limit={page_size}",
+      "method": "get",
+      "parameters": {
+        "properties": {}
+      }
+    },
+    {
+      "name": "list_documents",
+      "description": "列出当前知识库中的文档，返回文档ID、文档名和segment数",
+      "endpoint": "http://192.168.100.59/v1/datasets/7f0d26c3-dbe8-44a3-9ee0-541430244052/documents?page={page}&limit={page_size}",
+      "method": "get",
+      "parameters": {
+        "properties": {
+          "page": {
+            "type": "integer",
+            "default": 1,
+            "description": "页码"
+          },
+          "page_size": {
+            "type": "integer",
+            "default": 10,
+            "description": "每页大小"
+          }
+        }
+      }
+    },
+    {
+      "name": "get_document_segments",
+      "description": "读取指定文档的所有分段内容，作用是从文档中检索复数个分段内容。doc_id为文档ID；segment_start为要检索的文档的开始分段编号，segment_end为要检索的文档的结束分段编号",
+      "endpoint": "http://192.168.100.59/v1/datasets/{self.dataset_id}/documents/{doc_id}/segments?status=completed&page={page}&limit={limit}",
+      "method": "get",
+      "parameters": {
+        "properties": {
+          "doc_id": {
+            "type": "string",
+            "description": "文档 ID"
+          },
+          "segment_start": {
+            "type": "integer",
+            "description": "开始分段编号"
+          },
+          "segment_end": {
+            "type": "integer",
+            "description": "结束分段编号"
+          }
+        },
+        "required": [
+          "doc_id",
+          "segment_start",
+          "segment_end"
+        ]
+      }
+    }
+  ]
+}
