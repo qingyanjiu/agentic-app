@@ -8,6 +8,9 @@ from langchain_core.language_models import BaseChatModel
 from agent.info_double_check_prompts import SYSTEM_PROMPT
 import logging
 
+from dynamic_tools.dynamic_tool_generator import DynamicToolGenerator
+from tools.custom_tool import CustomTool
+
 '''
 带交互的API查询流程
 '''
@@ -42,9 +45,10 @@ class InfoDoubleCheckPipeline:
     max_iters: 流程评估不通过时的迭代次数
     use_evaluator: 是否启用评估节点
     '''
-    def __init__(self, llm: BaseChatModel, tools, user_id: str, session_id: str, use_evaluator = True, max_iters: int = 3):
+    def __init__(self, llm: BaseChatModel, tools: CustomTool, user_id: str, session_id: str, use_evaluator = True, max_iters: int = 3):
         self.llm = llm
         self.tools = tools
+        self.tool_mapping = DynamicToolGenerator.get_tool_name_mapping(tools)
         self.system_prompt = SYSTEM_PROMPT
         self.user_id = user_id
         self.session_id = session_id
@@ -144,13 +148,30 @@ Agent 回答: {agent_out}
 """
             final_answer = ""
             # LLM 调用
+            # 标签，</think>出现后再输出文本
+            is_think_enabled = False
+            is_think_end = False
+            output_lines_after_think = 0
             async for chunk in self.llm.astream(
                 [{"role": "system", "content": composer_prompt}],
                 config=config
             ):
-                # 流式写最终 result，给个type是answer方便前端判断最终结果的流式响应
-                writer({"type": "answer", "content": chunk.content})
-                final_answer += chunk.content
+                if(chunk.content.find('<think>') != -1):
+                    is_think_enabled = True
+                    continue
+                if(is_think_enabled and chunk.content.find('</think>') != -1):
+                    is_think_end = True
+                    continue
+                # 如果开启了think，则等think结束后输出文本，如果没开启think，直接输出文本
+                if(is_think_end or not is_think_enabled):
+                    # 忽略可能出现在第一行的空行
+                    if (output_lines_after_think == 0 and chunk.content.strip() == ''):
+                        continue
+                    else:
+                        output_lines_after_think += 1
+                        # 流式写最终 result，给个type是answer方便前端判断最终结果的流式响应
+                        writer({"type": "answer", "content": chunk.content})
+                    final_answer += chunk.content
             return {"final_answer": final_answer}
 
 
@@ -169,6 +190,7 @@ Agent 回答: {agent_out}
         flow_graph.add_edge(START, "Agent")
         
         # @@@@@@@@@@@@@ 
+        # 如果使用评估节点,agent节点到评估节点连线
         # 如果使用评估节点,agent节点到评估节点连线
         # @@@@@@@@@@@@@
         if (self.use_evaluator):
@@ -240,6 +262,8 @@ Agent 回答: {agent_out}
                     "data": chunk
                 }
             elif mode == "custom":
+                # if(chunk.get("event") == "tool_start"):
+                #     chunk = chunk.get("data")
                 # chunk 是 writer() 推出的内容
                 yield {
                     "event": "custom",

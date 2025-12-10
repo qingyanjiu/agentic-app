@@ -1,5 +1,7 @@
-from tools.system_tools import TOOLS
-from tools.system_tools import TOOL_NAMES
+from tools.system_tools import genTools
+
+TOOLS = genTools()
+TOOL_NAMES = [t.name for t in TOOLS]
 
 '''
 @@@@@@@@@@@

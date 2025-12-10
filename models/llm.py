@@ -20,20 +20,20 @@ class CustomLLMFactory():
                 "model_name": "Qwen/Qwen3-30B-A3B",
                 "api_key": os.getenv("SILICON_API_KEY") if os.getenv("SILICON_API_KEY") else os.getenv("OPENAI_API_KEY")
             },
-            # { 
-            #     "name": "local",
-            #     "type": "openai",
-            #     "model_url": "http://192.168.100.85:1234/v1",
-            #     "model_name": "qwen/qwen3-8b",
-            #     "api_key": "123"
-            # },
             { 
                 "name": "local",
-                "type": "ollama",
-                "model_url": "http://host.docker.internal:11434",
-                "model_name": "qwen3:8b",
+                "type": "openai",
+                "model_url": "http://192.168.100.85:1234/v1",
+                "model_name": "qwen/qwen3-8b",
                 "api_key": "123"
             },
+            # { 
+            #     "name": "local",
+            #     "type": "ollama",
+            #     "model_url": "http://host.docker.internal:11434",
+            #     "model_name": "qwen3:8b",
+            #     "api_key": "123"
+            # },
         ]
         # 初始化llm列表
         self.llms = {}

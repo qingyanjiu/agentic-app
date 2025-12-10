@@ -2,6 +2,7 @@
   "data": [
     {
       "name": "query_knowledge_base",
+      "displayName": "查询知识库",
       "description": "根据问题在知识库中进行语义检索，返回候选片段列表。参数是一个由数字、字母、-组成的字符串，不包含任何其他字符。",
       "endpoint": "http://192.168.100.59/v1/datasets/7f0d26c3-dbe8-44a3-9ee0-541430244052/retrieve",
       "method": "post",
@@ -19,6 +20,7 @@
     },
     {
       "name": "list_datasets",
+      "displayName": "获取知识库列表",
       "description": "获取知识库列表",
       "endpoint": "http://192.168.100.59/v1/datasets?page={page}&limit={page_size}",
       "method": "get",
@@ -28,6 +30,7 @@
     },
     {
       "name": "list_documents",
+      "displayName": "查询知识库文档列表",
       "description": "列出当前知识库中的文档，返回文档ID、文档名和segment数",
       "endpoint": "http://192.168.100.59/v1/datasets/7f0d26c3-dbe8-44a3-9ee0-541430244052/documents?page={page}&limit={page_size}",
       "method": "get",
@@ -48,6 +51,7 @@
     },
     {
       "name": "get_document_segments",
+      "displayName": "精读文档",
       "description": "读取指定文档的所有分段内容，作用是从文档中检索复数个分段内容。doc_id为文档ID；segment_start为要检索的文档的开始分段编号，segment_end为要检索的文档的结束分段编号",
       "endpoint": "http://192.168.100.59/v1/datasets/{self.dataset_id}/documents/{doc_id}/segments?status=completed&page={page}&limit={limit}",
       "method": "get",

@@ -7,7 +7,7 @@ from agent.executor import AgentExecutorWrapper
 from langchain_core.messages import HumanMessage, SystemMessage, BaseMessage, AIMessage, AIMessageChunk
 from models.llm import CustomLLMFactory
 from tools.rag_tools import TOOLS as RAG_TOOLS
-from tools.system_tools import TOOLS as SYSTEM_TOOLS
+from tools.system_tools import genTools
 # from graph.graph_pipeline import LangGraphPipeline
 from graph.reactive_pipeline import InfoDoubleCheckPipeline
 from dynamic_tools.file_dynamic_tool import FileDynamicTool
@@ -26,7 +26,7 @@ app = FastAPI()
 
 # 全局模型和工具
 llm_factory = CustomLLMFactory()
-llm = llm_factory.llms['local']
+llm = llm_factory.llms['silicon']
 
 
 def _safe_serialize(obj):
@@ -65,7 +65,7 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
     fileDynamicTool = FileDynamicTool(call_tool_token='dataset-3dwC5VAiVum9GooOuN3ZlKpE')
     tools = fileDynamicTool.generate_tools()
     # @@@ 测试工具
-    tools = SYSTEM_TOOLS
+    tools = genTools()
     
     # 新对话，生成新的sessionid
     if (not session_id):

@@ -4,6 +4,8 @@ from pydantic import BaseModel, create_model
 import requests
 import logging
 
+from tools.custom_tool import CustomTool
+
 logging.basicConfig(
     filename='app.log',
     # 追加模式 'a'，覆盖模式 'w' 
@@ -26,7 +28,7 @@ class DynamicToolGenerator:
     """
     返回工具对象列表
     """
-    def generate_tools(self, tool_query_url: str = '', tool_query_param_json: dict = {}) -> list[StructuredTool]:
+    def generate_tools(self, tool_query_url: str = '', tool_query_param_json: dict = {}) -> list[CustomTool]:
         # 先查询所需要的工具列表
         tool_info_data = self.query_tool_info_list(tool_query_url, tool_query_param_json)
         tool_info_list = tool_info_data['data']
@@ -53,7 +55,7 @@ class DynamicToolGenerator:
         }
     }
     '''
-    def _gen_single_tool(self, tool_info) -> StructuredTool:
+    def _gen_single_tool(self, tool_info) -> CustomTool:
         # 可能带占位符，需要format
         endpoint_template = tool_info['endpoint']
         
@@ -79,9 +81,12 @@ class DynamicToolGenerator:
             **fields
         )
 
-        return StructuredTool.from_function(
+        return CustomTool.from_function(
             name=tool_info["name"],
+            displayName=tool_info["displayName"],
             description=tool_info["description"],
+            endpoint=tool_info["endpoint"],
+            method=tool_info["method"],
             func=_call_api,
             args_schema=DynamicSchema,
         )
@@ -111,5 +116,11 @@ class DynamicToolGenerator:
     @abstractmethod
     def query_tool_info_list(self, url=None, params: dict={}):
         pass
+    
+    # 根据工具的displayName获取工具名称和displayName的关联关系，方便前端展示工具调用情况
+    @staticmethod
+    def get_tool_name_mapping(tools: list[CustomTool]):
+        tool_mapping = dict(map(lambda x: (x.name, x.displayName), tools))
+        return tool_mapping
     
     
