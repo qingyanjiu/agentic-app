@@ -44,16 +44,19 @@ class InfoDoubleCheckPipeline:
     session_id: 对话id，用来持久化对话历史
     max_iters: 流程评估不通过时的迭代次数
     use_evaluator: 是否启用评估节点
+    enable_debug: 是否开启调试模式，开启调试的话，LLM流式输出会输出额外节点信息
     '''
-    def __init__(self, llm: BaseChatModel, tools: CustomTool, user_id: str, session_id: str, use_evaluator = True, max_iters: int = 3):
+    def __init__(self, llm: BaseChatModel, tools: CustomTool, user_id: str, session_id: str, use_evaluator = True,  max_iters: int = 3, enable_debug=False):
         self.llm = llm
         self.tools = tools
+        # 工具名称和displayName的关联关系，方便前端展示工具调用情况
         self.tool_mapping = DynamicToolGenerator.get_tool_name_mapping(tools)
         self.system_prompt = SYSTEM_PROMPT
         self.user_id = user_id
         self.session_id = session_id
         self.use_evaluator = use_evaluator
         self.max_iters = max_iters
+        self.enable_debug = enable_debug
         self.agent_wrapper = AgentExecutorWrapper(
             llm=self.llm,
             tools=self.tools,
@@ -82,9 +85,23 @@ class InfoDoubleCheckPipeline:
                 agent_out = ''
                 async for chunk in self.agent_wrapper.stream_run(query):
                     event = chunk['event']
+                    
+                    # 如果是工具节点
                     if(event.find('tool') != -1):
-                        writer(chunk)
-                    if(
+                        # 开启debug的话，就打印所有工具调用信息
+                        if(self.enable_debug is True):
+                            writer(chunk)
+                        # 如果不是debug模式，就只打印工具调用信息
+                        elif(self.enable_debug is False):
+                            tool_name = chunk.get("name")
+                            tool_display_name = self.tool_mapping[tool_name]
+                            tool_action = "正在" if event.find('start') != -1 else "已"
+                            output = {
+                                "type": "tool",
+                                "message": f"{tool_action}{tool_display_name}"
+                            }
+                            writer(output)
+                    elif(
                         # 思考链结束事件，且整个agent结束，认为是该节点完成的标志，输出chunk并获取最终的output，写入state
                         event == 'on_chain_end'
                         and chunk['name'] == self.agent_wrapper.agent_name
@@ -256,15 +273,18 @@ Agent 回答: {agent_out}
                     "node": info["langgraph_node"]
                 }
             elif mode == "updates":
-                # chunk 是 state 变化
-                yield {
-                    "event": "state_update",
-                    "data": chunk
-                }
+                # chunk 是 state 变化,其实是不需要的
+                # 调试模式打印出来
+                if (self.enable_debug is True):
+                    yield {
+                        "event": "state_update",
+                        "data": chunk
+                    }
+                # 非调试模式，不打印信息
+                elif (self.enable_debug is False):
+                    continue
             elif mode == "custom":
-                # if(chunk.get("event") == "tool_start"):
-                #     chunk = chunk.get("data")
-                # chunk 是 writer() 推出的内容
+                # chunk 是 writer() 推出的自定义内容
                 yield {
                     "event": "custom",
                     "data": chunk
