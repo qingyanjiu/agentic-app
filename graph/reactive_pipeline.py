@@ -98,7 +98,7 @@ class InfoDoubleCheckPipeline:
                             tool_action = "正在" if event.find('start') != -1 else "已"
                             output = {
                                 "type": "tool",
-                                "message": f"{tool_action}{tool_display_name}"
+                                "content": f"{tool_action}{tool_display_name}"
                             }
                             writer(output)
                     elif(
@@ -106,8 +106,11 @@ class InfoDoubleCheckPipeline:
                         event == 'on_chain_end'
                         and chunk['name'] == self.agent_wrapper.agent_name
                     ):
-                        writer(chunk)
                         agent_out = chunk['data']['output']
+                        # 如果开启debug，则输出chunk,否则不输出
+                        if(self.enable_debug is True):
+                            writer(chunk)
+                        
                 return {"agent_output": agent_out}
             else:
                 return {"agent_output": "达到最大循环次数，未获取到答案"}
