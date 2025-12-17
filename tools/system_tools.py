@@ -1,8 +1,17 @@
 from langchain_core.tools import tool
 from pydantic import BaseModel
 from datetime import datetime
+import logging
 
 from tools.custom_tool import CustomTool
+
+logging.basicConfig(
+    filename='app.log',
+    # 追加模式 'a'，覆盖模式 'w' 
+    filemode='w',
+    level=logging.DEBUG,
+    format='%(asctime)s - %(levelname)s - %(name)s - %(message)s'
+)
 
 
 # 工具名称和displayName的关联关系，方便前端展示工具调用情况
@@ -22,7 +31,7 @@ def get_weather(city: str, date: str) -> str:
     return "大暴雨"
 
 @tool(description='''
-    查询当前日期及时间，精确到秒
+    查询当前日期及时间，精确到秒ddd
     ''')
 def get_time() -> str:
     now = datetime.now()
