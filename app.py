@@ -14,6 +14,9 @@ from dynamic_tools.file_dynamic_tool import FileDynamicTool
 import logging
 import uuid
 
+# docker开发环境
+# docker run -d -v /Users/louisliu/dev/AI_projects/agentic-app:/root/agentic-app --name langchain-agent-dev qingyanjiu/langchain:1.0.3 tail -f /dev/null
+
 logging.basicConfig(
     filename='app.log',
     # 追加模式 'a'，覆盖模式 'w' 
