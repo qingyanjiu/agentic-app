@@ -2,18 +2,33 @@ from langchain_classic.agents import AgentExecutor, create_openai_tools_agent
 from langchain.agents import create_agent
 from langchain_core.prompts.chat import ChatPromptTemplate, MessagesPlaceholder, SystemMessagePromptTemplate, HumanMessagePromptTemplate
 from memory.store import MemoryStore
+from utils.utils import get_config
+from langchain_classic.memory import ConversationBufferMemory, ConversationBufferWindowMemory
 
 # 写文件肯定会有并发问题，要改成redis或者数据库持久化历史
 memory_store = MemoryStore()
+config = get_config()
+memory_buffer_window = config['memory_persistor']['memory_buffer_window']
 
+# persist_memory 是否持久化保存和恢复记忆
 class AgentExecutorWrapper:
-    def __init__(self, llm, tools, user_id, session_id, agent_name='custom_agent', system_prompt=None, agent_recursion_limit=10):
+    def __init__(self, llm, tools, user_id, session_id, agent_name='custom_agent', system_prompt=None, agent_recursion_limit=10, persist_memory=True):
         self.llm = llm
         self.tools = tools
         self.user_id = user_id
         self.session_id = session_id
         self.memory_store = memory_store
-        self.memory = self.memory_store.get_memory(user_id, session_id)
+        self.persist_memory = persist_memory
+        # 如果持久化对话历史，则读取
+        if (self.persist_memory is True):
+            self.memory = self.memory_store.get_memory(user_id, session_id)
+        else:
+        # 否则初始化一个空memory对象
+            self.memory = ConversationBufferWindowMemory(
+                k=memory_buffer_window,
+                memory_key="chat_history", 
+                return_messages=True
+            )
         self.agent_recursion_limit = agent_recursion_limit
         self.agent_name = agent_name
 

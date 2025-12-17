@@ -62,7 +62,8 @@ class InfoDoubleCheckPipeline:
             tools=self.tools,
             user_id=self.user_id,
             session_id=self.session_id,
-            system_prompt=self.system_prompt
+            system_prompt=self.system_prompt,
+            persist_memory=False
         )
 
         # 定义图
@@ -293,4 +294,6 @@ Agent 回答: {agent_out}
                     "data": chunk
                 }
         
-        self.agent_wrapper.memory_store.persist_memory(self.user_id, self.session_id)
+        # 如果持久化对话历史，则持久化
+        if (self.agent_wrapper.persist_memory is True):
+            self.agent_wrapper.memory_store.persist_memory(self.user_id, self.session_id)
