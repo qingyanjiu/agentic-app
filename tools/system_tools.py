@@ -1,5 +1,5 @@
 from langchain_core.tools import tool
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from datetime import datetime
 import logging
 
@@ -21,8 +21,8 @@ TOOL_NAME_MAPPING = {
 }
 
 class WeatherParams(BaseModel):
-    city: str
-    date: str
+    city: str = Field(..., description="要查询天气的城市名称")
+    date: str = Field(..., description="查询日期，格式为YYYY-MM-DD")
 
 @tool(args_schema=WeatherParams, description='''
     查询城市某一天的天气情况，参数：city-要查询天气的城市，date-要查询天气的日期,格式是 yyyy-mm-dd HH:mm:ss。

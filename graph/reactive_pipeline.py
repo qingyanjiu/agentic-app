@@ -1,11 +1,17 @@
+import json
+from langchain_classic.chains.llm import LLMChain
+from langchain_core.prompts import PromptTemplate
 from typing import TypedDict, Optional, Dict, Any
 from langgraph.graph import StateGraph, START, END
 from langgraph.types import StreamWriter
 from langgraph.runtime import Runtime
 from langchain_core.runnables.config import RunnableConfig
+from langchain_core.prompts import ChatPromptTemplate
 from agent.executor import AgentExecutorWrapper
 from langchain_core.language_models import BaseChatModel
-from agent.info_double_check_prompts import SYSTEM_PROMPT
+from agent.info_double_check_prompts import SYSTEM_PROMPT as main_system_prompt
+from agent.intent_get_prompt import SYSTEM_PROMPT as intent_get_system_prompt
+from agent.ask_for_param_prompt import SYSTEM_PROMPT as ask_for_param_prompt
 import logging
 
 from dynamic_tools.dynamic_tool_generator import DynamicToolGenerator
@@ -31,6 +37,12 @@ def gen_flow_graph(graph):
 
 class MyState(TypedDict, total=False):
     query: str
+    # 已获取的工具参数
+    tool_params_got: list
+    # 用户意图概述
+    user_intent: str
+    # 缺失的工具参数
+    missing_tool_params: list
     evaluator_iter: int
     agent_output: Dict[str, Any]
     eval_decision: str
@@ -51,29 +63,88 @@ class InfoDoubleCheckPipeline:
         self.tools = tools
         # 工具名称和displayName的关联关系，方便前端展示工具调用情况
         self.tool_mapping = DynamicToolGenerator.get_tool_name_mapping(tools)
-        self.system_prompt = SYSTEM_PROMPT
+        self.tool_json_desc = DynamicToolGenerator.get_tool_json_desc(tools)
+        self.main_node_system_prompt = main_system_prompt
         self.user_id = user_id
         self.session_id = session_id
         self.use_evaluator = use_evaluator
         self.max_iters = max_iters
         self.enable_debug = enable_debug
-        self.agent_wrapper = AgentExecutorWrapper(
+        
+        # 意图识别agent
+        self.intent_node_system_prompt = PromptTemplate(
+            template=intent_get_system_prompt,
+            input_variables=["input","tool_params_got","tool_json_desc"]
+        )
+        self.intent_agent = LLMChain(llm=llm, prompt=self.intent_node_system_prompt)
+         
+        # 要求用户补充参数的agent
+        self.ask_for_param_prompt = PromptTemplate(
+            template=ask_for_param_prompt,
+            input_variables=["input","tool_params_got"]
+        )
+        self.ask_for_param_agent = LLMChain(llm=llm, prompt=self.ask_for_param_prompt)
+        
+        # 主逻辑agent智能体
+        self.main_agent = AgentExecutorWrapper(
             llm=self.llm,
             tools=self.tools,
             user_id=self.user_id,
             session_id=self.session_id,
-            system_prompt=self.system_prompt,
+            system_prompt=self.main_node_system_prompt,
             persist_memory=False
         )
 
         # 定义图
         flow_graph = StateGraph(MyState)
-
-        # 节点：Agent,处理主要逻辑
-        async def agent_node(state: MyState, config: RunnableConfig, runtime: Runtime, writer: StreamWriter) -> MyState:
+        
+        # @@@ 节点：用户意图识别，要求用户补全所需参数
+        def intent_get_node(state: MyState, config: RunnableConfig, runtime: Runtime, writer: StreamWriter) -> MyState:
+            logging.info(f"第 {state['evaluator_iter']} 次迭代，获取用户意图")
+            query = state["query"]
+            tool_params_got = state["tool_params_got"]
+            inputs = {
+                "input": query, 
+                "tool_json_desc": self.tool_json_desc,
+                "tool_params_got": tool_params_got
+            }
+            result = self.intent_agent.invoke(inputs)
+            result_json = json.loads(result.get('text', {}))
+            if(result_json):
+                missing_params = result_json.get("missing_params", [])
+                tool_params_got = result_json.get("tool_params_got", [])
+                intent_desc = result_json.get("intent_desc", '')
+                output = {
+                    "type": "intent_desc",
+                    "content": intent_desc
+                }
+                # 写入返回数据
+                writer(output)
+                return {
+                    "missing_params": missing_params, 
+                    "tool_params_got": tool_params_got, 
+                    "intent_desc": intent_desc
+                }
+            else:
+                logging.error(f"意图识别节点出错：返回数据为空:{result}")
+                return {}
+            
+        # @@@ 节点：要求用户提供缺少的信息
+        def ask_for_param_node(state: MyState, config: RunnableConfig, runtime: Runtime, writer: StreamWriter) -> MyState:
+            query = state["query"]
+            missing_params = state["missing_params"]
+            inputs = {
+                "input": query, 
+                "missing_params": missing_params
+            }
+            result = self.ask_for_param_agent.invoke(inputs)
+            # TODO 继续写后续逻辑
+            
+        # @@@ 节点：调用工具的Agent,处理主要逻辑
+        async def tool_agent_node(state: MyState, config: RunnableConfig, runtime: Runtime, writer: StreamWriter) -> MyState:
             logging.info(f"第 {state['evaluator_iter']} 次迭代，处理主要逻辑")
             
-            query = state["query"]
+            user_intent = state["user_intent"]
 
             # 如果没超过最大迭代次数，则迭代，否则，啥都不做，也就是使用上一次的结果(不改变 state 中的 agent_output)
             if(state["evaluator_iter"] < self.max_iters):
@@ -84,7 +155,7 @@ class InfoDoubleCheckPipeline:
                 # return {"agent_output": agent_out}
 
                 agent_out = ''
-                async for chunk in self.agent_wrapper.stream_run(query):
+                async for chunk in self.main_agent.stream_run(user_intent):
                     event = chunk['event']
                     
                     # 如果是工具节点
@@ -105,7 +176,7 @@ class InfoDoubleCheckPipeline:
                     elif(
                         # 思考链结束事件，且整个agent结束，认为是该节点完成的标志，输出chunk并获取最终的output，写入state
                         event == 'on_chain_end'
-                        and chunk['name'] == self.agent_wrapper.agent_name
+                        and chunk['name'] == self.main_agent.agent_name
                     ):
                         agent_out = chunk['data']['output']
                         # 如果开启debug，则输出chunk,否则不输出
@@ -116,15 +187,15 @@ class InfoDoubleCheckPipeline:
             else:
                 return {"agent_output": "达到最大循环次数，未获取到答案"}
 
-        # 节点：Evaluator，评估检索效果，决定是否迭代
+        # @@@ 节点：Evaluator，评估检索效果，决定是否迭代
         def evaluator_node(state: MyState, config: RunnableConfig, runtime: Runtime) -> MyState:
             logging.info(f"第 {state['evaluator_iter']} 次迭代，评估检索结果")
             agent_out = state["agent_output"]
             agent_out = agent_out['messages'][-1].content
             eval_prompt = f"""
-你是评估者 (Evaluator)，请根据你的专业知识，判断以下 Agent 回答是否充分：
+你是评估者 (Evaluator)，请根据你的专业知识，判断以下 MainAgent的 回答是否充分：
 用户问题: {state['query']}
-Agent 回答: {agent_out}
+MainAgent 回答: {agent_out}
 返回 "完全充分"、"基本充分" 或 "不充分"。
 注意：
 - 返回只能是 "完全充分","基本充分" 或 "不充分" 其中的一个
@@ -196,7 +267,9 @@ Agent 回答: {agent_out}
             return {"final_answer": final_answer}
 
 
-        flow_graph.add_node("Agent", agent_node)
+        flow_graph.add_node("IntentGet", intent_get_node)
+
+        flow_graph.add_node("MainAgent", tool_agent_node)
         
         # @@@@@@@@@@@@@ 
         # 如果使用评估节点，增加评估节点
@@ -207,21 +280,25 @@ Agent 回答: {agent_out}
         flow_graph.add_node("Composer", composer_node)
 
         # 添加边：控制流程
-        # START → Agent
-        flow_graph.add_edge(START, "Agent")
+        # START → IntentAgent
+        flow_graph.add_edge(START, "IntentGet")
+        
+        # 添加边：
+        # IntentAgent → MainAgent
+        flow_graph.add_edge("IntentGet", "MainAgent")
         
         # @@@@@@@@@@@@@ 
         # 如果使用评估节点,agent节点到评估节点连线
         # 如果使用评估节点,agent节点到评估节点连线
         # @@@@@@@@@@@@@
         if (self.use_evaluator):
-            # Agent → Evaluator
-            flow_graph.add_edge("Agent", "Evaluator")
+            # MainAgent → Evaluator
+            flow_graph.add_edge("MainAgent", "Evaluator")
         # @@@@@@@@@@@@@ 
         # 如果不使用评估节点,agent节点到总结节点连线
         # @@@@@@@@@@@@@
         else:
-            flow_graph.add_edge("Agent", "Composer")
+            flow_graph.add_edge("MainAgent", "Composer")
         
         # @@@@@@@@@@@@@ 
         # 如果使用评估节点, 添加评估节点条件边
@@ -229,7 +306,7 @@ Agent 回答: {agent_out}
         if (self.use_evaluator):
             # 路径分支逻辑
             # 如果充分 Evaluator → Composer 
-            # 不充分 Evaluator → Agent
+            # 不充分 Evaluator → MainAgent
             def should_redo_rag_after_evaluation(state: MyState) -> str:
                 """
                 判断是否需要重新执行 RAG 步骤
@@ -244,7 +321,7 @@ Agent 回答: {agent_out}
                 "Evaluator",
                 should_redo_rag_after_evaluation,
                 {
-                    "redo_rag": "Agent",
+                    "redo_rag": "MainAgent",
                     "do_compose": "Composer"
                 }
             )
@@ -253,7 +330,8 @@ Agent 回答: {agent_out}
         flow_graph.add_edge("Composer", END)
         # 编译图
         self.graph = flow_graph.compile()
-        # gen_flow_graph(self.graph)
+        # 生成图
+        gen_flow_graph(self.graph)
 
     '''
     流式调用langgraph，流式返回最终节点数据
@@ -262,7 +340,7 @@ Agent 回答: {agent_out}
     async def astream_run(self, query: str):
         # 初始 state
         # evaluator_iter: 评估节点迭代次数，不能超过 max_iters
-        init_state: MyState = {"query": query, "evaluator_iter": 0}
+        init_state: MyState = {"query": query, "evaluator_iter": 0, "tool_params_got": []}
         # 异步执行，流式输出
         async for mode, chunk in self.graph.astream(
             init_state,
@@ -295,5 +373,5 @@ Agent 回答: {agent_out}
                 }
         
         # 如果持久化对话历史，则持久化
-        if (self.agent_wrapper.persist_memory is True):
-            self.agent_wrapper.memory_store.persist_memory(self.user_id, self.session_id)
+        if (self.main_agent.persist_memory is True):
+            self.main_agent.memory_store.persist_memory(self.user_id, self.session_id)

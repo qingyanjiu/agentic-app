@@ -123,4 +123,10 @@ class DynamicToolGenerator:
         tool_mapping = dict(map(lambda x: (x.name, x.displayName), tools))
         return tool_mapping
     
+    # 根据tool列表获取tool的json描述
+    @staticmethod
+    def get_tool_json_desc(tools: list[CustomTool]):
+        tool_desc = dict(map(lambda x: (x.name, {'desc': x.displayName, 'args': x.args}), tools))
+        return tool_desc
+    
     

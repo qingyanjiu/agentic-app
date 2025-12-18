@@ -17,7 +17,7 @@ class CustomLLMFactory():
                 "name": "silicon",
                 "type": "openai",
                 "model_url": "https://api.siliconflow.cn/v1",
-                "model_name": "Qwen/Qwen3-30B-A3B",
+                "model_name": "Qwen/Qwen3-30B-A3B-Instruct-2507",
                 "api_key": os.getenv("SILICON_API_KEY") if os.getenv("SILICON_API_KEY") else os.getenv("OPENAI_API_KEY")
             },
             { 
