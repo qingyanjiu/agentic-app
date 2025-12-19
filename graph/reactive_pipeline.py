@@ -40,9 +40,9 @@ class MyState(TypedDict, total=False):
     # 已获取的工具参数
     tool_params_got: list
     # 用户意图概述
-    user_intent: str
+    intent_desc: str
     # 缺失的工具参数
-    missing_tool_params: list
+    missing_params: list
     evaluator_iter: int
     agent_output: Dict[str, Any]
     eval_decision: str
@@ -127,18 +127,18 @@ class InfoDoubleCheckPipeline:
                 }
             else:
                 logging.error(f"意图识别节点出错：返回数据为空:{result}")
-                return {}
             
         # @@@ 节点：要求用户提供缺少的信息
-        def ask_for_param_node(state: MyState, config: RunnableConfig, runtime: Runtime, writer: StreamWriter) -> MyState:
+        async def ask_for_param_node(state: MyState, config: RunnableConfig, runtime: Runtime, writer: StreamWriter) -> MyState:
             query = state["query"]
             missing_params = state["missing_params"]
             inputs = {
                 "input": query, 
                 "missing_params": missing_params
             }
-            result = self.ask_for_param_agent.invoke(inputs)
-            # TODO 继续写后续逻辑
+            async for chunk in self.ask_for_param_agent.astream(inputs):
+                content = chunk.get('text')
+                writer({"type": "answer", "content": content})
             
         # @@@ 节点：调用工具的Agent,处理主要逻辑
         async def tool_agent_node(state: MyState, config: RunnableConfig, runtime: Runtime, writer: StreamWriter) -> MyState:
@@ -268,6 +268,8 @@ MainAgent 回答: {agent_out}
 
 
         flow_graph.add_node("IntentGet", intent_get_node)
+        
+        flow_graph.add_node("AskForParam", ask_for_param_node)
 
         flow_graph.add_node("MainAgent", tool_agent_node)
         
@@ -283,9 +285,22 @@ MainAgent 回答: {agent_out}
         # START → IntentAgent
         flow_graph.add_edge(START, "IntentGet")
         
-        # 添加边：
-        # IntentAgent → MainAgent
-        flow_graph.add_edge("IntentGet", "MainAgent")
+        # 边条件，参数不足时找用户提供，参数足够时直接执行主agent逻辑
+        def should_ask_for_param(state: MyState) -> str:
+            if state.get('missing_params') is not None and len(state['missing_params']) > 0:
+                return "ask_for_param"
+            else:
+                return "to_main_agent"
+        
+        # 添加条件边 意图识别后可能找用户提供更多参数，也可能直接执行下一步逻辑
+        flow_graph.add_conditional_edges(
+            "IntentGet",
+            should_ask_for_param,
+            {
+                "ask_for_param": "AskForParam",
+                "to_main_agent": "MainAgent"
+            }
+        )
         
         # @@@@@@@@@@@@@ 
         # 如果使用评估节点,agent节点到评估节点连线
@@ -331,7 +346,7 @@ MainAgent 回答: {agent_out}
         # 编译图
         self.graph = flow_graph.compile()
         # 生成图
-        gen_flow_graph(self.graph)
+        # gen_flow_graph(self.graph)
 
     '''
     流式调用langgraph，流式返回最终节点数据
