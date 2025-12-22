@@ -42,6 +42,18 @@ def _safe_serialize(obj):
         return {k: _safe_serialize(v) for k, v in obj.items()}
     else:
         return obj
+    
+
+
+'''
+@@@@@@@@@@@@@@@@@@@@@@@@
+动态获取工具 dynamic_tools
+@@@@@@@@@@@@@@@@@@@@@@@@
+'''
+fileDynamicTool = FileDynamicTool(call_tool_token='dataset-3dwC5VAiVum9GooOuN3ZlKpE')
+tools = fileDynamicTool.generate_tools()
+# @@@ 测试工具
+tools = genTools()
 
 '''
 发起聊天对话
@@ -51,30 +63,16 @@ session_id - 会话id，可以为空，为空就新建session
 @app.websocket("/agentic_rag_query/{user_id}/{session_id}")
 async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str] = None):
     await websocket.accept()
-
-    # 为当前用户创建独立的 AgentExecutor
-    # rag_executor = AgentExecutorWrapper(
-    #     llm=llm,
-    #     tools=RAG_TOOLS,
-    #     user_id=user_id,
-    #     system_prompt=SYSTEM_PROMPT
-    # )
-    
-    '''
-    @@@@@@@@@@@@@@@@@@@@@@@@
-    动态获取工具 dynamic_tools
-    @@@@@@@@@@@@@@@@@@@@@@@@
-    '''
-    fileDynamicTool = FileDynamicTool(call_tool_token='dataset-3dwC5VAiVum9GooOuN3ZlKpE')
-    tools = fileDynamicTool.generate_tools()
-    # @@@ 测试工具
-    tools = genTools()
     
     # 新对话，生成新的sessionid
     if (not session_id):
         session_id = uuid.uuid4()
+        
+    thread_id = f'{user_id}-{session_id}'
     
-    # 创建langgraph pipeline
+    '''
+    @@@@@ 创建langgraph pipeline
+    '''
     rag_pipeline = InfoDoubleCheckPipeline(
         llm=llm,
         tools=tools,
@@ -92,7 +90,7 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
                 continue
 
             # 假设 agent 是通过 create_agent 创建的，并且支持 astream
-            async for chunk in rag_pipeline.astream_run(query):
+            async for chunk in rag_pipeline.astream_run(query, thread_id):
                 text = _safe_serialize(chunk)
                 ##################################
                 # 如果直接用agentWrapper，就用这个逻辑

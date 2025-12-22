@@ -16,10 +16,8 @@ SYSTEM_PROMPT = f"""你是一个智能助手，能参考对话历史，同时使
     - ***必须调用工具***
     - 若找不到合适的工具，不要编造答案，直接告诉用户你无法回答
     
-    用户意图: {{user_intent}}
-    用户提供的可能用得到的工具参数: {{tool_params_got}}
+    用户意图: {{input}}
 
     思考记录：{{agent_scratchpad}}
-    用户最新问题：{{input}}
     是对话历史 {{chat_history}}
     """
