@@ -10,38 +10,13 @@ from langchain_core.runnables.config import RunnableConfig
 from langchain_core.prompts import ChatPromptTemplate
 from agent.executor import AgentExecutorWrapper
 from langchain_core.language_models import BaseChatModel
-from agent.info_double_check_prompts import SYSTEM_PROMPT as main_system_prompt
-from agent.intent_get_prompt import SYSTEM_PROMPT as intent_get_system_prompt
+from agent.tool_implement_main_prompt import SYSTEM_PROMPT as main_system_prompt
+from agent.get_intent_and_select_tools_prompt import SYSTEM_PROMPT as get_intent_and_select_tools_prompt
 from agent.ask_for_param_prompt import SYSTEM_PROMPT as ask_for_param_prompt
 import logging
 
 from dynamic_tools.dynamic_tool_generator import DynamicToolGenerator
 from tools.custom_tool import CustomTool
-
-import msgpack
-def print_checkpointer_store_json(checkpointer):
-    """
-    遍历 checkpointer.store，把 bytes 类型的数据反序列化并打印为中文 JSON
-    """
-    for key, value in checkpointer.storage.items():
-        print(f"Key: {key}")
-        if isinstance(value, bytes):
-            try:
-                obj = msgpack.unpackb(value, raw=False)
-                # 转成中文可读 JSON
-                json_str = json.dumps(obj, ensure_ascii=False, indent=2)
-                print("Value (deserialized as JSON):")
-                print(json_str)
-            except Exception as e:
-                print(f"无法反序列化: {e}")
-                print("原始 bytes:")
-                print(value)
-        else:
-            # 非 bytes 类型直接打印
-            json_str = json.dumps(value, ensure_ascii=False, indent=2)
-            print("Value (not bytes, JSON):")
-            print(json_str)
-        print("-" * 80)
 
 '''
 带交互的API查询流程
@@ -58,11 +33,15 @@ logging.basicConfig(
 class MyState(TypedDict, total=False):
     query: str
     # 已获取的工具参数
-    tool_params_got: list
+    params_got: list
     # 用户意图概述
     intent_desc: str
+    # 用户意图获取结果,用于识别无效问题，直接告知无法回答
+    intent_get_result: str
     # 缺失的工具参数
     missing_params: list
+    # 上一次请求补充参数时要求的内容
+    last_param_ask_conent: str
     evaluator_iter: int
     agent_output: Dict[str, Any]
     eval_decision: str
@@ -91,17 +70,17 @@ class InfoDoubleCheckPipeline:
         self.max_iters = max_iters
         self.enable_debug = enable_debug
         
-        # 意图识别agent
-        self.intent_node_system_prompt = PromptTemplate(
-            template=intent_get_system_prompt,
-            input_variables=["input","tool_params_got","tool_json_desc"]
+        # 通过用户输入分析意图和需要调用的工具并生成调用思路agent
+        self.get_intent_and_select_tools_prompt = PromptTemplate(
+            template=get_intent_and_select_tools_prompt,
+            input_variables=["input","params_got","tool_json_desc","intent_desc"]
         )
-        self.intent_agent = LLMChain(llm=llm, prompt=self.intent_node_system_prompt)
+        self.get_intent_and_select_tools_agent = LLMChain(llm=llm, prompt=self.get_intent_and_select_tools_prompt)
         
         # 要求用户补充参数的agent
         self.ask_for_param_prompt = PromptTemplate(
             template=ask_for_param_prompt,
-            input_variables=["input","tool_params_got"]
+            input_variables=["input","params_got"]
         )
         self.ask_for_param_agent = LLMChain(llm=llm, prompt=self.ask_for_param_prompt)
         
@@ -126,20 +105,28 @@ class InfoDoubleCheckPipeline:
     def intent_get_node(self, state: MyState, config: RunnableConfig, runtime: Runtime, writer: StreamWriter) -> MyState:
         logging.info(f"第 {state['evaluator_iter']} 次迭代，获取用户意图")
         query = state["query"]
-        tool_params_got = state.get("tool_params_got", [])
+        params_got = state.get("params_got", [])
         intent_desc = state.get("intent_desc", "")
+        intent_desc += ' * 用户最新补充的参数值：' + query
         inputs = {
             "input": query, 
             "tool_json_desc": self.tool_json_desc,
-            "tool_params_got": tool_params_got,
+            "params_got": params_got,
             "intent_desc": intent_desc
         }
-        result = self.intent_agent.invoke(inputs)
-        result_json = json.loads(result.get('text', {}))
-        if(result_json):
-            missing_params = result_json.get("missing_params", [])
-            tool_params_got.extend(result_json.get("tool_params_got", []))
-            intent_desc = result_json.get("intent_desc", '')
+        result = self.get_intent_and_select_tools_agent.invoke(inputs)
+        result = json.loads(result.get('text', {}))
+        intent_get_result = result.get('intent_get_result', {})
+        if intent_get_result == '无法回答':
+            writer(output)
+            return {
+                "intent_get_result": intent_get_result
+            }      
+            
+        intent_desc = result.get('intent_desc', {})
+        if(intent_get_result):
+            missing_params = intent_get_result.get("missing_params", [])
+            params_got = intent_get_result.get("params_got", [])
             output = {
                 "type": "intent_desc",
                 "content": intent_desc
@@ -148,29 +135,39 @@ class InfoDoubleCheckPipeline:
             writer(output)
             return {
                 "missing_params": missing_params, 
-                "tool_params_got": tool_params_got, 
+                "params_got": params_got, 
                 "intent_desc": intent_desc
             }
         else:
             logging.error(f"意图识别节点出错：返回数据为空:{result}")
         
     # @@@ 节点：要求用户提供缺少的信息
-    async def ask_for_param_node(self, state: MyState, config: RunnableConfig, runtime: Runtime, writer: StreamWriter) -> MyState:
+    def ask_for_param_node(self, state: MyState, config: RunnableConfig, runtime: Runtime, writer: StreamWriter) -> MyState:
         query = state["query"]
         missing_params = state["missing_params"]
+        intent_desc = state.get("intent_desc", "")
         inputs = {
             "input": query, 
+            "intent_desc": intent_desc,
             "missing_params": missing_params
         }
-        async for chunk in self.ask_for_param_agent.astream(inputs):
+        ask_content = ''
+        for chunk in self.ask_for_param_agent.stream(inputs):
             content = chunk.get('text')
+            ask_content += content
             writer({"type": "answer", "content": content})
+        return { "last_param_ask_conent": ask_content }
         
     # @@@ 节点：调用工具的Agent,处理主要逻辑
     async def tool_agent_node(self, state: MyState, config: RunnableConfig, runtime: Runtime, writer: StreamWriter) -> MyState:
         logging.info(f"第 {state['evaluator_iter']} 次迭代，处理主要逻辑")
-        
+        query = state.get("query", "")
+        # 分析的解决问题的逻辑
         intent_desc = state.get("intent_desc", "")
+        # 获取的参数
+        params_got = state.get("params_got", [])
+        input = f'{{"params_got": {params_got}, "intent_desc": {intent_desc}}}'
+        input_str = json.dumps(input)
 
         # 如果没超过最大迭代次数，则迭代，否则，啥都不做，也就是使用上一次的结果(不改变 state 中的 agent_output)
         if(state["evaluator_iter"] < self.max_iters):
@@ -181,7 +178,7 @@ class InfoDoubleCheckPipeline:
             # return {"agent_output": agent_out}
 
             agent_out = ''
-            async for chunk in self.main_agent.stream_run(intent_desc):
+            async for chunk in self.main_agent.stream_run(input_str):
                 event = chunk['event']
                 
                 # 如果是工具节点
@@ -297,7 +294,10 @@ MainAgent 回答: {agent_out}
         if state.get('missing_params') is not None and len(state['missing_params']) > 0:
             return "ask_for_param"
         else:
-            return "to_main_agent"
+            if state.get('intent_get_result') == '无法回答':
+                return "ask_for_param"
+            else:
+                return "to_main_agent"
 
     # 路径分支逻辑
     # 如果充分 Evaluator → Composer 
