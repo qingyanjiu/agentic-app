@@ -1,8 +1,9 @@
 import json
+import time
 from langgraph.checkpoint.memory import MemorySaver
 from langchain_classic.chains.llm import LLMChain
 from langchain_core.prompts import PromptTemplate
-from typing import TypedDict, Optional, Dict, Any
+from typing import Callable, TypedDict, Optional, Dict, Any
 from langgraph.graph import StateGraph, START, END
 from langgraph.types import StreamWriter
 from langgraph.runtime import Runtime
@@ -40,8 +41,6 @@ class MyState(TypedDict, total=False):
     intent_get_result: str
     # 缺失的工具参数
     missing_params: list
-    # 上一次请求补充参数时要求的内容
-    last_param_ask_conent: str
     evaluator_iter: int
     agent_output: Dict[str, Any]
     eval_decision: str
@@ -96,6 +95,19 @@ class InfoDoubleCheckPipeline:
         # 初始化图
         self.init_graph()
         
+    # 模拟流式输出
+    def fake_stream(
+        self,
+        text: str,
+        writer: StreamWriter,
+        step=2,
+        delay: float = 0.05,
+    ):
+        for i in range(0, len(text), step):
+            output = {"type": "answer", "content": text[i: i+step]}
+            writer(output)
+            time.sleep(delay)
+            
     # 绘制langgraph图
     def gen_flow_graph(self, graph):
         graph_png = graph.get_graph().draw_mermaid_png()
@@ -107,7 +119,6 @@ class InfoDoubleCheckPipeline:
         query = state["query"]
         params_got = state.get("params_got", [])
         intent_desc = state.get("intent_desc", "")
-        intent_desc += ' * 用户最新补充的参数值：' + query
         inputs = {
             "input": query, 
             "tool_json_desc": self.tool_json_desc,
@@ -118,6 +129,10 @@ class InfoDoubleCheckPipeline:
         result = json.loads(result.get('text', {}))
         intent_get_result = result.get('intent_get_result', {})
         if intent_get_result == '无法回答':
+            output = {
+                "type": "intent_desc",
+                "content": f"之前的用户意图是：{intent_desc}，最新的用户输入是：{query}"
+            }
             writer(output)
             return {
                 "intent_get_result": intent_get_result
@@ -143,20 +158,30 @@ class InfoDoubleCheckPipeline:
         
     # @@@ 节点：要求用户提供缺少的信息
     def ask_for_param_node(self, state: MyState, config: RunnableConfig, runtime: Runtime, writer: StreamWriter) -> MyState:
-        query = state["query"]
-        missing_params = state["missing_params"]
+        query = state.get("query", "")
+        missing_params = state.get("missing_params", [])
+        intent_get_result = state.get("intent_get_result", "")
         intent_desc = state.get("intent_desc", "")
+        
+        # 如果是无法回答，直接就结束了
+        if intent_get_result == '无法回答':
+            output = {
+                "type": "answer",
+                "content": "对不起，我目前掌握的能力无法解决你的问题"
+            }
+            writer(output)
+            return {
+                "intent_get_result": ""
+            }
+        
         inputs = {
             "input": query, 
             "intent_desc": intent_desc,
             "missing_params": missing_params
         }
-        ask_content = ''
-        for chunk in self.ask_for_param_agent.stream(inputs):
-            content = chunk.get('text')
-            ask_content += content
-            writer({"type": "answer", "content": content})
-        return { "last_param_ask_conent": ask_content }
+        content = self.ask_for_param_agent.invoke(inputs)
+        content = content.get('text')
+        self.fake_stream(content, writer)
         
     # @@@ 节点：调用工具的Agent,处理主要逻辑
     async def tool_agent_node(self, state: MyState, config: RunnableConfig, runtime: Runtime, writer: StreamWriter) -> MyState:
@@ -291,10 +316,12 @@ MainAgent 回答: {agent_out}
 
     # 边条件，参数不足时找用户提供，参数足够时直接执行主agent逻辑
     def should_ask_for_param(self, state: MyState) -> str:
-        if state.get('missing_params') is not None and len(state['missing_params']) > 0:
+        missing_params = state.get('missing_params', [])
+        intent_get_result = state.get('intent_get_result', '')
+        if missing_params is not None and len(missing_params) > 0:
             return "ask_for_param"
         else:
-            if state.get('intent_get_result') == '无法回答':
+            if intent_get_result == '无法回答':
                 return "ask_for_param"
             else:
                 return "to_main_agent"
