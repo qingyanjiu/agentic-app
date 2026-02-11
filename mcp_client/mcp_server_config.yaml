@@ -1,0 +1,16 @@
+mcp_servers:
+  local:
+    transport: streamable_http
+    url: http://192.168.0.112:2222/mcp
+
+  # math_server:
+  #   transport: stdio
+  #   command: python
+  #   args:
+  #     - ./servers/math_server.py
+
+  # finance_server:
+  #   transport: sse
+  #   url: http://localhost:8002/mcp
+  #   headers:
+  #     Authorization: "Bearer YOUR_TOKEN"

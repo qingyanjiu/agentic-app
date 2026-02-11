@@ -37,7 +37,7 @@ def get_time() -> str:
     now = datetime.now()
     return now.strftime("%Y年%m月%d日 %H时%M分%S秒")
 
-def genTools():
+def genSystemTools():
     TOOLS_RAW = [get_weather, get_time]
     TOOLS: list[CustomTool] = []
     for t in TOOLS_RAW:

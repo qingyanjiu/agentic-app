@@ -120,13 +120,13 @@ class DynamicToolGenerator:
     # 根据工具的displayName获取工具名称和displayName的关联关系，方便前端展示工具调用情况
     @staticmethod
     def get_tool_name_mapping(tools: list[CustomTool]):
-        tool_mapping = dict(map(lambda x: (x.name, x.displayName), tools))
+        tool_mapping = dict(map(lambda x: (x.name, x.displayName if isinstance(x , CustomTool) else x.name), tools))
         return tool_mapping
     
     # 根据tool列表获取tool的json描述
     @staticmethod
     def get_tool_json_desc(tools: list[CustomTool]):
-        tool_desc = dict(map(lambda x: (x.name, {'desc': x.displayName, 'args': x.args}), tools))
+        tool_desc = dict(map(lambda x: (x.name, {'desc': x.description, 'args': x.args}), tools))
         return tool_desc
     
     

@@ -6,11 +6,9 @@ from fastapi import FastAPI, WebSocket
 from agent.executor import AgentExecutorWrapper
 from langchain_core.messages import HumanMessage, SystemMessage, BaseMessage, AIMessage, AIMessageChunk
 from models.llm import CustomLLMFactory
-from tools.rag_tools import TOOLS as RAG_TOOLS
-from tools.system_tools import genTools
 # from graph.graph_pipeline import LangGraphPipeline
 from graph.reactive_pipeline import InfoDoubleCheckPipeline
-from dynamic_tools.file_dynamic_tool import FileDynamicTool
+from tools.load_tools import load_tools
 import logging
 import uuid
 
@@ -30,6 +28,7 @@ app = FastAPI()
 # 全局模型和工具
 llm_factory = CustomLLMFactory()
 llm = llm_factory.llms['silicon']
+# llm = llm_factory.llms['zp']
 
 
 def _safe_serialize(obj):
@@ -42,18 +41,6 @@ def _safe_serialize(obj):
         return {k: _safe_serialize(v) for k, v in obj.items()}
     else:
         return obj
-    
-
-
-'''
-@@@@@@@@@@@@@@@@@@@@@@@@
-动态获取工具 dynamic_tools
-@@@@@@@@@@@@@@@@@@@@@@@@
-'''
-fileDynamicTool = FileDynamicTool(call_tool_token='dataset-3dwC5VAiVum9GooOuN3ZlKpE')
-tools = fileDynamicTool.generate_tools()
-# @@@ 测试工具
-tools = genTools()
 
 '''
 发起聊天对话
@@ -70,10 +57,12 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
         
     thread_id = f'{user_id}-{session_id}'
     
+    tools = await load_tools()
+    
     '''
     @@@@@ 创建langgraph pipeline
     '''
-    rag_pipeline = InfoDoubleCheckPipeline(
+    rag_pipeline = await InfoDoubleCheckPipeline.create(
         llm=llm,
         tools=tools,
         user_id=user_id,

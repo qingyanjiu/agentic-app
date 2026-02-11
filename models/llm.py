@@ -21,11 +21,11 @@ class CustomLLMFactory():
                 "api_key": os.getenv("SILICON_API_KEY") if os.getenv("SILICON_API_KEY") else os.getenv("OPENAI_API_KEY")
             },
             { 
-                "name": "local",
+                "name": "zp",
                 "type": "openai",
-                "model_url": "http://192.168.100.85:1234/v1",
-                "model_name": "qwen/qwen3-8b",
-                "api_key": "123"
+                "model_url": "https://open.bigmodel.cn/api/coding/paas/v4",
+                "model_name": "glm-4.7",
+                "api_key": os.getenv("OPENAI_API_KEY")
             },
             # { 
             #     "name": "local",

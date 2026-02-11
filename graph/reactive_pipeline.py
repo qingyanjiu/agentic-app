@@ -11,7 +11,7 @@ from langchain_core.runnables.config import RunnableConfig
 from langchain_core.prompts import ChatPromptTemplate
 from agent.executor import AgentExecutorWrapper
 from langchain_core.language_models import BaseChatModel
-from agent.tool_implement_main_prompt import SYSTEM_PROMPT as main_system_prompt
+from agent.tool_implement_main_prompt import gen_prompt
 from agent.get_intent_and_select_tools_prompt import SYSTEM_PROMPT as get_intent_and_select_tools_prompt
 from agent.ask_for_param_prompt import SYSTEM_PROMPT as ask_for_param_prompt
 import logging
@@ -52,17 +52,17 @@ class InfoDoubleCheckPipeline:
     tools: agent要用的工具
     user_id: 用户id，用来持久化对话历史
     session_id: 对话id，用来持久化对话历史
+    main_node_system_prompt: 主prompt，占位参数，可以不传，类初始化时会处理
     max_iters: 流程评估不通过时的迭代次数
     use_evaluator: 是否启用评估节点
     enable_debug: 是否开启调试模式，开启调试的话，LLM流式输出会输出额外节点信息
     '''
-    def __init__(self, llm: BaseChatModel, tools: CustomTool, user_id: str, session_id: str, use_evaluator = True,  max_iters: int = 3, enable_debug=False):
+    def __init__(self, llm: BaseChatModel, tools: CustomTool, user_id: str, session_id: str, main_node_system_prompt = '', use_evaluator = True,  max_iters: int = 3, enable_debug=False):
         self.llm = llm
         self.tools = tools
         # 工具名称和displayName的关联关系，方便前端展示工具调用情况
         self.tool_mapping = DynamicToolGenerator.get_tool_name_mapping(tools)
         self.tool_json_desc = DynamicToolGenerator.get_tool_json_desc(tools)
-        self.main_node_system_prompt = main_system_prompt
         self.user_id = user_id
         self.session_id = session_id
         self.use_evaluator = use_evaluator
@@ -83,6 +83,7 @@ class InfoDoubleCheckPipeline:
         )
         self.ask_for_param_agent = LLMChain(llm=llm, prompt=self.ask_for_param_prompt)
         
+        self.main_node_system_prompt = main_node_system_prompt
         # 主逻辑agent智能体
         self.main_agent = AgentExecutorWrapper(
             llm=self.llm,
@@ -94,6 +95,11 @@ class InfoDoubleCheckPipeline:
         )
         # 初始化图
         self.init_graph()
+    
+    @classmethod
+    async def create(cls, llm: BaseChatModel, tools: CustomTool,user_id: str, session_id: str, main_node_system_prompt='', use_evaluator = True,  max_iters: int = 3, enable_debug=False):
+        main_node_system_prompt = await gen_prompt()
+        return cls(llm, tools, user_id, session_id, main_node_system_prompt, use_evaluator, max_iters, enable_debug)
         
     # 模拟流式输出
     def fake_stream(
@@ -229,8 +235,7 @@ class InfoDoubleCheckPipeline:
                     agent_out = chunk['data']['output']
                     # 如果开启debug，则输出chunk,否则不输出
                     if(self.enable_debug is True):
-                        writer(chunk)
-                    
+                        writer(chunk)    
             return {"agent_output": agent_out}
         else:
             return {"agent_output": "达到最大循环次数，未获取到答案"}
