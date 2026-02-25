@@ -6,6 +6,7 @@
 - 🎯 **意图识别与参数补全**: 自动分析用户意图，动态请求缺失参数
 - 🔄 **反应式工作流**: 基于LangGraph的状态机，支持评估迭代优化
 - 🛠️ **动态工具系统**: 配置驱动的工具生成，支持RAG知识库检索
+- 🔌 **MCP多服务器集成**: 支持连接多个MCP服务器，动态加载外部工具
 - 💾 **记忆持久化**: SQLite/JSON双重存储，多用户对话管理
 - 🌐 **实时交互**: WebSocket流式API，支持工具调用状态可视化
 
@@ -24,6 +25,7 @@
 ### 工具系统
 - **RAG检索**: 集成Dify知识库，支持语义搜索和精读
 - **动态工具**: 基于JSON配置动态生成工具，支持热更新
+- **MCP集成**: 支持连接多个MCP服务器，动态加载外部工具
 - **工具链**: 支持多工具链式调用，处理复杂查询
 
 ### 记忆管理
@@ -76,11 +78,17 @@
 - **JSON文件**: 开发测试环境，简单易用
 
 ### 依赖库
-- `langchain-core`, `langchain-classic`: LangChain核心库
-- `langchain-openai`, `langchain-ollama`: 模型集成
-- `fastapi`, `uvicorn`: Web服务器
-- `requests`: HTTP客户端
-- `sqlite3`: 数据库操作
+- `langchain==1.0.5`: 代理框架核心
+- `langchain-core==1.0.4`: LangChain核心库
+- `langchain-classic==1.0.0`: LangChain经典组件
+- `langchain-openai==1.0.2`: OpenAI模型集成
+- `langchain-ollama==1.0.0`: Ollama模型集成
+- `langgraph==1.0.3`: 工作流引擎
+- `fastapi==0.122.0`: Web服务器
+- `uvicorn==0.38.0`: ASGI服务器
+- `requests==2.31.0`: HTTP客户端
+- `pydantic==2.12.4`: 数据验证
+- `PyYAML==6.0.1`: YAML配置解析
 
 ## ⚡ 快速开始
 
@@ -108,7 +116,7 @@ python app.py
 ### 本地启动
 ```bash
 # 安装依赖（在虚拟环境中）
-pip install langchain langchain-openai fastapi uvicorn requests pydantic
+pip install -r requirements.txt
 
 # 启动FastAPI服务器
 python app.py
@@ -265,6 +273,30 @@ model_confs = [
 }
 ```
 
+### MCP服务器配置
+MCP服务器在 `mcp_client/mcp_server_config.yaml` 中配置：
+
+```yaml
+mcp_servers:
+  local:
+    transport: streamable_http
+    url: http://192.168.0.112:2222/mcp
+
+  math_server:
+    transport: stdio
+    command: python
+    args:
+      - ./servers/math_server.py
+
+  finance_server:
+    transport: sse
+    url: http://localhost:8002/mcp
+    headers:
+      Authorization: "Bearer YOUR_TOKEN"
+```
+
+支持的传输类型：`streamable_http`、`stdio`、`sse`
+
 ## 🔨 工具扩展指南
 
 ### 添加自定义工具
@@ -305,6 +337,23 @@ class APIDynamicTool(DynamicToolGenerator):
         response = requests.post(api_url, json=parameters)
         return response.json()
 ```
+
+### 集成MCP工具
+系统支持通过MCP协议连接外部服务器，加载其提供的工具：
+
+```python
+from mcp_client.mcp_loader import get_mcp_tools
+
+# 异步加载MCP工具
+async def load_mcp_tools():
+    tools = await get_mcp_tools("mcp_client/mcp_server_config.yaml")
+    return tools
+
+# 将MCP工具与其他工具合并
+# all_tools = rag_tools + dynamic_tools + mcp_tools
+```
+
+配置MCP服务器时，需在 `mcp_server_config.yaml` 中定义服务器地址、传输协议和认证信息。
 
 ## 🧪 测试与部署
 
@@ -378,6 +427,9 @@ agentic-app/
 ├── utils/                  # 工具函数模块
 │   ├── utils.py            # 通用工具函数，如配置读取
 │   └── static.py           # 静态配置，如文件路径
+├── mcp_client/             # MCP客户端模块，支持多MCP服务器集成
+│   ├── mcp_loader.py       # MCP配置加载器，提供异步工具加载功能
+│   └── mcp_server_config.yaml # MCP服务器配置文件
 ├── app.py                  # 主应用入口，FastAPI服务器
 ├── global_config.json      # 全局配置文件，包含各种参数
 ├── memory_store.json       # 内存存储的JSON文件（仅用于测试）
@@ -425,3 +477,7 @@ agentic-app/
 
 ### 8. `app.py` 模块
 - **FastAPI 服务器**：主入口，监听 WebSocket `/agentic_rag_query/{user_id}/{session_id}` 路径。当收到用户消息时，它会初始化 `InfoDoubleCheckPipeline` 实例，并通过 `astream_run` 方法进行流式调用，将结果（包括工具调用状态、最终答案等）实时返回给前端。这实现了真正的对话式交互体验。
+
+### 9. `mcp_client/` 模块
+- **`mcp_loader.py`**：MCP配置加载器。`load_mcp_config()` 函数从 YAML 文件读取 MCP 服务器配置，`get_mcp_tools()` 异步函数加载配置并通过 `MultiServerMCPClient` 获取 LangChain 兼容的工具列表。这实现了与多个 MCP 服务器的动态集成。
+- **`mcp_server_config.yaml`**：MCP服务器配置文件。以 YAML 格式定义多个 MCP 服务器的连接信息，当前配置包含 `local` 服务器（使用 streamable_http 传输连接到指定 URL），支持扩展添加更多服务器。
