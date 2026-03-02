@@ -221,10 +221,10 @@ class InfoDoubleCheckPipeline:
                     elif(self.enable_debug is False):
                         tool_name = chunk.get("name")
                         tool_display_name = self.tool_mapping[tool_name]
-                        tool_action = "正在" if event.find('start') != -1 else "已"
+                        tool_action = "处理中..." if event.find('start') != -1 else "处理完成"
                         output = {
                             "type": "tool",
-                            "content": f"{tool_action}{tool_display_name}"
+                            "content": f"{tool_display_name} - {tool_action}"
                         }
                         writer(output)
                 elif(
