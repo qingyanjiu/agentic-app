@@ -89,6 +89,7 @@
 - `requests==2.31.0`: HTTP客户端
 - `pydantic==2.12.4`: 数据验证
 - `PyYAML==6.0.1`: YAML配置解析
+- `langchain_mcp_adapters==0.2.1`: mcp客户端适配器
 
 ## ⚡ 快速开始
 

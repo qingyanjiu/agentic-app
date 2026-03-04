@@ -69,3 +69,4 @@ websockets==15.0.1
 xxhash==3.6.0
 yarl==1.9.4
 zstandard==0.25.0
+langchain_mcp_adapters==0.2.1
