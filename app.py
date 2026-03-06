@@ -8,6 +8,7 @@ from langchain_core.messages import HumanMessage, SystemMessage, BaseMessage, AI
 from models.llm import CustomLLMFactory
 # from graph.graph_pipeline import LangGraphPipeline
 from graph.reactive_pipeline import InfoDoubleCheckPipeline
+from graph.doc_gen_pipeline import DocGenPipelie
 from tools.load_tools import load_tools
 import logging
 import uuid
@@ -43,7 +44,7 @@ def _safe_serialize(obj):
         return obj
 
 '''
-发起聊天对话
+对话智能体
 user_id - 用户id，必填
 session_id - 会话id，可以为空，为空就新建session
 '''
@@ -80,6 +81,75 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
 
             # 假设 agent 是通过 create_agent 创建的，并且支持 astream
             async for chunk in rag_pipeline.astream_run(query, thread_id):
+                text = _safe_serialize(chunk)
+                ##################################
+                # 如果直接用agentWrapper，就用这个逻辑
+                ##################################
+                # 如果是最后结束的消息，直接拿message
+                # if(text['event'] == 'on_chain_end'
+                #     and 'output' in text['data'] 
+                #     and text['name'] == 'executor_agent'):
+                #     # 取最后 messagetext['name'] == 'executor_agent'):
+                #     output_json = {
+                #         "event": "final_answer", 
+                #         "data": text['data']['output']['messages'][-1]['content']
+                #     }
+                # await websocket.send_text(json.dumps(text, ensure_ascii=False))
+            
+                ##################################
+                # 如果是用langgraph，就用这个逻辑
+                ##################################
+                # 把 AIMessageChunk 信息过滤掉
+                if(text['event'] != 'token'):
+                    await websocket.send_text(json.dumps(text, ensure_ascii=False))
+                
+            await websocket.send_text(json.dumps({"status": "done"}))
+            
+            logging.info(f"answer done -- {user_id}-{session_id}")
+
+        except Exception as e:
+            await websocket.send_text(json.dumps({"error": str(e)}))
+
+
+
+'''
+统计文档生成智能体
+user_id - 用户id，必填
+session_id - 会话id，可以为空，为空就新建session
+'''
+@app.websocket("/doc_gen/{user_id}/{session_id}")
+async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str] = None):
+    await websocket.accept()
+    
+    # 新对话，生成新的sessionid
+    if (not session_id):
+        session_id = uuid.uuid4()
+        
+    thread_id = f'{user_id}-{session_id}'
+    
+    tools = await load_tools()
+    
+    '''
+    @@@@@ 创建langgraph pipeline
+    '''
+    doc_gen_pipeline = await DocGenPipelie.create(
+        llm=llm,
+        tools=tools,
+        user_id=user_id,
+        session_id=session_id,
+        use_evaluator=False
+    )
+
+    while True:
+        try:
+            data = await websocket.receive_text()
+            query = json.loads(data).get("query")
+            if not query:
+                await websocket.send_text(json.dumps({"error": "empty query"}))
+                continue
+
+            # 假设 agent 是通过 create_agent 创建的，并且支持 astream
+            async for chunk in doc_gen_pipeline.astream_run(query, thread_id):
                 text = _safe_serialize(chunk)
                 ##################################
                 # 如果直接用agentWrapper，就用这个逻辑
