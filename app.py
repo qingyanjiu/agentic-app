@@ -8,7 +8,7 @@ from langchain_core.messages import HumanMessage, SystemMessage, BaseMessage, AI
 from models.llm import CustomLLMFactory
 # from graph.graph_pipeline import LangGraphPipeline
 from graph.reactive_pipeline import InfoDoubleCheckPipeline
-from graph.doc_gen_pipeline import DocGenPipelie
+from graph.gen_doc_pipeline import GenDocPipeline
 from tools.load_tools import load_tools
 import logging
 import uuid
@@ -132,7 +132,7 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
     '''
     @@@@@ 创建langgraph pipeline
     '''
-    doc_gen_pipeline = await DocGenPipelie.create(
+    doc_gen_pipeline = await GenDocPipeline.create(
         llm=llm,
         tools=tools,
         user_id=user_id,

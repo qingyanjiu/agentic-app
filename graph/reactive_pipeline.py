@@ -424,7 +424,7 @@ MainAgent 回答: {agent_out}
         '''
         @@@@@@@ 绘制图
         '''
-        self.gen_flow_graph(self.graph)
+        # self.gen_flow_graph(self.graph)
 
     '''
     流式调用langgraph，流式返回最终节点数据

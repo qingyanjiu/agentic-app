@@ -11,7 +11,7 @@ from langchain_core.runnables.config import RunnableConfig
 from langchain_core.prompts import ChatPromptTemplate
 from agent.executor import AgentExecutorWrapper
 from langchain_core.language_models import BaseChatModel
-from agent.doc_gen.data_query_prompt import data_query_prompt
+from agent.doc_gen.normal_prompt import normal_prompt
 import logging
 
 from dynamic_tools.dynamic_tool_generator import DynamicToolGenerator
@@ -36,7 +36,7 @@ class MyState(TypedDict, total=False):
     eval_decision: str
     final_answer: Dict[str, Any]
 
-class DocGenPipelie:
+class GenDocPipeline:
     '''
     llm: 大模型
     tools: agent要用的工具
@@ -74,7 +74,7 @@ class DocGenPipelie:
     
     @classmethod
     async def create(cls, llm: BaseChatModel, tools: CustomTool,user_id: str, session_id: str, main_node_system_prompt='', use_evaluator = True,  max_iters: int = 3, enable_debug=False):
-        main_node_system_prompt = await data_query_prompt()
+        main_node_system_prompt = await normal_prompt()
         return cls(llm, tools, user_id, session_id, main_node_system_prompt, use_evaluator, max_iters, enable_debug)
         
     # 模拟流式输出
@@ -191,6 +191,7 @@ MainAgent 回答: {agent_out}
 - 输出的答案必须基于用户问题，不能重复。
 - 如果充分性评价是基本充分，请根据你的判断大概说明一下不完全充分的可能原因。
 - 如果充分性评价是完全充分，就不要添加任何关于充分性评价的内容。
+- 请返回markdown格式
 """
         final_answer = ""
         # LLM 调用
@@ -298,7 +299,7 @@ MainAgent 回答: {agent_out}
         '''
         @@@@@@@ 绘制图
         '''
-        self.gen_flow_graph(self.graph)
+        # self.gen_flow_graph(self.graph)
 
     '''
     流式调用langgraph，流式返回最终节点数据
