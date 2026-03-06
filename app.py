@@ -48,7 +48,7 @@ def _safe_serialize(obj):
 user_id - 用户id，必填
 session_id - 会话id，可以为空，为空就新建session
 '''
-@app.websocket("/agentic_rag_query/{user_id}/{session_id}")
+@app.websocket("/chat/{user_id}/{session_id}")
 async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str] = None):
     await websocket.accept()
     
@@ -117,7 +117,7 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
 user_id - 用户id，必填
 session_id - 会话id，可以为空，为空就新建session
 '''
-@app.websocket("/doc_gen/{user_id}/{session_id}")
+@app.websocket("/gen_doc/{user_id}/{session_id}")
 async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str] = None):
     await websocket.accept()
     
