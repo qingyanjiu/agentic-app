@@ -90,6 +90,7 @@
 - `pydantic==2.12.4`: 数据验证
 - `PyYAML==6.0.1`: YAML配置解析
 - `langchain_mcp_adapters==0.2.1`: mcp客户端适配器
+- `python-docx==1.2.0`: word库
 
 ## ⚡ 快速开始
 
@@ -104,7 +105,7 @@ export DIFY_API_KEY="您的Dify API密钥"
 ### Docker开发环境（推荐）
 ```bash
 # 使用预配置的开发容器
-docker run -d -v $(pwd):/root/agentic-app --name langchain-agent-dev qingyanjiu/langchain:1.0.3 tail -f /dev/null
+docker run -d -p 8001:8001 -v $(pwd):/root/agentic-app --name langchain-agent-dev qingyanjiu/langchain:1.0.3 tail -f /dev/null
 
 # 进入容器
 docker exec -it langchain-agent-dev /bin/bash
@@ -130,8 +131,8 @@ uvicorn app:app --host 0.0.0.0 --port 8000 --reload
 
 ### 验证服务
 使用浏览器或工具测试WebSocket连接：
-- WebSocket端点: `ws://localhost:8000/agentic_rag_query/{user_id}/{session_id}`
-- HTTP API: `http://localhost:8000/docs` (OpenAPI文档)
+- Agent对话WebSocket端点: `ws://localhost:8000/chat/{user_id}/{session_id}`
+- 文档生成WebSocket端点: `ws://localhost:8000/genDoc/{user_id}/{session_id}`
 
 ## 📖 API使用指南
 
@@ -140,7 +141,7 @@ uvicorn app:app --host 0.0.0.0 --port 8000 --reload
 
 ```javascript
 // JavaScript客户端示例
-const ws = new WebSocket('ws://localhost:8000/agentic_rag_query/user_1/session_1');
+const ws = new WebSocket('ws://localhost:8000/chat/user_1/session_1');
 
 ws.onopen = () => {
   console.log('连接已建立');
@@ -176,7 +177,7 @@ import threading
 
 def test_agent():
     ws = websocket.WebSocket()
-    ws.connect("ws://localhost:8000/agentic_rag_query/test/test")
+    ws.connect("ws://localhost:8000/chat/user_id/session_id")
     
     # 发送查询
     ws.send(json.dumps({"query": "今天天气怎么样"}))

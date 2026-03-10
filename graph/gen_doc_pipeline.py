@@ -11,7 +11,13 @@ from langchain_core.runnables.config import RunnableConfig
 from langchain_core.prompts import ChatPromptTemplate
 from agent.executor import AgentExecutorWrapper
 from langchain_core.language_models import BaseChatModel
-from agent.doc_gen.normal_prompt import normal_prompt
+from agent.doc_gen_prompt.normal_prompt import normal_prompt
+from agent.doc_gen_prompt.gen_security_para_prompt import get_prompt as gen_security_para_prompt
+from agent.doc_gen_prompt.gen_energy_para_prompt import get_prompt as gen_energy_para_prompt
+from agent.doc_gen_prompt.gen_operation_para_promp import get_prompt as gen_operation_para_prompt
+from doc_tools.word_generator import CustomWordGenerator
+from doc_tools.word_exportor import WordExporter
+
 import logging
 
 from dynamic_tools.dynamic_tool_generator import DynamicToolGenerator
@@ -34,6 +40,9 @@ class MyState(TypedDict, total=False):
     evaluator_iter: int
     agent_output: Dict[str, Any]
     eval_decision: str
+    security_paragraph: str
+    energy_paragraph: str
+    operation_paragraph: str
     final_answer: Dict[str, Any]
 
 class GenDocPipeline:
@@ -96,7 +105,7 @@ class GenDocPipeline:
         with open("workflow-doc-gen.png", "wb") as f:
             f.write(graph_png)
    
-    # @@@ 节点：调用工具的Agent,处理主要逻辑
+    # @@@@@ 节点：调用工具的Agent节点,处理主要逻辑，适合需要调用工具的流程环节。s该流程中可能用不上 @@@@@@@@@@
     async def tool_agent_node(self, state: MyState, config: RunnableConfig, runtime: Runtime, writer: StreamWriter) -> MyState:
         logging.info(f"第 {state['evaluator_iter']} 次迭代，处理主要逻辑")
         input_str = state.get("query", "")
@@ -140,6 +149,56 @@ class GenDocPipeline:
             return {"agent_output": agent_out}
         else:
             return {"agent_output": "达到最大循环次数，未获取到答案"}
+    # @@@@@ 节点：调用工具的Agent节点,处理主要逻辑，适合需要调用工具的流程环节。s该流程中可能用不上 @@@@@@@@@@
+
+        
+    # 节点: GenSecurityParagraph, 生成安防段落
+    async def gen_security_paragraph(self, state: MyState, config: RunnableConfig, runtime: Runtime, writer: StreamWriter) -> MyState:
+        logging.info(f"第 {state['evaluator_iter']} 次迭代，生成安防段落")
+        gen_security_para_prompt_str = await gen_security_para_prompt()
+        security_paragraph = ""
+        # LLM 调用
+        async for chunk in self.llm.astream(
+            [{"role": "system", "content": gen_security_para_prompt_str}],
+            config=config
+        ):
+            # 流式写最终 result，给个type是answer方便前端判断最终结果的流式响应
+            writer({"type": "security_paragraph", "content": chunk.content})
+            security_paragraph += chunk.content
+        return {"security_paragraph": security_paragraph}
+        
+        
+    # 节点: GenEnergyParagraph, 生成能耗段落
+    async def gen_energy_paragraph(self, state: MyState, config: RunnableConfig, runtime: Runtime, writer: StreamWriter) -> MyState:
+        logging.info(f"第 {state['evaluator_iter']} 次迭代，生成能耗段落")
+        gen_energy_para_prompt_str = await gen_energy_para_prompt()
+        energy_paragraph = ""
+        # LLM 调用
+        async for chunk in self.llm.astream(
+            [{"role": "system", "content": gen_energy_para_prompt_str}],
+            config=config
+        ):
+            # 流式写最终 result，给个type是answer方便前端判断最终结果的流式响应
+            writer({"type": "energy_paragraph", "content": chunk.content})
+            energy_paragraph += chunk.content
+        return {"energy_paragraph": energy_paragraph}
+
+        
+    # 节点: GenOperationParagraph, 生成运营段落
+    async def gen_operation_paragraph(self, state: MyState, config: RunnableConfig, runtime: Runtime, writer: StreamWriter) -> MyState:
+        logging.info(f"第 {state['evaluator_iter']} 次迭代，生成能耗段落")
+        gen_operation_para_prompt_str = await gen_operation_para_prompt()
+        operation_paragraph = ""
+        # LLM 调用
+        async for chunk in self.llm.astream(
+            [{"role": "system", "content": gen_operation_para_prompt_str}],
+            config=config
+        ):
+            # 流式写最终 result，给个type是answer方便前端判断最终结果的流式响应
+            writer({"type": "operation_paragraph", "content": chunk.content})
+            energy_paragraph += chunk.content
+        return {"operation_paragraph": operation_paragraph}
+
 
     # @@@ 节点：Evaluator，评估检索效果，决定是否迭代
     def evaluator_node(self, state: MyState, config: RunnableConfig, runtime: Runtime) -> MyState:
@@ -170,56 +229,14 @@ MainAgent 回答: {agent_out}
 
     # 节点：Composer，组织最终答案并返回给用户
     async def composer_node(self, state: MyState, config: RunnableConfig, runtime: Runtime, writer: StreamWriter) -> MyState:
-        logging.info(f"第 {state['evaluator_iter']} 次迭代，组织最终答案")
-        # writer 是 LangGraph 提供的流写工具，可以流式输出自定义数据
-        
-        # @@@@@@@@@@@@@ 
-        # 如果使用评估节点，则获取评估节点评估结果，否则默认是完全充分
-        # @@@@@@@@@@@@@
-        decision = state["eval_decision"] if self.use_evaluator else '完全充分'
-        agent_out = state["agent_output"]
-        agent_out = agent_out['messages'][-1].content
-        composer_prompt = f"""
-你是 Answer Composer，请基于聚合结果生成回答：
-用户问题：{state['query']}
-检索结果：
-{agent_out}
-充分性评价：{decision}
-输出自然语言答案。
-注意：
-- 输出的答案必须基于检索结果，不能重复。
-- 输出的答案必须基于用户问题，不能重复。
-- 如果充分性评价是基本充分，请根据你的判断大概说明一下不完全充分的可能原因。
-- 如果充分性评价是完全充分，就不要添加任何关于充分性评价的内容。
-- 请返回markdown格式
-"""
-        final_answer = ""
-        # LLM 调用
-        # 标签，</think>出现后再输出文本
-        is_think_enabled = False
-        is_think_end = False
-        output_lines_after_think = 0
-        async for chunk in self.llm.astream(
-            [{"role": "system", "content": composer_prompt}],
-            config=config
-        ):
-            if(chunk.content.find('<think>') != -1):
-                is_think_enabled = True
-                continue
-            if(is_think_enabled and chunk.content.find('</think>') != -1):
-                is_think_end = True
-                continue
-            # 如果开启了think，则等think结束后输出文本，如果没开启think，直接输出文本
-            if(is_think_end or not is_think_enabled):
-                # 忽略可能出现在第一行的空行
-                if (output_lines_after_think == 0 and chunk.content.strip() == ''):
-                    continue
-                else:
-                    output_lines_after_think += 1
-                    # 流式写最终 result，给个type是answer方便前端判断最终结果的流式响应
-                    writer({"type": "answer", "content": chunk.content})
-                final_answer += chunk.content
-        return {"final_answer": final_answer}
+        logging.info(f"第 {state['evaluator_iter']} 次迭代，拼接最终答案")
+        # 拼成文档
+        generator = CustomWordGenerator()
+        word_content = generator.create_document()
+        file_path = WordExporter.export_report(word_content)
+        # 正片文章内容全部打印，方便保存
+        writer({"type": "file_path", "content": file_path})
+        return {"file_path": file_path}
 
     # 路径分支逻辑
     # 如果充分 Evaluator → Composer 
@@ -243,7 +260,16 @@ MainAgent 回答: {agent_out}
         '''
         @@@@@@@ 定义节点
         '''
-        self.flow_graph.add_node("MainAgent", self.tool_agent_node)
+        
+        # 生成安防段落
+        self.flow_graph.add_node("SecurityParagraphGenerator", self.gen_security_paragraph)
+        # 生成能耗段落
+        self.flow_graph.add_node("EnergyParagraphGenerator", self.gen_energy_paragraph)
+        # 生成运营段落
+        self.flow_graph.add_node("OperationParagraphGenerator", self.gen_operation_paragraph)
+        
+        # agent node 暂时用不上
+        # self.flow_graph.add_node("MainAgent", self.tool_agent_node)
         
         # @@@@@@@@@@@@@ 
         # 如果使用评估节点，增加评估节点
@@ -257,20 +283,26 @@ MainAgent 回答: {agent_out}
         @@@@@@ 定义边
         '''
         # 添加边：控制流程
-        # START → MainAgent
-        self.flow_graph.add_edge(START, "MainAgent")
+        # START → SecurityParagraphGenerator
+        self.flow_graph.add_edge(START, "SecurityParagraphGenerator")
+        
+        # SecurityParagraphGenerator  → EnergyParagraphGenerator
+        self.flow_graph.add_edge("SecurityParagraphGenerator", "EnergyParagraphGenerator")
+        
+        # EnergyParagraphGenerator  → OperationParagraphGenerator
+        self.flow_graph.add_edge("EnergyParagraphGenerator", "OperationParagraphGenerator")
         
         # @@@@@@@@@@@@@ 
         # 如果使用评估节点,agent节点到评估节点连线
         # @@@@@@@@@@@@@
         if (self.use_evaluator):
             # MainAgent → Evaluator
-            self.flow_graph.add_edge("MainAgent", "Evaluator")
+            self.flow_graph.add_edge("OperationParagraphGenerator", "Evaluator")
         # @@@@@@@@@@@@@ 
         # 如果不使用评估节点,agent节点到总结节点连线
         # @@@@@@@@@@@@@
         else:
-            self.flow_graph.add_edge("MainAgent", "Composer")
+            self.flow_graph.add_edge("OperationParagraphGenerator", "Composer")
         
         # @@@@@@@@@@@@@ 
         # 如果使用评估节点, 添加评估节点条件边
@@ -281,7 +313,7 @@ MainAgent 回答: {agent_out}
                 "Evaluator",
                 self.should_redo_rag_after_evaluation,
                 {
-                    "redo_rag": "MainAgent",
+                    "redo_rag": "SecurityParagraphGenerator",
                     "do_compose": "Composer"
                 }
             )

@@ -1,6 +1,6 @@
 import json
 
-def data_to_text_prompt(data):
+def get_prompt(data):
     prompt = f"""
 请根据以下{data['type']}数据，生成标准格式的{data['type']}分析报告：
 
