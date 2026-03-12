@@ -127,7 +127,7 @@ class InfoDoubleCheckPipeline:
     # 流程图可视化工具:绘制langgraph图,将 LangGraph 的状态图（StateGraph）生成为 PNG 格式的流程图图片并保存到本地文件。
     def gen_flow_graph(self, graph):
         graph_png = graph.get_graph().draw_mermaid_png()
-        with open("workflow.png", "wb") as f:
+        with open("chat-agent-workflow.png", "wb") as f:
             f.write(graph_png)
     # @@@ 节点：用户意图识别，要求用户补全所需参数
     def intent_get_node(self, state: MyState, config: RunnableConfig, runtime: Runtime, writer: StreamWriter) -> MyState:
@@ -239,10 +239,10 @@ class InfoDoubleCheckPipeline:
                         # 生产模式：输出友好的工具调用提示
                         tool_name = chunk.get("name")
                         tool_display_name = self.tool_mapping[tool_name]
-                        tool_action = "正在" if event.find('start') != -1 else "已"
+                        tool_action = "处理中..." if event.find('start') != -1 else "处理完成"
                         output = {
                             "type": "tool",
-                            "content": f"{tool_action}{tool_display_name}"
+                            "content": f"{tool_display_name} - {tool_action}"
                         }
                         writer(output)
 
