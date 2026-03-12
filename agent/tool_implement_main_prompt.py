@@ -2,7 +2,7 @@ from tools.load_tools import load_tools
 
 
 async def gen_prompt():
-    TOOLS = await load_tools()
+    TOOLS = await load_tools()#异步加载所有可用工具
     TOOL_NAMES = [t.name for t in TOOLS]
     system_prompt = f"""你是一个智能助手，能参考对话历史，同时使用工具回答用户问题, 你可以选择使用以下几个工具:{','.join(TOOL_NAMES)}。
         * 请务必使用工具后再回答。

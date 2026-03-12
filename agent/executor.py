@@ -6,8 +6,12 @@ from utils.utils import get_config
 from langchain_classic.memory import ConversationBufferMemory, ConversationBufferWindowMemory
 
 # 写文件肯定会有并发问题，要改成redis或者数据库持久化历史
-memory_store = MemoryStore()
-config = get_config()
+memory_store = MemoryStore()# 创建全局唯一的记忆存储实例
+config = get_config()# 从配置文件加载配置
+# 在持久化存储中保留最近10轮对话历史
+# 例如配置文件中：
+# memory_persistor:持久化器（persist + or）
+#   memory_buffer_window: 10  # 保留最近10轮对话
 memory_buffer_window = config['memory_persistor']['memory_buffer_window']
 
 # persist_memory 是否持久化保存和恢复记忆
@@ -29,6 +33,7 @@ class AgentExecutorWrapper:
                 memory_key="chat_history", 
                 return_messages=True
             )
+        #递归限制，防止无限循环
         self.agent_recursion_limit = agent_recursion_limit
         self.agent_name = agent_name
 
@@ -36,15 +41,23 @@ class AgentExecutorWrapper:
         # self.executor = create_agent(model=llm, tools=tools, system_prompt=system_prompt, debug=False, name=self.agent_name)
         
         # option 2 支持history的AgentExecutor
+        #构建 Prompt 模板
         chat_prompt = ChatPromptTemplate.from_messages([
+             # 1. 系统提示词（角色设定）
             SystemMessagePromptTemplate.from_template(template=system_prompt),
+            # 2. 对话历史占位符（可选
             MessagesPlaceholder(variable_name="chat_history", optional=True),
+             # 3. 用户当前输入
             HumanMessagePromptTemplate.from_template(template="{input}"),
+             # 4. Agent的思考记录（ReAct模式的中间步骤）
             MessagesPlaceholder(variable_name="agent_scratchpad"),
         ])
+        # 创建 OpenAI 工具型 Agent,这种 Agent 专门针对 OpenAI 的函数调用功能优化
         self.agent = create_openai_tools_agent(llm=llm, tools=tools, prompt=chat_prompt)
+        # 创建执行器
         self.executor = AgentExecutor(agent=self.agent, tools=tools, memory=self.memory, verbose=False, name=self.agent_name)
-
+    
+    #同步执行Agent任务的方法，接收用户查询，调用执行器处理，并返回结果。用run能统一接口
     def run(self, query: str):
         # 同步调用
         output = self.executor.invoke(

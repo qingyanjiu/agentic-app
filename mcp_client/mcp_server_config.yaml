@@ -1,7 +1,7 @@
 mcp_servers:
   local:
     transport: streamable_http
-    url: http://192.168.0.112:2222/mcp
+    url: http://192.168.100.58:2222/mcp
 
   # math_server:
   #   transport: stdio

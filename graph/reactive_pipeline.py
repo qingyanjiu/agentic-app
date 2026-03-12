@@ -57,26 +57,36 @@ class InfoDoubleCheckPipeline:
     use_evaluator: 是否启用评估节点
     enable_debug: 是否开启调试模式，开启调试的话，LLM流式输出会输出额外节点信息
     '''
+    '''
+    这个函数的功能是：
+    用户输入："帮我查一下天气"
+    1. 意图识别Agent：判断需要天气工具，但缺少city参数
+    2. 状态转移：进入参数补充状态
+    3. 参数补充Agent："请问您想查询哪个城市的天气？"
+    4. 用户："北京的"
+    5. 主Agent执行：调用get_weather("北京")
+    6. 返回结果："北京今天晴，15-25℃"'''
     def __init__(self, llm: BaseChatModel, tools: CustomTool, user_id: str, session_id: str, main_node_system_prompt = '', use_evaluator = True,  max_iters: int = 3, enable_debug=False):
         self.llm = llm
         self.tools = tools
         # 工具名称和displayName的关联关系，方便前端展示工具调用情况
         self.tool_mapping = DynamicToolGenerator.get_tool_name_mapping(tools)
+        #生成工具的JSON Schema描述，包含：工具名称、功能描述\参数列表（参数名、类型、是否必填、描述）返回值的格式说明
         self.tool_json_desc = DynamicToolGenerator.get_tool_json_desc(tools)
         self.user_id = user_id
         self.session_id = session_id
-        self.use_evaluator = use_evaluator
-        self.max_iters = max_iters
-        self.enable_debug = enable_debug
+        self.use_evaluator = use_evaluator#是否启用结果评估器，用于判断主任务执行结果是否满足需求
+        self.max_iters = max_iters#最大迭代次数，防止无限循环（如工具调用失败时的重试）
+        self.enable_debug = enable_debug#调试模式开关，控制日志详细程度
         
-        # 通过用户输入分析意图和需要调用的工具并生成调用思路agent
+        # 判断用户输入问题调用工具的关键词是否完整，
         self.get_intent_and_select_tools_prompt = PromptTemplate(
             template=get_intent_and_select_tools_prompt,
             input_variables=["input","params_got","tool_json_desc","intent_desc"]
         )
         self.get_intent_and_select_tools_agent = LLMChain(llm=llm, prompt=self.get_intent_and_select_tools_prompt)
         
-        # 要求用户补充参数的agent
+        # 当工具参数不完整时，引导用户补充缺失信息
         self.ask_for_param_prompt = PromptTemplate(
             template=ask_for_param_prompt,
             input_variables=["input","params_got"]
@@ -98,23 +108,23 @@ class InfoDoubleCheckPipeline:
     
     @classmethod
     async def create(cls, llm: BaseChatModel, tools: CustomTool,user_id: str, session_id: str, main_node_system_prompt='', use_evaluator = True,  max_iters: int = 3, enable_debug=False):
-        main_node_system_prompt = await gen_prompt()
+        main_node_system_prompt = await gen_prompt()# 异步生成提示词
         return cls(llm, tools, user_id, session_id, main_node_system_prompt, use_evaluator, max_iters, enable_debug)
         
-    # 模拟流式输出
+    # 模拟流式输出,将完整的文本分块、延时发送，模拟大模型生成内容时的流式输出效果。
     def fake_stream(
         self,
-        text: str,
-        writer: StreamWriter,
-        step=2,
-        delay: float = 0.05,
+        text: str,# 要模拟输出的完整文本
+        writer: StreamWriter,# 写入器（回调函数），用于发送每个数据块
+        step=2,# 每次发送的字符数（块大小）
+        delay: float = 0.05,# 块之间的延迟时间（秒）
     ):
-        for i in range(0, len(text), step):
-            output = {"type": "answer", "content": text[i: i+step]}
-            writer(output)
-            time.sleep(delay)
+        for i in range(0, len(text), step): # 按步长遍历文本
+            output = {"type": "answer", "content": text[i: i+step]} # 构造数据块
+            writer(output) # 发送当前块
+            time.sleep(delay) # 等待，模拟生成时间
             
-    # 绘制langgraph图
+    # 流程图可视化工具:绘制langgraph图,将 LangGraph 的状态图（StateGraph）生成为 PNG 格式的流程图图片并保存到本地文件。
     def gen_flow_graph(self, graph):
         graph_png = graph.get_graph().draw_mermaid_png()
         with open("workflow.png", "wb") as f:
@@ -126,13 +136,15 @@ class InfoDoubleCheckPipeline:
         params_got = state.get("params_got", [])
         intent_desc = state.get("intent_desc", "")
         inputs = {
-            "input": query, 
-            "tool_json_desc": self.tool_json_desc,
-            "params_got": params_got,
-            "intent_desc": intent_desc
+            "input": query,                    # 用户问题
+            "tool_json_desc": self.tool_json_desc,  # 可用工具描述
+            "params_got": params_got,           # 已获取的参数
+            "intent_desc": intent_desc          # 历史意图描述
         }
+        ## 调用判断用户输入问题调用工具的关键词是否完整的agent，
         result = self.get_intent_and_select_tools_agent.invoke(inputs)
-        result = json.loads(result.get('text', {}))
+        result = json.loads(result.get('text', '{}'))#result.get('text', {}) - 获取文本内容,json.loads(...) - JSON解析
+        # 3. 解析结果
         intent_get_result = result.get('intent_get_result', {})
         if intent_get_result == '无法回答':
             output = {
@@ -162,7 +174,7 @@ class InfoDoubleCheckPipeline:
         else:
             logging.error(f"意图识别节点出错：返回数据为空:{result}")
         
-    # @@@ 节点：要求用户提供缺少的信息
+    # @@@ 参数询问节点：当参数不足时，向用户询问缺失信息
     def ask_for_param_node(self, state: MyState, config: RunnableConfig, runtime: Runtime, writer: StreamWriter) -> MyState:
         query = state.get("query", "")
         missing_params = state.get("missing_params", [])
@@ -179,24 +191,28 @@ class InfoDoubleCheckPipeline:
             return {
                 "intent_get_result": ""
             }
-        
+        # 2. 生成询问问题
         inputs = {
             "input": query, 
             "intent_desc": intent_desc,
             "missing_params": missing_params
         }
+        # 调用当工具参数不完整时，引导用户补充缺失信息的agent
         content = self.ask_for_param_agent.invoke(inputs)
         content = content.get('text')
+        
+        # 3. 模拟流式输出（让用户感觉像真人打字）
         self.fake_stream(content, writer)
         
-    # @@@ 节点：调用工具的Agent,处理主要逻辑
+    # @@@ 核心执行节点，调用工具完成任务：调用工具的Agent,处理主要逻辑
     async def tool_agent_node(self, state: MyState, config: RunnableConfig, runtime: Runtime, writer: StreamWriter) -> MyState:
         logging.info(f"第 {state['evaluator_iter']} 次迭代，处理主要逻辑")
-        query = state.get("query", "")
+        query = state.get("query", "") # 用户原始问题
         # 分析的解决问题的逻辑
-        intent_desc = state.get("intent_desc", "")
-        # 获取的参数
+        intent_desc = state.get("intent_desc", "") # 意图描述
+         # 已获取的参数
         params_got = state.get("params_got", [])
+        # 构建输入：将参数和意图组合成JSON字符串
         input = f'{{"params_got": {params_got}, "intent_desc": {intent_desc}}}'
         input_str = json.dumps(input)
 
@@ -209,6 +225,7 @@ class InfoDoubleCheckPipeline:
             # return {"agent_output": agent_out}
 
             agent_out = ''
+             # 2. 流式执行Agent
             async for chunk in self.main_agent.stream_run(input_str):
                 event = chunk['event']
                 
@@ -219,6 +236,7 @@ class InfoDoubleCheckPipeline:
                         writer(chunk)
                     # 如果不是debug模式，就只打印工具调用信息
                     elif(self.enable_debug is False):
+                        # 生产模式：输出友好的工具调用提示
                         tool_name = chunk.get("name")
                         tool_display_name = self.tool_mapping[tool_name]
                         tool_action = "正在" if event.find('start') != -1 else "已"
@@ -227,12 +245,14 @@ class InfoDoubleCheckPipeline:
                             "content": f"{tool_action}{tool_display_name}"
                         }
                         writer(output)
+
+                # 4. 捕获最终输出
                 elif(
                     # 思考链结束事件，且整个agent结束，认为是该节点完成的标志，输出chunk并获取最终的output，写入state
                     event == 'on_chain_end'
                     and chunk['name'] == self.main_agent.agent_name
                 ):
-                    agent_out = chunk['data']['output']
+                    agent_out = chunk['data']['output']# 获取最终输出
                     # 如果开启debug，则输出chunk,否则不输出
                     if(self.enable_debug is True):
                         writer(chunk)    
@@ -293,20 +313,23 @@ MainAgent 回答: {agent_out}
 """
         final_answer = ""
         # LLM 调用
-        # 标签，</think>出现后再输出文本
-        is_think_enabled = False
-        is_think_end = False
-        output_lines_after_think = 0
-        async for chunk in self.llm.astream(
+        # 处理 <think> 标签（让模型可以内部思考后再输出）
+        is_think_enabled = False # 是否进入了思考模式
+        is_think_end = False# 思考是否结束
+        output_lines_after_think = 0# 思考后输出的行数计数
+        async for chunk in self.llm.astream( # 流式接收LLM的输出
             [{"role": "system", "content": composer_prompt}],
             config=config
         ):
+        # 1. 检测思考开始标签
             if(chunk.content.find('<think>') != -1):
                 is_think_enabled = True
                 continue
+            # 2. 检测思考结束标签 
             if(is_think_enabled and chunk.content.find('</think>') != -1):
                 is_think_end = True
                 continue
+            # 3. 思考结束后才开始输出
             # 如果开启了think，则等think结束后输出文本，如果没开启think，直接输出文本
             if(is_think_end or not is_think_enabled):
                 # 忽略可能出现在第一行的空行
@@ -323,11 +346,14 @@ MainAgent 回答: {agent_out}
     def should_ask_for_param(self, state: MyState) -> str:
         missing_params = state.get('missing_params', [])
         intent_get_result = state.get('intent_get_result', '')
+        # 情况1：有缺失参数 → 去询问用户
         if missing_params is not None and len(missing_params) > 0:
             return "ask_for_param"
         else:
+            # 情况2：无法回答 → 也去询问（实际上是告知无法回答）
             if intent_get_result == '无法回答':
                 return "ask_for_param"
+            # 情况3：参数齐全 → 直接执行主逻辑
             else:
                 return "to_main_agent"
 
@@ -340,9 +366,9 @@ MainAgent 回答: {agent_out}
         """            
         logging.info("路由判断 state:", state)
         if(state["eval_decision"] == "不充分"):
-            return "redo_rag"
+            return "redo_rag"# 回答不充分，需要重试
         elif(state["eval_decision"] in ("完全充分", "基本充分")):
-            return "do_compose"
+            return "do_compose"# 回答充分，可以合成最终答案
 
     '''
     初始化graph
@@ -353,11 +379,11 @@ MainAgent 回答: {agent_out}
         '''
         @@@@@@@ 定义节点
         '''
-        self.flow_graph.add_node("IntentGet", self.intent_get_node)
+        self.flow_graph.add_node("IntentGet", self.intent_get_node)# 意图识别
         
-        self.flow_graph.add_node("AskForParam", self.ask_for_param_node)
+        self.flow_graph.add_node("AskForParam", self.ask_for_param_node)# 参数询问
 
-        self.flow_graph.add_node("MainAgent", self.tool_agent_node)
+        self.flow_graph.add_node("MainAgent", self.tool_agent_node)# 主执行
         
         # @@@@@@@@@@@@@ 
         # 如果使用评估节点，增加评估节点
@@ -379,8 +405,8 @@ MainAgent 回答: {agent_out}
             "IntentGet",
             self.should_ask_for_param,
             {
-                "ask_for_param": "AskForParam",
-                "to_main_agent": "MainAgent"
+                "ask_for_param": "AskForParam",# 需要参数 → 询问节点
+                "to_main_agent": "MainAgent" # 参数齐全 → 主执行节点
             }
         )
         
@@ -389,12 +415,14 @@ MainAgent 回答: {agent_out}
         # 如果使用评估节点,agent节点到评估节点连线
         # @@@@@@@@@@@@@
         if (self.use_evaluator):
+             # 有评估器：主Agent → 评估器
             # MainAgent → Evaluator
             self.flow_graph.add_edge("MainAgent", "Evaluator")
         # @@@@@@@@@@@@@ 
         # 如果不使用评估节点,agent节点到总结节点连线
         # @@@@@@@@@@@@@
         else:
+            # 无评估器：主Agent → 合成器
             self.flow_graph.add_edge("MainAgent", "Composer")
         
         # @@@@@@@@@@@@@ 
@@ -406,8 +434,8 @@ MainAgent 回答: {agent_out}
                 "Evaluator",
                 self.should_redo_rag_after_evaluation,
                 {
-                    "redo_rag": "MainAgent",
-                    "do_compose": "Composer"
+                    "redo_rag": "MainAgent",# 不充分 → 重试
+                    "do_compose": "Composer"# 充分 → 合成答案
                 }
             )
         # Composer → END
@@ -417,7 +445,7 @@ MainAgent 回答: {agent_out}
         @@@@ 编译图
         '''
         # 使用内存checkpointer
-        self.checkpointer = MemorySaver()
+        self.checkpointer = MemorySaver() # 内存检查点，保存状态
         # 用这个 checkpointer 编译 graph
         self.graph = self.flow_graph.compile(checkpointer=self.checkpointer)
 
@@ -433,7 +461,7 @@ MainAgent 回答: {agent_out}
     async def astream_run(self, query: str, thread_id: str):
         # 初始 state
         # evaluator_iter: 评估节点迭代次数，不能超过 max_iters
-        init_state: MyState = {"query": query, "evaluator_iter": 0}
+        init_state: MyState = {"query": query, "evaluator_iter": 0}# 从用户问题开始，迭代次数从0计数
         # 异步执行，流式输出
         async for mode, chunk in self.graph.astream(
             init_state,
@@ -444,7 +472,9 @@ MainAgent 回答: {agent_out}
                 }
             }
         ):
+        # 把不同类型的数据分发给前端的不同处理逻辑
             if mode == "messages":
+                 # 通道1：LLM生成的文字 → 显示在对话气泡中
                 # chunk 是 AIMessageChunk
                 ai_chunk, info = chunk
                 yield {
@@ -452,7 +482,9 @@ MainAgent 回答: {agent_out}
                     "text": ai_chunk.content,
                     "node": info["langgraph_node"]
                 }
+            # 处理状态更新（调试用）
             elif mode == "updates":
+                 # 通道3：调试信息 → 显示在开发者工具中
                 # chunk 是 state 变化,其实是不需要的
                 # 调试模式打印出来
                 if (self.enable_debug is True):
@@ -463,13 +495,16 @@ MainAgent 回答: {agent_out}
                 # 非调试模式，不打印信息
                 elif (self.enable_debug is False):
                     continue
+            # 处理自定义输出
             elif mode == "custom":
+                 # 通道2：系统状态 → 显示在进度条或状态栏
                 # chunk 是 writer() 推出的自定义内容
                 yield {
                     "event": "custom",
                     "data": chunk
                 }
         
-        # 如果持久化对话历史，则持久化
+        # 执行完成后，自动保存对话历史
         if (self.main_agent.persist_memory is True):
             self.main_agent.memory_store.persist_memory(self.user_id, self.session_id)
+            # 下次同一用户对话时可以继续上下文
