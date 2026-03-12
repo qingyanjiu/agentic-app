@@ -43,7 +43,11 @@ class MyState(TypedDict, total=False):
     security_paragraph: str
     energy_paragraph: str
     operation_paragraph: str
-    final_answer: Dict[str, Any]
+    security_json_data: Dict
+    energy_json_data: Dict
+    operation_json_data: Dict
+    # 文档完整内容，每段生成后都拼接
+    full_doc_content: Dict[str, Any]
 
 class GenDocPipeline:
     '''
@@ -107,6 +111,7 @@ class GenDocPipeline:
    
     # @@@@@ 节点：调用工具的Agent节点,处理主要逻辑，适合需要调用工具的流程环节。s该流程中可能用不上 @@@@@@@@@@
     async def tool_agent_node(self, state: MyState, config: RunnableConfig, runtime: Runtime, writer: StreamWriter) -> MyState:
+        return
         logging.info(f"第 {state['evaluator_iter']} 次迭代，处理主要逻辑")
         input_str = state.get("query", "")
 
@@ -152,10 +157,37 @@ class GenDocPipeline:
     # @@@@@ 节点：调用工具的Agent节点,处理主要逻辑，适合需要调用工具的流程环节。s该流程中可能用不上 @@@@@@@@@@
 
         
+    # 节点: GenTitle, 生成安防段落
+    async def gen_title(self, state: MyState, config: RunnableConfig, runtime: Runtime, writer: StreamWriter) -> MyState:
+        logging.info(f"第 {state['evaluator_iter']} 次迭代，生成标题")
+        company = state.get('company', '')
+        start_date = state.get('start_date', '')
+        end_date = state.get('end_date', '')
+        title = f'# {company}公司{start_date} - {end_date}智慧园区运营分析报告'
+        self.fake_stream(text=title)
+        full_doc_content = title
+        return {"full_doc_content": full_doc_content}
+        
+        
+    # 节点: GenSecurityParagraph, 生成安防段落
+    # async def gen_title(self, state: MyState, config: RunnableConfig, runtime: Runtime, writer: StreamWriter) -> MyState:
+    #     logging.info(f"第 {state['evaluator_iter']} 次迭代，生成标题")
+    #     company = state.get('company', '')
+    #     start_date = state.get('start_date', '')
+    #     end_date = state.get('end_date', '')
+    #     title = f'# {company}公司{start_date} - {end_date}智慧园区运营分析报告'
+    #     self.fake_stream(text=title)
+    #     full_doc_content = title
+    #     return {"full_doc_content": full_doc_content}
+        
+        
     # 节点: GenSecurityParagraph, 生成安防段落
     async def gen_security_paragraph(self, state: MyState, config: RunnableConfig, runtime: Runtime, writer: StreamWriter) -> MyState:
         logging.info(f"第 {state['evaluator_iter']} 次迭代，生成安防段落")
-        gen_security_para_prompt_str = await gen_security_para_prompt()
+        # 获取安防json数据
+        security_json_data = state.get('security_json_data')
+        # 拼接提示词
+        gen_security_para_prompt_str = gen_security_para_prompt(security_json_data)
         security_paragraph = ""
         # LLM 调用
         async for chunk in self.llm.astream(
@@ -171,7 +203,9 @@ class GenDocPipeline:
     # 节点: GenEnergyParagraph, 生成能耗段落
     async def gen_energy_paragraph(self, state: MyState, config: RunnableConfig, runtime: Runtime, writer: StreamWriter) -> MyState:
         logging.info(f"第 {state['evaluator_iter']} 次迭代，生成能耗段落")
-        gen_energy_para_prompt_str = await gen_energy_para_prompt()
+        # 获取能耗json数据
+        energy_json_data = state.get('energy_json_data')
+        gen_energy_para_prompt_str = gen_energy_para_prompt(energy_json_data)
         energy_paragraph = ""
         # LLM 调用
         async for chunk in self.llm.astream(
@@ -187,7 +221,9 @@ class GenDocPipeline:
     # 节点: GenOperationParagraph, 生成运营段落
     async def gen_operation_paragraph(self, state: MyState, config: RunnableConfig, runtime: Runtime, writer: StreamWriter) -> MyState:
         logging.info(f"第 {state['evaluator_iter']} 次迭代，生成能耗段落")
-        gen_operation_para_prompt_str = await gen_operation_para_prompt()
+        # 获取运营json数据
+        operation_json_data = state.get('operation_json_data')
+        gen_operation_para_prompt_str = await gen_operation_para_prompt(operation_json_data)
         operation_paragraph = ""
         # LLM 调用
         async for chunk in self.llm.astream(
@@ -261,12 +297,14 @@ MainAgent 回答: {agent_out}
         @@@@@@@ 定义节点
         '''
         
+        # 生成标题
+        self.flow_graph.add_node("GenTitle", self.gen_title)
         # 生成安防段落
-        self.flow_graph.add_node("SecurityParagraphGenerator", self.gen_security_paragraph)
+        self.flow_graph.add_node("GenSecurityParagraph", self.gen_security_paragraph)
         # 生成能耗段落
-        self.flow_graph.add_node("EnergyParagraphGenerator", self.gen_energy_paragraph)
+        self.flow_graph.add_node("GenEnergyParagraph", self.gen_energy_paragraph)
         # 生成运营段落
-        self.flow_graph.add_node("OperationParagraphGenerator", self.gen_operation_paragraph)
+        self.flow_graph.add_node("GenOperationParagraph", self.gen_operation_paragraph)
         
         # agent node 暂时用不上
         # self.flow_graph.add_node("MainAgent", self.tool_agent_node)
@@ -282,27 +320,29 @@ MainAgent 回答: {agent_out}
         '''
         @@@@@@ 定义边
         '''
-        # 添加边：控制流程
-        # START → SecurityParagraphGenerator
-        self.flow_graph.add_edge(START, "SecurityParagraphGenerator")
+        # START → TitleGenerator
+        self.flow_graph.add_edge(START, "GenTitle")
+        
+        # TitleGenerator → SecurityParagraphGenerator
+        self.flow_graph.add_edge("GenTitle", "GenSecurityParagraph")
         
         # SecurityParagraphGenerator  → EnergyParagraphGenerator
-        self.flow_graph.add_edge("SecurityParagraphGenerator", "EnergyParagraphGenerator")
+        self.flow_graph.add_edge("GenSecurityParagraph", "GenEnergyParagraph")
         
         # EnergyParagraphGenerator  → OperationParagraphGenerator
-        self.flow_graph.add_edge("EnergyParagraphGenerator", "OperationParagraphGenerator")
+        self.flow_graph.add_edge("GenEnergyParagraph", "GenOperationParagraph")
         
         # @@@@@@@@@@@@@ 
         # 如果使用评估节点,agent节点到评估节点连线
         # @@@@@@@@@@@@@
         if (self.use_evaluator):
             # MainAgent → Evaluator
-            self.flow_graph.add_edge("OperationParagraphGenerator", "Evaluator")
+            self.flow_graph.add_edge("GenOperationParagraph", "Evaluator")
         # @@@@@@@@@@@@@ 
         # 如果不使用评估节点,agent节点到总结节点连线
         # @@@@@@@@@@@@@
         else:
-            self.flow_graph.add_edge("OperationParagraphGenerator", "Composer")
+            self.flow_graph.add_edge("GenOperationParagraph", "Composer")
         
         # @@@@@@@@@@@@@ 
         # 如果使用评估节点, 添加评估节点条件边
@@ -313,7 +353,7 @@ MainAgent 回答: {agent_out}
                 "Evaluator",
                 self.should_redo_rag_after_evaluation,
                 {
-                    "redo_rag": "SecurityParagraphGenerator",
+                    "redo_rag": "GenTitle",
                     "do_compose": "Composer"
                 }
             )
@@ -340,7 +380,24 @@ MainAgent 回答: {agent_out}
     async def astream_run(self, query: str, thread_id: str):
         # 初始 state
         # evaluator_iter: 评估节点迭代次数，不能超过 max_iters
-        init_state: MyState = {"query": query, "evaluator_iter": 0}
+        init_state: MyState = {"query": query, "evaluator_iter": 0, "full_doc_content": ""}
+        
+        # query是所有数据的json，转成数据放入state
+        data_json = query
+        # 获取报告各个段落的数据
+        security_json_data = data_json['security']
+        init_state['security_json_data'] = security_json_data
+        energy_json_data = data_json['energy']
+        init_state['energy_json_data'] = energy_json_data
+        operation_json_data = data_json['operation']
+        init_state['operation_json_data'] = operation_json_data
+        company = data_json['company']
+        init_state['company'] = company
+        start_date = data_json['start_date']
+        init_state['start_date'] = start_date
+        end_date = data_json['end_date']
+        init_state['end_date'] = end_date
+        
         # 异步执行，流式输出
         async for mode, chunk in self.graph.astream(
             init_state,
