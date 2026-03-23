@@ -375,6 +375,123 @@ websocat ws://localhost:8000/agentic_rag_query/test/test
 用户: 今天
 系统: 正在查询天气... 北京今天晴天，25°C
 ```
+```运营报告生成
+# 通过curl测试WebSocket（使用websocat工具）
+websocat ws://localhost:8001/gen_doc/zhangsan/24654262
+
+# 发送测试消息（交互式）
+{
+    "query": {
+        "company": "设计院",
+        "start_date": "2025-01-01",
+        "end_date": "2025-12-31",
+        "data":{
+        "security": {
+            "type": "安防",
+            "date": "2025",
+            "company": "A公司",
+            "overview": {
+                "total_month": 12,
+                "total_alerts": 15717,
+                "avg_monthly_alerts": 1309.75,
+                "max_month": "2025-07",
+                "min_month": "2025-02",
+                "alert_type_ratio": {
+                    "intrusion_alert": {
+                        "ratio": "40.2%"
+                    },
+                    "abnormal_gathering_alert": {
+                        "ratio": "34.8%"
+                    },
+                    "fire_alert": {
+                        "ratio": "25.0%"
+                    }
+                },
+                "severe_alerts": {
+                    "count": 90.67
+                },
+                "face_recognition_match_rate": {
+                    "rate": "92.9%"
+                },
+                "cctv_online_rate": {
+                    "rate": "97.3%"
+                },
+                "key_events": "全年发生重大入侵事件32起，消防误报26起，主要集中在B栋办公区及园区北门",
+                "root_cause": "夏季（7-8月）因人员流动频繁导致告警量偏高，春节、国庆假期因人员减少告警量显著下降"
+            }
+        },
+        "energy": {
+            "type": "能耗",
+            "date": "2025",
+            "overview": {
+                "total_month": 12,
+                "total_alerts": 15717,
+                "avg_monthly_alerts": 1309.75,
+                "max_month": "2025-07",
+                "min_month": "2025-02",
+                "alert_type_ratio": {
+                    "intrusion_alert": {
+                        "ratio": "40.2%"
+                    },
+                    "abnormal_gathering_alert": {
+                        "ratio": "34.8%"
+                    },
+                    "fire_alert": {
+                        "ratio": "25.0%"
+                    }
+                },
+                "severe_alerts": {
+                    "count": 90.67
+                },
+                "face_recognition_match_rate": {
+                    "rate": "92.9%"
+                },
+                "cctv_online_rate": {
+                    "rate": "97.3%"
+                },
+                "key_events": "全年发生重大入侵事件32起，消防误报26起，主要集中在B栋办公区及园区北门",
+                "root_cause": "夏季（7-8月）因人员流动频繁导致告警量偏高，春节、国庆假期因人员减少告警量显著下降"
+            }
+        },
+        "operation": {
+            "type": "运营",
+            "date": "2025",
+            "overview": {
+                "total_month": 12,
+                "total_alerts": 15717,
+                "avg_monthly_alerts": 1309.75,
+                "max_month": "2025-07",
+                "min_month": "2025-02",
+                "alert_type_ratio": {
+                    "intrusion_alert": {
+                        "ratio": "40.2%"
+                    },
+                    "abnormal_gathering_alert": {
+                        "ratio": "34.8%"
+                    },
+                    "fire_alert": {
+                        "ratio": "25.0%"
+                    }
+                },
+                "severe_alerts": {
+                    "count": 90.67
+                },
+                "face_recognition_match_rate": {
+                    "rate": "92.9%"
+                },
+                "cctv_online_rate": {
+                    "rate": "97.3%"
+                },
+                "key_events": "全年发生重大入侵事件32起，消防误报26起，主要集中在B栋办公区及园区北门",
+                "root_cause": "夏季（7-8月）因人员流动频繁导致告警量偏高，春节、国庆假期因人员减少告警量显著下降"
+            }
+        }}
+    }
+
+}
+
+```
+
 
 ### Docker生产部署
 ```dockerfile

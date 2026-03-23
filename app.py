@@ -64,13 +64,25 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
     '''
     @@@@@ # 创建LangGraph核心流水线（信息核验Agent）
     '''
-    rag_pipeline = await InfoDoubleCheckPipeline.create(
-        llm=llm,
-        tools=tools,
-        user_id=user_id,
-        session_id=session_id,
-        use_evaluator=False # 是否启用结果评估器（可选
-    )
+    try:
+        rag_pipeline = await InfoDoubleCheckPipeline.create(
+            llm=llm,
+            tools=tools,
+            user_id=user_id,
+            session_id=session_id,
+            use_evaluator=False # 是否启用结果评估器（可选
+        )
+        logging.info("GenDocPipeline创建成功")
+    except Exception as e:
+        error_msg = f"Pipeline创建失败：{str(e)}"
+        logging.error(error_msg)
+        await websocket.send_text(json.dumps({
+            "type": "error",
+            "message": error_msg,
+            "code": "PIPELINE_CREATE_FAILED"
+        }))
+        await websocket.close()
+        return
  # 持续监听客户端消息（WebSocket长连接循环）
     while True:
         try:
@@ -83,6 +95,7 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
                 continue
             # 核心：流式运行LangGraph流水线，返回Agent执行过程
             # 假设 agent 是通过 create_agent 创建的，并且支持 astream
+            
             async for chunk in rag_pipeline.astream_run(query, thread_id):
                  # 序列化chunk（解决LangChain对象无法JSON化问题）
                 text = _safe_serialize(chunk)
@@ -125,6 +138,7 @@ session_id - 会话id，可以为空，为空就新建session
 '''
 @app.websocket("/gen_doc/{user_id}/{session_id}")
 async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str] = None):
+    # 1. 接受WebSocket连接
     await websocket.accept()
     
     # 新对话，生成新的sessionid
@@ -133,29 +147,87 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
         
     thread_id = f'{user_id}-{session_id}'
     
-    tools = await load_tools()
-    
+    # 工具加载添加异常处理
+    try:
+        tools = await load_tools()
+        logging.info(f"成功加载{len(tools)}个工具")
+    except Exception as e:
+        error_msg = f"工具加载失败：{str(e)}"
+        logging.error(error_msg)
+        await websocket.send_text(json.dumps({
+            "type": "error",
+            "message": error_msg,
+            "code": "TOOL_LOAD_FAILED"
+        }))
+        await websocket.close()
+        return
+
+  
     '''
     @@@@@ 创建langgraph pipeline
     '''
-    doc_gen_pipeline = await GenDocPipeline.create(
-        llm=llm,
-        tools=tools,
-        user_id=user_id,
-        session_id=session_id,
-        use_evaluator=False
-    )
+    try:
+        doc_gen_pipeline = await GenDocPipeline.create(
+            llm=llm,
+            tools=tools,
+            user_id=user_id,
+            session_id=session_id,
+        )
+        logging.info("GenDocPipeline创建成功")
+    except Exception as e:
+        error_msg = f"Pipeline创建失败：{str(e)}"
+        logging.error(error_msg)
+        await websocket.send_text(json.dumps({
+            "type": "error",
+            "message": error_msg,
+            "code": "PIPELINE_CREATE_FAILED"
+        }))
+        await websocket.close()
+        return
 
     while True:
         try:
+            # 接收前端传入的JSON数据
             data = await websocket.receive_text()
             query = json.loads(data).get("query")
+            style= json.loads(data).get("style")
             if not query:
                 await websocket.send_text(json.dumps({"error": "empty query"}))
                 continue
-
+            
+# ========== 核心：调用pipeline的流式接口 ==========
+            # try:
+            #     # 调用astream_run，传入query和thread_id
+            #     async for result in doc_gen_pipeline.astream_run(
+            #         query=query,
+            #         thread_id=thread_id,
+                   
+            #     ):
+            #         # 流式返回结果给前端（确保JSON序列化）
+            #         await websocket.send_text(json.dumps({
+            #             "type": "stream",
+            #             "data": result,
+            #             "thread_id": thread_id
+            #         }, ensure_ascii=False))  # 关键：处理中文
+                
+            #     # 流式调用完成后，发送结束标识
+            #     await websocket.send_text(json.dumps({
+            #         "type": "complete",
+            #         "message": "文档生成完成",
+            #         "thread_id": thread_id
+            #     }, ensure_ascii=False))
+                
+            # except Exception as e:
+            #     error_msg = f"文档生成失败：{str(e)}"
+            #     logging.error(error_msg, exc_info=True)
+            #     await websocket.send_text(json.dumps({
+            #         "type": "error",
+            #         "message": error_msg,
+            #         "code": "GEN_DOC_FAILED",
+            #         "thread_id": thread_id
+            #     }, ensure_ascii=False))
             # 假设 agent 是通过 create_agent 创建的，并且支持 astream
-            async for chunk in doc_gen_pipeline.astream_run(query, thread_id):
+            async for chunk in doc_gen_pipeline.astream_run(query,style, thread_id):
                 text = _safe_serialize(chunk)
                 ##################################
                 # 如果直接用agentWrapper，就用这个逻辑

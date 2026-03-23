@@ -1,0 +1,113 @@
+import json
+import time
+def get_prompt(company=None, start_date=None, end_date=None, 
+               dimension_data=None, max_words=None, **kwargs):
+    # 处理传入的参数，如果为None则使用默认值
+    company = company or "园区"
+    start_date = start_date or "未知时间"
+    end_date = end_date or "未知时间"
+    max_words = max_words or 500
+# ========== 确保data是字典 ==========
+    # 1. 处理dimension_data为空的情况
+    if isinstance(dimension_data, list):
+        data = dimension_data[0] if dimension_data else {"type": "暂无数据", "overview": {}}
+    # 2. 如果dimension_data是字符串（JSON字符串），转为字典
+    elif isinstance(dimension_data, str):
+        try:
+            data = json.loads(dimension_data)
+        except json.JSONDecodeError:
+            data = {"type": "暂无数据", "overview": {}}
+    # 3. 本身是字典则直接使用
+    else:
+        data = dimension_data
+    # ==========安全取值（逐层保护，避免字段缺失报错） ==========
+    overview = data.get("overview", {})  # 用get替代直接索引，缺失则返回空字典
+    # 提取所有需要的字段，缺失时标注"数据缺失"
+    total_alerts = overview.get("total_alerts", "数据缺失")
+    intrusion_ratio = overview.get("alert_type_ratio", {}).get("intrusion_alert", {}).get("ratio", "数据缺失")
+    gathering_ratio = overview.get("alert_type_ratio", {}).get("abnormal_gathering_alert", {}).get("ratio", "数据缺失")
+    fire_ratio = overview.get("alert_type_ratio", {}).get("fire_alert", {}).get("ratio", "数据缺失")
+    severe_alerts = overview.get("severe_alerts", {}).get("count", "数据缺失")
+    face_match_rate = overview.get("face_recognition_match_rate", {}).get("rate", "数据缺失")
+    cctv_online_rate = overview.get("cctv_online_rate", {}).get("rate", "数据缺失")
+    key_events = overview.get("key_events", "本期无重大安防事件")
+    root_cause = overview.get("root_cause", "无足够数据支撑原因分析")
+    data_type = data.get("type", "能耗")  # 取type字段，默认"能耗"
+
+    prompt = f"""
+请根据以下{data['type']}数据，生成标准格式的{data['type']}分析报告：
+
+查询参数
+- 公司范围: {company}（需填充至报告隐含的“报告主体”，如分析描述中体现“XX公司园区”）
+- 时间范围: {start_date} 至 {end_date}（需在报告概述中明确标注分析周期）
+- 统计周期: 需根据时间范围来匹配趋势分析的时间颗粒度，如“按周”“按月”“按季度”“按年”
+
+原始数据摘要
+{data}
+报告格式要求（必须严格按照此格式）
+
+#### 1.概述  
+按“（1）、”、“（2）、”编号、...连续编号，每项为一段；
+(1)、总体告警量: {total_alerts}（如“15717”；若为数据缺失则标注“数据缺失”）
+(2)、告警类型占比
+    (a)入侵: {intrusion_ratio}（如“40.2%”；数据缺失则标注“数据缺失”）
+    (b)异常聚集: {gathering_ratio}（如“34.8%”；数据缺失则标注“数据缺失”）
+    (c)消防: {fire_ratio}（如“34.8%”；数据缺失则标注“数据缺失”）
+
+#### 2.关键指标 
+按“（1）、”、“（2）、”编号、...连续编号，每项为一段；
+(1)、告警总数、严重告警（≥ 3 级）: {total_alerts}次，{severe_alerts}次（均带单位“次”，如“15717次，90次”；任一数据缺失则对应位置标注“数据缺失”）
+(2)、人脸布控匹配率: {face_match_rate}（如“92.9%”；数据缺失则标注“数据缺失”）
+(3)、CCTV 实时在线率: {cctv_online_rate}（如“92.9%”；数据缺失则标注“数据缺失”）
+
+#### 3.趋势分析
+按“(1)、”、“(2)、”编号、...连续编号，每项为一段；
+(1)、按周/月告警趋势: [分析告警趋势]（需匹配查询参数中的“统计周期”，如统计周期为“月”则分析月度趋势；内容需包含“趋势特征+数据支撑”，如“全年告警量呈现波动趋势，夏季7-8月因人员流动频繁导致告警量偏高，春节、国庆假期因人员减少告警量显著下降”；无数据支撑时需说明“无足够数据支撑趋势分析”）
+(2)、热点区域（热力图）: [分析热点区域]（需明确告警高发区域及频次特征，如“主要集中在B栋办公区及园区北门，全年该区域告警量占比达60%”；无区域数据时标注“无区域告警数据，无法确定热点区域”）
+
+#### 4.关键事件
+按“(1)、”、“(2)、”编号、...连续编号，每项为一段；
+(1)、本期重大运营事件（入侵、误报、异常聚集等）数量及类型: {key_events}（若某类事件数为0，标注“0起”；无相关数据则按规则标注“本期无重大安防事件”）
+
+#### 5.原因剖析
+按“(1)、”、“(2)、”编号、...连续编号，每项为一段；
+(1)、告警高发/指标异常的核心原因（硬件、管理、数据等维度）: {root_cause}
+
+#### 6.模型洞察
+按“(1)、”、“(2)、”编号、...连续编号，每项为一段；
+LLM 通过数据分析发现的隐藏规律（时间/区域/行为特征），例如: LLM 通过 异常聚类 发现某楼层 22:00 23:00 人流异常
+
+#### 7.改进建议
+按“(1)、”、“(2)、”编号、...连续编号，每项为一段；
+可落地的运营优化措施（硬件增补、流程优化、数据更新等方面）:需针对原因剖析、趋势分析、热点区域等结论提出对应措施，每条措施需具体、可落地，如“补建5台全景摄像头”需明确安装位置；至少提出3条，参考示例格式）
+例如:
+（1）、补建 5 台全景摄像头
+（2）、人脸库每周更新
+（3）、增设红外围界报警
+
+数据取值指引
+请根据以下映射关系从原始数据中提取值：
+
+- 总告警量：{total_alerts}次
+- 告警类型占比：入侵告警{intrusion_ratio}，异常聚集告警{gathering_ratio}，消防类告警{fire_ratio}
+- 严重告警（≥3级）：{severe_alerts}次
+- 人脸布控匹配率：{face_match_rate}
+- CCTV实时在线率：{cctv_online_rate}
+- 关键事件：{key_events}
+- 原因剖析：{root_cause}
+
+如果某些字段没有数据，请使用合理的默认值或标注"数据缺失"。
+
+输出要求及示例
+- 标题层级：严格使用 Markdown 层级语法——####表示后面是三级标题（如“1、 概述”），严格按照三级标题格式要求来。三级标题内子项使用“（1）、”、“（2）、”编号，编号规则严格遵循上述示例，不得增减符号（如不得将“（1）、”改为“1.”），不得混淆层级。
+- 字体字号：####三级标题“微软雅黑、11、黑色、加粗”
+- 表格规范：采用标准 Markdown 表格语法，表头居中对齐，数据无冗余空格；同类型数据单位统一，不得出现单位混乱（如同时使用“MWh”和“度”）。
+- 数据格式：所有量化数据需带单位（次、%），百分比保留1位小数（原始数据为整数的可保留整数）；关键数据（如总告警量、严重告警量、匹配率）需加粗（使用 数据 格式）
+- 语言风格：专业、客观、简洁，杜绝口语化表述（如“大概”“可能”）；分析内容逻辑连贯，原因与建议需存在对应关系，数值直接显示数值，不要在数值前面和后面加“**”,去除所有**。
+- 占位符处理：所有“[ ]”形式的占位符必须替换为实际数据或按规则标注“数据缺失”，不得残留任何占位符
+
+请生成{data['type']}分析报告：
+"""
+    prompt=str(prompt)
+    return prompt
+

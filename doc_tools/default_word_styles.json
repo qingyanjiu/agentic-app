@@ -1,0 +1,212 @@
+{
+    "document": {
+        "page_size": "A4",
+        "orientation": "portrait",
+        "margins": {
+            "top": 2.54,
+            "bottom": 2.54,
+            "left": 3.17,
+            "right": 3.17,
+            "header": 1.27,
+            "footer": 1.27
+        }
+    },
+    "styles": {
+             
+            "heading1": {
+            "name": "一级标题",
+            "font": {
+                "name": "微软雅黑",
+                "size": 26,
+                "bold": true,
+                "italic": false,
+                "color": "000000",
+                "underline": false
+            },
+            "paragraph": {
+                "alignment": "LEFT",
+                "space_before": 12,
+                "space_after": 6,
+                "keep_with_next": false,
+                "page_break_before": false
+            },
+            "outline_level": 1
+        },
+        "heading2": {
+            "name": "二级标题",
+            "font": {
+                "name": "微软雅黑",
+                "size": 18,
+                "bold": true,
+                "italic": false,
+                "color": "2E74B5",
+                "underline": false
+            },
+            "paragraph": {
+                "alignment": "LEFT",
+                "space_before": 19,
+                "space_after": 7,
+                "keep_with_next": true,
+                "page_break_before": true
+            },
+            "outline_level": 2
+        },
+        "heading3": {
+            "name": "三级标题",
+            "font": {
+                "name": "微软雅黑",
+                "size": 14,
+                "bold": true,
+                "italic": false,
+                "color": "000000",
+                "underline": false
+            },
+            "paragraph": {
+                "alignment": "LEFT",
+                "space_before": 16,
+                "space_after": 6,
+                "keep_with_next": true,
+                "page_break_before": false
+            },
+            "outline_level": 3
+        },
+        "heading4": {
+            "name": "四级标题",
+            "font": {
+                "name": "微软雅黑",
+                "size": 11,
+                "bold": true,
+                "italic": false,
+                "color": "000000",
+                "underline": false
+            },
+            "paragraph": {
+                "alignment": "LEFT",
+                "space_before": 16,
+                "space_after": 6,
+                "keep_with_next": true,
+                "page_break_before": false
+            },
+            "outline_level": 4
+        },
+                
+            "title": {
+            "name": "文档标题",
+            "font": {
+                "name": "微软雅黑",
+                "size": 22,
+                "bold": true,
+                "color": "1F4E78"
+            },
+            "paragraph": {
+                "alignment": "CENTER",
+                "space_before": 0,
+                "space_after": 24,
+                "line_spacing": 1.5
+            }
+        },
+        "normal": {
+            "name": "正文",
+            "font": {
+                "name": "微软雅黑",
+                "size": 12,
+                "bold": false,
+                "color": "000000"
+            },
+            "paragraph": {
+                "alignment": "JUSTIFY",
+                "space_before": 6,
+                "space_after": 6,
+                "first_line_indent": 21,
+                "line_spacing": 1.5
+            }
+        },
+        "quote": {
+            "name": "引用",
+            "font": {
+                "name": "楷体",
+                "size": 11,
+                "italic": true,
+                "color": "666666"
+            },
+            "paragraph": {
+                "alignment": "JUSTIFY",
+                "left_indent": 21,
+                "right_indent": 21,
+                "space_before": 6,
+                "space_after": 6
+            }
+        },
+        "list_item": {
+            "name": "列表项",
+            "font": {
+                "name": "微软雅黑",
+                "size": 12
+            },
+            "paragraph": {
+                "alignment": "LEFT",
+                "left_indent": 21,
+                "hanging_indent": 21,
+                "space_before": 0,
+                "space_after": 0
+            }
+        }
+    },
+           
+        "table": {
+        "default_style": "Light Grid Accent 1",
+        "header": {
+            "font": {
+                "name": "微软雅黑",
+                "size": 10,
+                "bold": true,
+                "color": "FFFFFF"
+            },
+            "background_color": "2E74B5",
+            "alignment": "CENTER",
+            "space_before": 2,
+            "space_after": 2
+        },
+        "row": {
+            "font": {
+                "name": "微软雅黑",
+                "size": 10,
+                "bold": false,
+                "color": "000000"
+            },
+            "background_even": "FFFFFF",
+            "background_odd": "F2F2F2",
+            "alignment": "CENTER",
+            "height": 30,
+            "height_rule": "AUTO" 
+        },
+        "column_width": {
+            "default": 6,  
+                    "header": 6
+        }
+    },
+    "toc": {
+        "enabled": true,
+        "title": "目录",
+        "title_style": "heading1",
+        "levels": [
+            1,
+            2,
+            3
+        ]
+    },
+    "header_footer": {
+        "enabled": true,
+        "header": {
+            "text": "{report_title}",
+            "font_size": 9,
+            "alignment": "CENTER"
+        },
+        "footer": {
+            "left": "",
+            "center": "第 {page_number} 页，共 {total_pages} 页",
+            "right": "园区数字化运营中心",
+            "font_size": 9
+        }
+    }
+}
