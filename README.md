@@ -132,7 +132,7 @@ uvicorn app:app --host 0.0.0.0 --port 8000 --reload
 ### 验证服务
 使用浏览器或工具测试WebSocket连接：
 - Agent对话WebSocket端点: `ws://localhost:8000/chat/{user_id}/{session_id}`
-- 文档生成WebSocket端点: `ws://localhost:8000/genDoc/{user_id}/{session_id}`
+- 文档生成WebSocket端点: `ws://localhost:8001/genDoc/{user_id}/{session_id}`
 
 ## 📖 API使用指南
 

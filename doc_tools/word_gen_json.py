@@ -4,7 +4,7 @@ word_generator.py
 核心支持：一/二/三/四级标题、段落、表格样式的全自定义
 修改后特性：支持直接接收str格式的JSON样式配置字符串
 """
-
+from io import BytesIO
 import json
 import os
 import requests
@@ -555,9 +555,18 @@ class CustomWordGenerator:
     
     def _fix_escape_characters(self, text: str) -> str:
         """修复转义字符"""
+        # 1. 去掉 ** 和 &nbsp;&nbsp;
+        text = text.replace('**', '').replace('&nbsp;&nbsp;', '')  
+        # 2. 给 1、2、3、 前面加换行
+        text = re.sub(r'(\d+、)', r'\n\1', text)
+        # 3. 给 (a)、(b)、(c)、 前面加换行（支持中英文括号） 
+        text = re.sub(r'(?<!\n)(（[ａ-ｚA-Z]）、?)', r'\n\n\1', text)
+        # 4. 基础换行清理（保留你原来的逻辑）
         text = text.replace('\\n', '\n').replace('  \n', '\n').replace('<br>', '\n')
-        text = re.sub(r'([（(]\d+[）)])、', r'\n\1、', text)
-        text = re.sub(r'\*\*(\d+\.?\d*(%?|[次起]+)?|数据缺失)\*\*', r'\1', text)
+        # text = re.sub(r'^-\([a-zA-Z0-9]\)\s*', '', text)
+        # text = re.sub(r'([（(]\d+[）)])、', r'\n\1、', text)
+        # 5. 多余空行清理（最终整洁）
+        # text = re.sub(r'\n+', '\n', text).strip()
         return text.strip()
     
     def add_markdown_content(self, markdown_text: str):
@@ -613,6 +622,39 @@ class CustomWordGenerator:
                 para_text += ' ' + lines[i].strip()
                 i += 1
             self.add_paragraph(para_text)
+    
+    def save_to_stream(self, stream: BytesIO) -> bool:
+        """
+        保存文档到字节流（内存）
+        
+        Args:
+            stream: 字节流对象
+            
+        Returns:
+            bool: 是否保存成功
+        """
+        if not self.doc:
+            raise ValueError("文档未初始化，请先调用 create_document()")
+        
+        try:
+            self.doc.save(stream)
+            return True
+        except Exception as e:
+            print(f"保存到流失败: {str(e)}")
+            return False
+    
+    def save_to_bytes(self) -> Optional[bytes]:
+        """
+        保存文档到字节数据（直接返回 bytes）
+        
+        Returns:
+            bytes: Word文档的字节数据，失败返回None
+        """
+        stream = BytesIO()
+        if self.save_to_stream(stream):
+            stream.seek(0)  # 重置指针到开头
+            return stream.getvalue()
+        return None
     
     def save(self, filepath: str) -> Optional[str]:
         """保存文档"""

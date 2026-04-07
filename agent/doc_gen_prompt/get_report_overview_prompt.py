@@ -1,5 +1,6 @@
 """报告概述章节专属 Prompt（独立文件）"""
 import time
+from datetime import datetime, timedelta
 def get_prompt(company=None, start_date=None, end_date=None, dimension=None, 
                dimension_data=None, max_words=None, **kwargs):
     """
@@ -14,8 +15,11 @@ def get_prompt(company=None, start_date=None, end_date=None, dimension=None,
     # dimension_data = dimension_data or "暂无数据"
     # max_words = max_words or 500
     
-    # # 获取当前时间
-    current_time = time.strftime("%Y-%m-%d %H:%M")
+    # 获取北京时间（正确的当前时间）
+    utc_now = datetime.utcnow()
+    beijing_now = utc_now + timedelta(hours=8)
+    current_time = beijing_now.strftime("%Y-%m-%d %H:%M")
+
     prompt_template = """
 你是专业的智慧园区运营报告生成专家，请严格按照以下要求生成：
 

@@ -1,5 +1,8 @@
 # memory/store.py
 from langchain_classic.memory.chat_memory import BaseChatMemory
+#导入两种具体的记忆实现类
+#ConversationBufferMemory: 保存所有对话历史（无限制）
+#ConversationBufferWindowMemory: 只保存最近 N 轮对话（滑动窗口）
 from langchain_classic.memory import ConversationBufferMemory, ConversationBufferWindowMemory
 
 from memory.memory_persistor import MemoryPersistor
@@ -52,7 +55,7 @@ class MemoryStore:
             memory_key="chat_history", 
             return_messages=True
         )
-        # 赋值新memory对象s
+        # 赋值新memory对象
         self.store = memory
         # 从持久化数据读取，并填充数据到memory对象
         try:

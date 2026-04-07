@@ -12,8 +12,7 @@ def get_prompt(company=None, start_date=None, end_date=None, dimension=None,
     end_date = end_date or "未知时间"
     dimension = dimension or "综合"
     dimension_data = dimension_data or "暂无数据"
-    # 获取当前时间
-    current_time = time.strftime("%Y-%m-%d %H:%M")
+
     prompt_template = """
 你是专业的智慧园区运营报告生成专家，请严格按照以下要求生成，确保内容完整、逻辑连贯、数据精准。
 
@@ -33,12 +32,12 @@ def get_prompt(company=None, start_date=None, end_date=None, dimension=None,
     - 四级标题（####）：禁止使用（无需细分模块，避免冗余）；
     - 禁止使用#（一级）、#####及以上层级标题，杜绝格式混乱。
 
-2.  核心内容要求（必须包含以下4部分，逻辑连贯，层层递进，不得遗漏任一模块）：
+2.  核心内容要求（必须包含以下4部分，逻辑连贯，层层递进，不得遗漏任一模块，每段首行缩进）：
     ### 5.1 综合健康指数趋势
     基于过去{start_date} 至 {end_date}的综合健康指数数据，分析指数变化规律，明确说明季节性波动特征（需结合园区实际运营场景，示例：“夏季因高温导致能耗上升、安防告警量增加，指数略有下滑；节假日园区人流减少，指数呈小幅上升趋势”），无需冗余铺垫，直接聚焦趋势和波动原因。
 
     ### 5.2 关键风险点
-    从各维度{dimension}分析中提炼最核心的3个风险点，每个风险点需详细说明**具体表现**和**财务影响**（量化数据支撑，示例：“1. 安防告警量偏高：月度平均告警量150次，较标准值超出20%，导致安防维护费用每年增加15万元，增加运营成本压力”），3个风险点分点阐述，逻辑清晰，禁止泛泛而谈。
+    从各维度{dimension}分析中提炼最核心的3个风险点，按“1.”、“2.”编号、...连续编号，每项为一段，每个风险点需详细说明**具体表现**和**财务影响**（量化数据支撑，示例：“1. 安防告警量偏高：月度平均告警量150次，较标准值超出20%，导致安防维护费用每年增加15万元，增加运营成本压力”），3个风险点分点阐述，逻辑清晰，禁止泛泛而谈。
 
     ### 5.3 预算/费用影响
     明确列出本期核心运营费用，需包含4类必选费用（能源费用、安防维护费用、网络运维费用、总运营成本），每类费用需标注具体金额及单位，同时说明费用变化趋势（同比/环比变化、变化原因，示例：“能源费用本期180万元，同比上升5%，主要因夏季高温导致空调能耗增加”），数据需提取自dimension_data，不得编造。
@@ -62,7 +61,7 @@ def get_prompt(company=None, start_date=None, end_date=None, dimension=None,
         dimension=dimension,
         dimension_data=dimension_data,
         max_words=max_words,
-        current_time=current_time  # 补充时间变量（模板中提到但未替换的）
+      
     )
     
     return formatted_prompt
