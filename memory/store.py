@@ -1,12 +1,15 @@
 # memory/store.py
 from langchain_classic.memory.chat_memory import BaseChatMemory
 from langchain_classic.memory import ConversationBufferMemory, ConversationBufferWindowMemory
+from langchain_classic.schema import AIMessage, HumanMessage
 
 from memory.memory_persistor import MemoryPersistor
 from memory.memory_persistor_json import MemoryPersistorJSON
 from memory.memory_persistor_sqlite import MemoryPersistorSqlite
+from memory.memory_persistor_mysql import MemoryPersistorMysql
 from utils.utils import get_config
 import logging
+from utils.utils import serialize_messages
 
 logging.basicConfig(
     filename='app.log',
@@ -28,6 +31,8 @@ def memory_persistor_factory(persistor_type='json') -> MemoryPersistor:
         return MemoryPersistorJSON()
     elif(persistor_type == 'sqlite'):
         return MemoryPersistorSqlite()
+    elif(persistor_type == 'mysql'):
+        return MemoryPersistorMysql()
 
 '''
 加载时直接初始化，保证单例
@@ -45,7 +50,7 @@ class MemoryStore:
         self.store: BaseChatMemory
         self.persistor = memory_persistor
 
-    # 从持久化存储读取以前的聊天记录
+    # 从持久化存储读取以前的聊天记录（恢复成 ConversationBufferWindowMemory）
     def get_memory(self, user_id: str, session_id: str):
         memory = ConversationBufferWindowMemory(
             k=memory_buffer_window,
@@ -70,11 +75,11 @@ class MemoryStore:
         except Exception as e:
             logging.error(f'获取对话历史失败，返回空对话历史:{e}')
         return self.store
-
-    # 保存对话历史
+    
+    # 保存对话历史 (ConversationBufferWindowMemory)
     def persist_memory(self, user_id: str, session_id: str):
         """
-        保存 memory 和 trace 到 JSON
+        保存 memory 和 trace
         """
         messages = []
         for msg in self.store.chat_memory.messages:
@@ -89,3 +94,41 @@ class MemoryStore:
             self.persistor.save(user_id, session_id, data)
         except Exception as e:
             logging.error(f'保存对话历史失败:{e}')
+    
+    # 恢复成 langgraph的checkpointer
+    def graph_get_history_messages(self, user_id: str, session_id: str):
+        messages = []
+        try:
+            saved = self.persistor.load(user_id, session_id)
+            if saved:
+                for msg in saved.get("messages", []):
+                    if not msg:
+                        continue
+                    role = msg.get("role")
+                    content = msg.get("content", "")
+                    if role == "user":
+                        messages.append(HumanMessage(content=content))
+                    elif role == "ai":
+                        messages.append(AIMessage(content=content))
+        except Exception as e:
+            logging.error(f"获取对话历史失败，返回空历史: {e}")
+        return messages
+
+
+    # 保存对话历史 (langgraph的checkpointer)
+    def graph_persist_memory(self, user_id: str, session_id: str, last_turn_msg: list[dict]):
+        messages = []
+        for msg in last_turn_msg:
+            if msg.get('type', '') == "human":
+                messages.append({"role": "user", "content": msg.get('content','')})
+            elif msg.get('type', '')== "ai":
+                messages.append({"role": "ai", "content": msg.get('content','')})
+        if len(messages) > 0:
+            data = {
+                "messages": messages,
+            }
+            try:
+                self.persistor.save(user_id, session_id, data)
+            except Exception as e:
+                logging.error(f'保存对话历史失败:{e}')
+    

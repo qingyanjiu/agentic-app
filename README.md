@@ -225,7 +225,7 @@ thread.start()
     "datasets_api_key": "dataset-xxxxxxxxxxxxxx"
   },
   "memory_persistor": {
-    "type": "sqlite",        // 可选: "sqlite" 或 "json"
+    "type": "sqlite",        // 可选: "sqlite" | "json" | "mysql" | "dm" ... json仅仅用来测试
     "memory_buffer_window": 3 // 记忆窗口大小，保留最近N轮对话
   }
 }
