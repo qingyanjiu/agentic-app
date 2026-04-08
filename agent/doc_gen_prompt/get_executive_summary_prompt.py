@@ -1,5 +1,6 @@
 """执行摘要章节专属 Prompt（独立文件）"""
 import time
+from datetime import datetime, timedelta
 def get_prompt(company=None, start_date=None, end_date=None, dimension=None, 
                dimension_data=None, max_words=None, **kwargs):
     # 处理传入的参数，如果为None则使用默认值
@@ -8,8 +9,7 @@ def get_prompt(company=None, start_date=None, end_date=None, dimension=None,
     end_date = end_date or "未知时间"
     dimension = dimension or "综合"
     dimension_data = dimension_data or "暂无数据"
-    # 获取当前时间
-    current_time = time.strftime("%Y-%m-%d %H:%M")
+
     prompt_template = """
 你是专业的智慧园区运营报告生成专家，请严格按照以下要求生成：
 
@@ -31,8 +31,8 @@ def get_prompt(company=None, start_date=None, end_date=None, dimension=None,
 5. 数据需精准，结论需有数据支撑，禁止主观臆断；
 6. 需对比同期数据（如有），指出趋势变化；
 7. 固定结构（必须包含以下4个子部分，按顺序排列，子标题用### 标注，“1、，2、等用有序列表展示”）：
-        ### 2.1 总体评估
-        整体健康指数：[数值]/100（较上期变化[±X.X]分）
+        ### 2.1 总体评估，段落要首行缩进
+        [具体评估内容]
 
         ### 2.2 主要亮点（3-5项），每项以“1、”“2、”等编号开头，必须单独成段（即每项之间换行分隔，或每项独占一行且无连续衔接）；
         1、[亮点1：具体成果+量化数据]
@@ -61,7 +61,7 @@ def get_prompt(company=None, start_date=None, end_date=None, dimension=None,
         dimension=dimension,
         dimension_data=dimension_data,
         max_words=max_words,
-        current_time=current_time  # 补充时间变量（模板中提到但未替换的）
+
     )
     
     return formatted_prompt

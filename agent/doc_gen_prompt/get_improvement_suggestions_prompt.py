@@ -1,9 +1,9 @@
-"""报告概述章节专属 Prompt（独立文件）"""
+"""改进意见章节专属 Prompt（独立文件）"""
 import time
 def get_prompt(company=None, start_date=None, end_date=None, dimension=None, 
                dimension_data=None, max_words=None, **kwargs):
     """
-    返回报告概述的完整 Prompt 模板
+    返回改进意见的完整 Prompt 模板
     模板中预留变量：{company}, {start_date}, {end_date}, {dimension}, {dimension_data}, {max_words}
     """
      # 处理传入的参数，如果为None则使用默认值
@@ -12,8 +12,7 @@ def get_prompt(company=None, start_date=None, end_date=None, dimension=None,
     end_date = end_date or "未知时间"
     dimension = dimension or "综合"
     dimension_data = dimension_data or "暂无数据"
-    # 获取当前时间
-    current_time = time.strftime("%Y-%m-%d %H:%M")
+
     prompt_template = """
     
 你是专业的智慧园区运营报告生成专家，请严格按照以下要求生成：
@@ -54,7 +53,7 @@ def get_prompt(company=None, start_date=None, end_date=None, dimension=None,
 ### 输出格式要求
 1. 严格遵守标题层级：仅允许使用###（三级）标题，禁止使用#、##、####及以上层级标题；
 2. 直接输出章节内容，无需额外标题和解释说明；
-3. 表格格式必须标准，字段顺序与内容严格匹配，生成时间需按指定格式填充当前系统时间。
+3. 表格格式必须标准，字段顺序与内容严格匹配。
 4. 禁止使用除###/####外的其他标题符号（如#、#####）。
 """
     formatted_prompt = prompt_template.format(
@@ -64,7 +63,7 @@ def get_prompt(company=None, start_date=None, end_date=None, dimension=None,
         dimension=dimension,
         dimension_data=dimension_data,
         max_words=max_words,
-        current_time=current_time  # 补充时间变量（模板中提到但未替换的）
+      
     )
     
     return formatted_prompt

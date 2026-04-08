@@ -1,8 +1,11 @@
 # uvicorn app:app --host 0.0.0.0 --port 8000 --reload
 
 import json
+import os 
 from typing import Optional
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
 from agent.executor import AgentExecutorWrapper
 from langchain_core.messages import HumanMessage, SystemMessage, BaseMessage, AIMessage, AIMessageChunk
 from models.llm import CustomLLMFactory
@@ -26,6 +29,19 @@ logging.basicConfig(
 )
 
 app = FastAPI()
+# 添加 CORS 支持（解决跨域问题）
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+# 挂载报告文件目录为静态文件服务
+REPORT_DIR = "/root/agentic-app/reports"
+os.makedirs(REPORT_DIR, exist_ok=True)
+# 将 reports 目录挂载为静态目录，前端可直接访问 /reports/文件名.docx 下载
+app.mount("/reports", StaticFiles(directory=REPORT_DIR), name="reports")
 
 # 全局模型和工具
 llm_factory = CustomLLMFactory()
@@ -43,6 +59,17 @@ def _safe_serialize(obj):
         return {k: _safe_serialize(v) for k, v in obj.items()}
     else:
         return obj
+async def safe_send_message(websocket: WebSocket, message: dict):
+    """安全地发送WebSocket消息，处理连接断开的情况"""
+    try:
+        await websocket.send_text(json.dumps(message, ensure_ascii=False))
+        return True
+    except (WebSocketDisconnect, RuntimeError) as e:
+        logging.info(f"WebSocket send failed: {str(e)}")
+        return False
+    except Exception as e:
+        logging.error(f"Unexpected error in safe_send_message: {str(e)}")
+        return False
 
 '''
 对话智能体
@@ -196,59 +223,22 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
                 continue
             
 # ========== 核心：调用pipeline的流式接口 ==========
-            # try:
-            #     # 调用astream_run，传入query和thread_id
-            #     async for result in doc_gen_pipeline.astream_run(
-            #         query=query,
-            #         thread_id=thread_id,
-                   
-            #     ):
-            #         # 流式返回结果给前端（确保JSON序列化）
-            #         await websocket.send_text(json.dumps({
-            #             "type": "stream",
-            #             "data": result,
-            #             "thread_id": thread_id
-            #         }, ensure_ascii=False))  # 关键：处理中文
-                
-            #     # 流式调用完成后，发送结束标识
-            #     await websocket.send_text(json.dumps({
-            #         "type": "complete",
-            #         "message": "文档生成完成",
-            #         "thread_id": thread_id
-            #     }, ensure_ascii=False))
-                
-            # except Exception as e:
-            #     error_msg = f"文档生成失败：{str(e)}"
-            #     logging.error(error_msg, exc_info=True)
-            #     await websocket.send_text(json.dumps({
-            #         "type": "error",
-            #         "message": error_msg,
-            #         "code": "GEN_DOC_FAILED",
-            #         "thread_id": thread_id
-            #     }, ensure_ascii=False))
+ 
             # 假设 agent 是通过 create_agent 创建的，并且支持 astream
             async for chunk in doc_gen_pipeline.astream_run(query,style, thread_id):
                 text = _safe_serialize(chunk)
-                ##################################
-                # 如果直接用agentWrapper，就用这个逻辑
-                ##################################
-                # 如果是最后结束的消息，直接拿message
-                # if(text['event'] == 'on_chain_end'
-                #     and 'output' in text['data'] 
-                #     and text['name'] == 'executor_agent'):
-                #     # 取最后 messagetext['name'] == 'executor_agent'):
-                #     output_json = {
-                #         "event": "final_answer", 
-                #         "data": text['data']['output']['messages'][-1]['content']
-                #     }
-                # await websocket.send_text(json.dumps(text, ensure_ascii=False))
-            
-                ##################################
-                # 如果是用langgraph，就用这个逻辑
-                ##################################
+              
                 # 把 AIMessageChunk 信息过滤掉
                 if(text['event'] != 'token'):
-                    await websocket.send_text(json.dumps(text, ensure_ascii=False))
+                    # 如果是完成事件，添加下载URL
+                    if (text.get('event') == 'custom' and 
+                        text.get('data', {}).get('type') == 'final_file'):
+                        # 添加静态文件访问URL
+                        file_name = text['data'].get('file_name')
+                       
+                    
+                    if not await safe_send_message(websocket, text):
+                        return
                 
             await websocket.send_text(json.dumps({"status": "done"}))
             

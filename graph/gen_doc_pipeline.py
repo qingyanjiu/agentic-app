@@ -145,7 +145,7 @@ class GenDocPipeline:
             "type": content_type,
             "chapter": chapter_name,
             "content": content,
-            "company": self.company if hasattr(self, 'company') else "未知公司",
+            "company": self.company if hasattr(self, 'company') else "园区",
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
         }
         writer(output)
@@ -171,13 +171,13 @@ class GenDocPipeline:
             self.word_generator.create_document()  # 创建新文档
 
             # 添加文档标题（只在第一次初始化时添加）
-            company = state.get("company", "未知公司")
+            company = state.get("company", "园区")
             start_date = state.get("start_date", "未知时间")
             end_date = state.get("end_date", "未知时间")
             dimension = state.get("dimension", "综合")
          
             # 添加主标题
-            title = f"{company}公司智慧园区运营分析报告"
+            title = f"{company}智慧运营分析报告"
             self.word_generator.add_heading(title, level=1)
             # 添加一个空行
             self.word_generator.add_paragraph("")
@@ -190,7 +190,8 @@ class GenDocPipeline:
             # 确保session_id非空
             session_id = session_id.strip() if session_id.strip() else "default"
             # 生成基础路径
-            self.word_file_path = f"report_{session_id}_{timestamp}.docx"
+            self.word_file_path = f"reports/report_{session_id}_{timestamp}.docx"
+            self.word_file_name = f"report_{session_id}_{timestamp}.docx"
             # 绝对确保路径非空
             if not self.word_file_path or self.word_file_path.strip() == "":
                 self.word_file_path = f"report_fallback_{timestamp}.docx"
@@ -209,7 +210,7 @@ class GenDocPipeline:
 
         self.word_generator.add_markdown_content(chapter_content)
         self.word_generator.add_paragraph("")
-    # ========== 修复：调用save前再次校验路径 ==========
+    # 调用save前再次校验路径 
         if not self.word_file_path or self.word_file_path.strip() == "":
             timestamp = int(time.time())
             self.word_file_path = f"report_fallback_{timestamp}.docx"
@@ -273,7 +274,10 @@ class GenDocPipeline:
             dimension_data=dimension_data,
             dimension=dimension,
         )
-        
+        title = f"# {company}智慧运营分析报告\n"
+        chapter_title=f"\n## {self.get_chapter_title_with_index(chapter_name)}\n"
+        self.stream_output(writer, title, "主标题")  # 流式输出给前端
+        self.stream_output(writer, chapter_title, chapter_name)  # 流式输出给前端
         # 3. LLM流式生成
         chapter_content = ""
         async for chunk in self.llm.astream([{"role": "system", "content": prompt_str}], config=config):
@@ -319,7 +323,8 @@ class GenDocPipeline:
             dimension_data=dimension_data,
             dimension=dimension,
         )
-        
+        chapter_title=f"\n## {self.get_chapter_title_with_index(chapter_name)}\n"
+        self.stream_output(writer, chapter_title, chapter_name)  # 流式输出给前端
         # 流式生成
         chapter_content = ""
         async for chunk in self.llm.astream([{"role": "system", "content": prompt_str}], config=config):
@@ -365,7 +370,9 @@ class GenDocPipeline:
             dimension=dimension,
             max_words=chapter_config["max_words"]
         )
-        
+        #流式输出章节标题
+        chapter_title=f"\n## {self.get_chapter_title_with_index(chapter_name)}\n"
+        self.stream_output(writer, chapter_title, chapter_name)  # 流式输出给前端
         # 流式生成
         chapter_content = ""
         async for chunk in self.llm.astream([{"role": "system", "content": prompt_str}], config=config):
@@ -394,13 +401,16 @@ class GenDocPipeline:
         chapter_name = "维度深度分析"
         logging.info(f"第 {state['evaluator_iter']} 次迭代，生成{chapter_name}章节")
         
+        #流式输出章节标题
+        chapter_title=f"\n## {self.get_chapter_title_with_index(chapter_name)}\n"
+        self.stream_output(writer, chapter_title, chapter_name)  # 流式输出给前端
+
         chapter_config = self.get_chapter_config(chapter_name)
         company = state.get("company", "园区")
         start_date=state.get("start_date", "未知时间")
         end_date=state.get("end_date", "未知时间")
         sub_dimensions = state.get("dimension", "综合")
-        # 只输出一次第四章标题 
-        self.stream_output(writer, f"\n## 维度深度分析\n", chapter_name)
+        
         # 生成各子维度内容
         main_index = 4
         sub_dimension_contents = []
@@ -427,14 +437,14 @@ class GenDocPipeline:
             
             # 流式生成子维度内容
             sub_content = ""
-            full_index = f"{main_index}.{sub_index} {sub_dim}"  # 4.1、4.2、4.3
-            self.stream_output(writer, f"\n### {full_index}维度分析\n", chapter_name)
-
+            full_index = f"\n### {main_index}.{sub_index} {sub_dim}维度分析\n"  # 4.1、4.2、4.3
+            self.stream_output(writer,full_index, chapter_name)
+           
             async for chunk in self.llm.astream([{"role": "system", "content": prompt_str}], config=config):
                 sub_content += chunk.content
                 self.stream_output(writer, chunk.content, chapter_name)
 
-            sub_dimension_contents=(f"### {full_index}维度分析\n{sub_content}")
+            sub_dimension_contents=(f"{full_index}{sub_content}")
             self.update_word(state, chapter_name, sub_dimension_contents,writer)
             # 缓存子维度内容
             state[f"{sub_dim.lower()}_paragraph"] = sub_content
@@ -461,6 +471,10 @@ class GenDocPipeline:
         chapter_name = "综合评估"
         logging.info(f"第 {state['evaluator_iter']} 次迭代，生成{chapter_name}章节")
         
+        #流式输出章节标题
+        chapter_title=f"\n## {self.get_chapter_title_with_index(chapter_name)}\n"
+        self.stream_output(writer, chapter_title, chapter_name)  # 流式输出给前端
+
         chapter_config = self.get_chapter_config(chapter_name)
         company = state.get("company", "园区")
         start_date=state.get("start_date", "未知时间")
@@ -505,6 +519,10 @@ class GenDocPipeline:
         chapter_name = "改进建议"
         logging.info(f"第 {state['evaluator_iter']} 次迭代，生成{chapter_name}章节")
         
+        #流式输出章节标题
+        chapter_title=f"\n## {self.get_chapter_title_with_index(chapter_name)}\n"
+        self.stream_output(writer, chapter_title, chapter_name)  # 流式输出给前端
+
         chapter_config = self.get_chapter_config(chapter_name)
         company = state.get("company", "园区")
         start_date=state.get("start_date", "未知时间")
@@ -639,6 +657,7 @@ class GenDocPipeline:
         # 用这个 checkpointer 编译 graph
         self.graph = self.flow_graph.compile(checkpointer=self.checkpointer)
 
+
     # ===================== 对外调用接口 =====================
     async def astream_run(self, query: str,style: str, thread_id: str):
         '''
@@ -655,9 +674,13 @@ class GenDocPipeline:
         # 兜底：如果没提取到任何 type，就用 "综合"
         if not dimension:
             dimension = ["综合"]
+
+
         # 重置Word生成器
         self.word_generator = None
         self.word_file_path = ''
+        self.word_file_name= ''
+        self.company = data_json.get("company", "园区")
 
         # 初始 state
         init_state: MyState = {
@@ -667,7 +690,7 @@ class GenDocPipeline:
             "chapter_order": self.chapter_order,
             "completed_chapters": [] , # 初始化已完成章节
             "chapter_contents": {},
-            "company": data_json.get("company", "园区"),  
+            "company": self.company,  
             "start_date":data_json.get("start_date", "未知时间"),
             "end_date":data_json.get("end_date", "未知时间"),       
             "dimension":dimension,          # 安防/能耗/运营/综合
@@ -724,6 +747,9 @@ class GenDocPipeline:
                 "data": {
                     "type": "final_file",
                     "content": self.word_file_path,
+                    "company":self.company,
+                    "file_name": self.word_file_name,
+                    "file_path": self.word_file_path,
                     "message": "文档生成完成"
                 }
             }
