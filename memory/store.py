@@ -12,7 +12,6 @@ from memory.memory_persistor_sqlite import MemoryPersistorSqlite
 from memory.memory_persistor_mysql import MemoryPersistorMysql
 from utils.utils import get_config
 import logging
-from utils.utils import serialize_messages
 
 logging.basicConfig(
     filename='app.log',

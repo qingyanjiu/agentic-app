@@ -23,7 +23,7 @@ class AgentExecutorWrapper:
         self.session_id = session_id
         self.memory_store = memory_store
         self.persist_memory = persist_memory
-        # 如果持久化对话历史，则读取
+        # 如果持久化对话历史，则读取 (使用agent对话才需要，用graph会使用checkpointer)
         if (self.persist_memory is True):
             self.memory = self.memory_store.get_memory(user_id, session_id)
         else:
@@ -33,6 +33,7 @@ class AgentExecutorWrapper:
                 memory_key="chat_history", 
                 return_messages=True
             )
+        
         #递归限制，防止无限循环
         self.agent_recursion_limit = agent_recursion_limit
         self.agent_name = agent_name

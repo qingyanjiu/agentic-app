@@ -17,7 +17,6 @@ from agent.tool_implement_main_prompt import gen_prompt
 from agent.get_intent_and_select_tools_prompt import SYSTEM_PROMPT as get_intent_and_select_tools_prompt
 from agent.ask_for_param_prompt import SYSTEM_PROMPT as ask_for_param_prompt
 import logging
-from utils.utils import serialize_messages
 
 from dynamic_tools.dynamic_tool_generator import DynamicToolGenerator
 from tools.custom_tool import CustomTool
@@ -479,19 +478,42 @@ MainAgent 回答: {agent_out}
     流式调用langgraph，流式返回最终节点数据
     数据格式 {"query": "用户问题", "sessionId": "对话id"}
     '''
-    async def astream_run(self, query: str, thread_id: str):
+    async def astream_run(self, query: str, user_id: str, session_id: str):
+        thread_id = f'{user_id}|{session_id}'        
         # 初始 state
         # evaluator_iter: 评估节点迭代次数，不能超过 max_iters
-        init_state: MyState = {"query": query, "evaluator_iter": 0}
+        init_state: MyState = {
+            "query": query, 
+            "evaluator_iter": 0
+        }
+        
+        config={
+            "configurable": {
+                "thread_id": thread_id
+            }
+        }
+        
+        if (self.persist_memory is True):
+            snapshot = await self.graph.aget_state(config)
+            has_checkpoint = bool(
+                snapshot
+                and snapshot.values
+                and snapshot.values.get("messages")
+            )
+            # 看是否有记忆如果没有，说明是新拉起来的对话，需要查询库中的历史对话加载
+            if not has_checkpoint:
+                # 读取已经落库的聊天记录
+                history_messages = self.main_agent.memory_store.graph_get_history_messages(user_id, session_id)
+                # 冷启动时：历史 + 当前 query 一次性放进 messages
+                init_state['messages'] = history_messages + [HumanMessage(content=query)]
+
+        
+            
         # 异步执行，流式输出
         async for mode, chunk in self.graph.astream(
             init_state,
             stream_mode=["updates", "messages", "custom"],
-            config={
-                "configurable": {
-                    "thread_id": thread_id
-                }
-            }
+            config=config
         ):
         # 把不同类型的数据分发给前端的不同处理逻辑
             if mode == "messages":

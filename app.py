@@ -123,7 +123,7 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
             # 核心：流式运行LangGraph流水线，返回Agent执行过程
             # 假设 agent 是通过 create_agent 创建的，并且支持 astream
             
-            async for chunk in rag_pipeline.astream_run(query, thread_id):
+            async for chunk in rag_pipeline.astream_run(query, user_id, session_id):
                  # 序列化chunk（解决LangChain对象无法JSON化问题）
                 text = _safe_serialize(chunk)
                 ##################################
@@ -171,8 +171,6 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
     # 新对话，生成新的sessionid
     if (not session_id):
         session_id = uuid.uuid4()
-        
-    thread_id = f'{user_id}-{session_id}'
     
     # 工具加载添加异常处理
     try:
@@ -225,7 +223,7 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
 # ========== 核心：调用pipeline的流式接口 ==========
  
             # 假设 agent 是通过 create_agent 创建的，并且支持 astream
-            async for chunk in doc_gen_pipeline.astream_run(query,style, thread_id):
+            async for chunk in doc_gen_pipeline.astream_run(query,style, user_id, session_id):
                 text = _safe_serialize(chunk)
               
                 # 把 AIMessageChunk 信息过滤掉

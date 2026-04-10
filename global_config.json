@@ -11,7 +11,7 @@
     },
     "memory_persistor": {
         "type": "mysql",
-        "memory_buffer_window": 3
+        "memory_buffer_window": 10
     }
 
 }
