@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>实时语音识别测试</title>
+    <style>
+        body { font-family: Arial; max-width: 800px; margin: 50px auto; padding: 20px; }
+        .result { border: 1px solid #ccc; padding: 20px; min-height: 200px; margin: 20px 0; background: #f9f9f9; }
+        .interim { color: #888; font-style: italic; }
+        .final { color: #333; }
+        button { padding: 10px 20px; margin: 5px; font-size: 16px; cursor: pointer; }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
+        .recording { color: red; font-weight: bold; }
+        .status { margin-top: 10px; padding: 10px; background: #f0f0f0; border-radius: 5px; font-size: 12px; }
+        .error { color: red; }
+        .success { color: green; }
+    </style>
+</head>
+<body>
+    <h1>🎤 实时语音识别</h1>
+    <p>点击开始录音，边说边显示文字</p>
+    
+    <div>
+        <button id="startBtn">开始录音</button>
+        <button id="stopBtn" disabled>停止</button>
+        <button id="resetBtn">清空</button>
+    </div>
+    
+    <div class="result">
+        <div id="finalText" class="final"></div>
+        <div id="interimText" class="interim"></div>
+    </div>
+    
+    <div id="status" class="status"></div>
+    
+    <script>
+        let mediaRecorder = null;
+        let ws = null;
+        let isRecording = false;
+        let finalText = '';
+        
+        // 获取当前页面的 host 和 port
+        const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsHost = window.location.hostname;
+        const wsPort = window.location.port || '8000';
+        
+        // WebSocket 连接地址 - 修改为你的实际后端地址
+        // 如果前端和后端在同一台机器，使用 localhost
+        // 如果前端在浏览器访问，后端在 Docker 容器，需要配置正确的地址
+        let WS_URL = `${wsProtocol}//${wsHost}:${wsPort}/asr/test/user123`;
+        
+        // 如果上面的不行，可以尝试手动指定后端地址
+        // WS_URL = 'ws://localhost:8000/asr/test/user123';
+        // WS_URL = 'ws://127.0.0.1:8000/asr/test/user123';
+        // 如果你的后端在 Docker 容器，可能需要使用宿主机 IP
+        // WS_URL = 'ws://宿主机IP:8000/asr/test/user123';
+        
+        const startBtn = document.getElementById('startBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const resetBtn = document.getElementById('resetBtn');
+        const finalDiv = document.getElementById('finalText');
+        const interimDiv = document.getElementById('interimText');
+        const statusDiv = document.getElementById('status');
+        
+        function addStatus(message, isError = false) {
+            const time = new Date().toLocaleTimeString();
+            const className = isError ? 'error' : 'success';
+            statusDiv.innerHTML += `<div class="${className}">[${time}] ${message}</div>`;
+            statusDiv.scrollTop = statusDiv.scrollHeight;
+            console.log(message);
+        }
+        
+        startBtn.onclick = async () => {
+            try {
+                addStatus('正在请求麦克风权限...');
+                
+                // 获取麦克风
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    audio: {
+                        sampleRate: 16000,
+                        channelCount: 1,
+                        echoCancellation: true,
+                        noiseSuppression: true
+                    }
+                });
+                
+                addStatus('麦克风权限已获取');
+                
+                // 连接WebSocket
+                addStatus(`正在连接 WebSocket: ${WS_URL}`);
+                ws = new WebSocket(WS_URL);
+                
+                ws.onopen = () => {
+                    addStatus('WebSocket 连接已建立');
+                    statusDiv.innerHTML += '<div class="recording">● 录音中...</div>';
+                    
+                    // 开始录音
+                    mediaRecorder = new MediaRecorder(stream, {
+                        mimeType: 'audio/webm'
+                    });
+                    
+                    mediaRecorder.ondataavailable = (event) => {
+                        if (ws.readyState === WebSocket.OPEN && event.data.size > 0) {
+                            const reader = new FileReader();
+                            reader.onload = () => {
+                                const base64 = reader.result.split(',')[1];
+                                ws.send(JSON.stringify({ voice_base64: base64 }));
+                            };
+                            reader.readAsDataURL(event.data);
+                        }
+                    };
+                    
+                    mediaRecorder.start(500);  // 每500ms发送一次
+                    isRecording = true;
+                    startBtn.disabled = true;
+                    stopBtn.disabled = false;
+                };
+                
+                ws.onmessage = (event) => {
+                    try {
+                        const data = JSON.parse(event.data);
+                        console.log('收到消息:', data);
+                        
+                        switch(data.event) {
+                            case 'asr_interim':
+                                interimDiv.innerHTML = data.text;
+                                addStatus(`临时识别: ${data.text}`);
+                                break;
+                            case 'asr_final':
+                                finalText += (finalText ? ' ' : '') + data.text;
+                                finalDiv.innerHTML = finalText;
+                                interimDiv.innerHTML = '';
+                                addStatus(`最终识别: ${data.text}`);
+                                break;
+                            case 'session_started':
+                                addStatus(`会话已启动: ${data.session_id} - ${data.message}`);
+                                break;
+                            case 'session_reset':
+                                addStatus('会话已重置');
+                                break;
+                            case 'session_ended':
+                                addStatus('会话已结束');
+                                break;
+                            case 'error':
+                                addStatus(`错误: ${data.error}`, true);
+                                break;
+                            default:
+                                addStatus(`未知消息类型: ${data.event}`);
+                        }
+                    } catch (e) {
+                        addStatus(`解析消息失败: ${e.message}`, true);
+                    }
+                };
+                
+                ws.onerror = (error) => {
+                    addStatus(`WebSocket 错误: ${error}`, true);
+                    console.error('WebSocket错误:', error);
+                };
+                
+                ws.onclose = (event) => {
+                    addStatus(`WebSocket 连接已关闭: ${event.code} - ${event.reason}`);
+                    if (isRecording) {
+                        isRecording = false;
+                        startBtn.disabled = false;
+                        stopBtn.disabled = true;
+                    }
+                };
+                
+            } catch (error) {
+                addStatus(`错误: ${error.message}`, true);
+                console.error(error);
+            }
+        };
+        
+        stopBtn.onclick = () => {
+            if (mediaRecorder && isRecording) {
+                addStatus('停止录音...');
+                mediaRecorder.stop();
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({ action: 'end' }));
+                }
+                isRecording = false;
+                startBtn.disabled = false;
+                stopBtn.disabled = true;
+            }
+        };
+        
+        resetBtn.onclick = () => {
+            finalText = '';
+            finalDiv.innerHTML = '';
+            interimDiv.innerHTML = '';
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ action: 'reset' }));
+            }
+            addStatus('已清空显示内容');
+        };
+    </script>
+</body>
+</html>
