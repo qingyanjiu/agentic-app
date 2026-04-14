@@ -1,10 +1,12 @@
 import json
 import time
+from langchain.messages import AnyMessage
+from langchain_classic.schema import AIMessage, HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langchain_classic.chains.llm import LLMChain
 from langchain_core.prompts import PromptTemplate
-from typing import Callable, TypedDict, Optional, Dict, Any
-from langgraph.graph import StateGraph, START, END
+from typing import Annotated, Callable, TypedDict, Optional, Dict, Any
+from langgraph.graph import StateGraph, START, END, add_messages
 from langgraph.types import StreamWriter
 from langgraph.runtime import Runtime
 from langchain_core.runnables.config import RunnableConfig
@@ -43,6 +45,9 @@ class MyState(TypedDict, total=False):
     missing_params: list
     evaluator_iter: int
     agent_output: Dict[str, Any]
+    # 消息历史
+    messages: Annotated[list[AnyMessage], add_messages]
+    last_turn: list[dict]
     eval_decision: str
     final_answer: Dict[str, Any]
 
@@ -78,6 +83,7 @@ class InfoDoubleCheckPipeline:
         self.use_evaluator = use_evaluator#是否启用结果评估器，用于判断主任务执行结果是否满足需求
         self.max_iters = max_iters#最大迭代次数，防止无限循环（如工具调用失败时的重试）
         self.enable_debug = enable_debug#调试模式开关，控制日志详细程度
+        self.persist_memory = True
         
         # 判断用户输入问题调用工具的关键词是否完整，
         self.get_intent_and_select_tools_prompt = PromptTemplate(
@@ -101,7 +107,7 @@ class InfoDoubleCheckPipeline:
             user_id=self.user_id,
             session_id=self.session_id,
             system_prompt=self.main_node_system_prompt,
-            persist_memory=False
+            persist_memory=self.persist_memory
         )
         # 初始化图
         self.init_graph()
@@ -252,11 +258,21 @@ class InfoDoubleCheckPipeline:
                     event == 'on_chain_end'
                     and chunk['name'] == self.main_agent.agent_name
                 ):
-                    agent_out = chunk['data']['output']# 获取最终输出
+                    agent_out = chunk['data']['output']# 获取最终输出         
                     # 如果开启debug，则输出chunk,否则不输出
                     if(self.enable_debug is True):
-                        writer(chunk)    
-            return {"agent_output": agent_out}
+                        writer(chunk)
+            return {
+                    "agent_output": agent_out['output'],
+                    "messages": [
+                        HumanMessage(content=query),
+                        AIMessage(content=agent_out['output']),
+                    ],
+                    "last_turn": [
+                        {"type": "human", "content": query},
+                        {"type": "ai", "content": agent_out['output']},
+                    ]
+                }
         else:
             return {"agent_output": "达到最大循环次数，未获取到答案"}
 
@@ -296,8 +312,7 @@ MainAgent 回答: {agent_out}
         # 如果使用评估节点，则获取评估节点评估结果，否则默认是完全充分
         # @@@@@@@@@@@@@
         decision = state["eval_decision"] if self.use_evaluator else '完全充分'
-        agent_out = state["agent_output"]
-        agent_out = agent_out['messages'][-1].content
+        agent_out = state.get("agent_output", '')
         composer_prompt = f"""
 你是 Answer Composer，请基于聚合结果生成回答：
 用户问题：{state['query']}
@@ -340,6 +355,11 @@ MainAgent 回答: {agent_out}
                     # 流式写最终 result，给个type是answer方便前端判断最终结果的流式响应
                     writer({"type": "answer", "content": chunk.content})
                 final_answer += chunk.content
+        # 保存最新一轮对话
+        if self.persist_memory == True:
+            last_turn_msg = state.get('last_turn', [])
+            self.main_agent.memory_store.graph_persist_memory(self.user_id, self.session_id, last_turn_msg)
+        
         return {"final_answer": final_answer}
 
     # 边条件，参数不足时找用户提供，参数足够时直接执行主agent逻辑
@@ -458,19 +478,42 @@ MainAgent 回答: {agent_out}
     流式调用langgraph，流式返回最终节点数据
     数据格式 {"query": "用户问题", "sessionId": "对话id"}
     '''
-    async def astream_run(self, query: str, thread_id: str):
+    async def astream_run(self, query: str, user_id: str, session_id: str):
+        thread_id = f'{user_id}|{session_id}'        
         # 初始 state
         # evaluator_iter: 评估节点迭代次数，不能超过 max_iters
-        init_state: MyState = {"query": query, "evaluator_iter": 0}# 从用户问题开始，迭代次数从0计数
+        init_state: MyState = {
+            "query": query, 
+            "evaluator_iter": 0
+        }
+        
+        config={
+            "configurable": {
+                "thread_id": thread_id
+            }
+        }
+        
+        if (self.persist_memory is True):
+            snapshot = await self.graph.aget_state(config)
+            has_checkpoint = bool(
+                snapshot
+                and snapshot.values
+                and snapshot.values.get("messages")
+            )
+            # 看是否有记忆如果没有，说明是新拉起来的对话，需要查询库中的历史对话加载
+            if not has_checkpoint:
+                # 读取已经落库的聊天记录
+                history_messages = self.main_agent.memory_store.graph_get_history_messages(user_id, session_id)
+                # 冷启动时：历史 + 当前 query 一次性放进 messages
+                init_state['messages'] = history_messages + [HumanMessage(content=query)]
+
+        
+            
         # 异步执行，流式输出
         async for mode, chunk in self.graph.astream(
             init_state,
             stream_mode=["updates", "messages", "custom"],
-            config={
-                "configurable": {
-                    "thread_id": thread_id
-                }
-            }
+            config=config
         ):
         # 把不同类型的数据分发给前端的不同处理逻辑
             if mode == "messages":
@@ -503,8 +546,3 @@ MainAgent 回答: {agent_out}
                     "event": "custom",
                     "data": chunk
                 }
-        
-        # 执行完成后，自动保存对话历史
-        if (self.main_agent.persist_memory is True):
-            self.main_agent.memory_store.persist_memory(self.user_id, self.session_id)
-            # 下次同一用户对话时可以继续上下文

@@ -659,7 +659,8 @@ class GenDocPipeline:
 
 
     # ===================== 对外调用接口 =====================
-    async def astream_run(self, query: str,style: str, thread_id: str):
+    async def astream_run(self, query: str,style: str, user_id: str, session_id: str):
+        thread_id = f'{user_id}|{session_id}' 
         '''
         流式调用langgraph，流式返回最终节点数据
         数据格式 {"query": "用户问题", "sessionId": "对话id"}
