@@ -16,26 +16,45 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # 尝试导入pycorrector
+PYCORRECTOR_AVAILABLE = False
+MACBERT_AVAILABLE = False
+_corrector_instance = None
+_macbert_instance = None
+
 try:
-    from pycorrector import correct
+    # 修改1：导入 Corrector 类而不是 correct 函数
+    from pycorrector import Corrector
+    
     PYCORRECTOR_AVAILABLE = True
-    logger.info("pycorrector已加载")
+    # 创建全局纠错器实例
+    _corrector_instance = Corrector()
+    # 可选：创建一个 correct 函数别名，保持接口一致
+    correct = _corrector_instance.correct
+    logger.info("pycorrector已加载（Corrector模式）")
     
     # 尝试加载MacBERT模型
     try:
-        from pycorrector.macbert.macbert_corrector import MacBertCorrector
+        # 修改2：MacBertCorrector 在顶层，不需要 .macbert 子路径
+        from pycorrector import MacBertCorrector
         MACBERT_AVAILABLE = True
+        _macbert_instance = MacBertCorrector()
         logger.info("MacBERT模型可用")
     except ImportError:
         MACBERT_AVAILABLE = False
         logger.info("MacBERT模型不可用，使用基础pycorrector")
-except ImportError:
+        
+except ImportError as e:
     PYCORRECTOR_AVAILABLE = False
     MACBERT_AVAILABLE = False
-    logger.warning("pycorrector未安装，将使用规则纠错")
+    logger.warning(f"pycorrector未安装或导入失败: {e}")
 
 # 简单规则纠错映射表
 SIMPLY_CORRECT_MAP = {
+    # ========== 安防监控相关 ==========
+    "视屏": "视频", "监空": "监控", "摄象头": "摄像头", "录象": "录像",
+    "回防": "回放", "防区": "区域", "报擎": "报警", "警界": "警戒",
+    "入寝": "入侵", "侦测": "检测", "移动侦测": "移动检测", 
+    "布防": "布防", "撤防": "撤防", "巡罗": "巡逻", 
     # 常见同音字错误
     "公调": "空调", "晴郎": "晴朗", "公圆": "公园", "知到": "知道",
     "因该": "应该", "坐位": "座位", "麻省": "马上", "在见": "再见",

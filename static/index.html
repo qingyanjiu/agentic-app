@@ -1,80 +1,654 @@
 <!DOCTYPE html>
-<html>
+<html lang="zh-CN">
+
 <head>
-    <title>实时语音识别测试</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+    <title>语音识别系统 - 本地文件保存与读取</title>
     <style>
-        body { font-family: Arial; max-width: 800px; margin: 50px auto; padding: 20px; }
-        .result { border: 1px solid #ccc; padding: 20px; min-height: 200px; margin: 20px 0; background: #f9f9f9; }
-        .interim { color: #888; font-style: italic; }
-        .final { color: #333; }
-        button { padding: 10px 20px; margin: 5px; font-size: 16px; cursor: pointer; }
-        button:disabled { opacity: 0.5; cursor: not-allowed; }
-        .recording { color: red; font-weight: bold; }
-        .status { margin-top: 10px; padding: 10px; background: #f0f0f0; border-radius: 5px; font-size: 12px; }
-        .error { color: red; }
-        .success { color: green; }
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 1300px;
+            margin: 30px auto;
+            padding: 20px;
+            background: #f5f7fb;
+            color: #1e293b;
+        }
+
+        h1 {
+            font-size: 1.8rem;
+            margin-bottom: 0.25rem;
+            color: #0f172a;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .sub {
+            color: #475569;
+            margin-bottom: 2rem;
+            border-left: 4px solid #3b82f6;
+            padding-left: 1rem;
+            font-size: 0.9rem;
+        }
+
+        .card {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 8px 20px rgba(0, 0, 0, 0.03), 0 2px 6px rgba(0, 0, 0, 0.05);
+            padding: 1.5rem;
+            margin-bottom: 1.8rem;
+            transition: all 0.2s;
+            border: 1px solid #e2e8f0;
+        }
+
+        .button-group {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            margin-bottom: 10px;
+        }
+
+        button {
+            background: #ffffff;
+            border: 1px solid #cbd5e1;
+            padding: 10px 20px;
+            font-size: 14px;
+            font-weight: 500;
+            border-radius: 40px;
+            cursor: pointer;
+            transition: 0.2s;
+            color: #1e293b;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02);
+        }
+
+        button:hover:not(:disabled) {
+            background-color: #f1f5f9;
+            border-color: #94a3b8;
+            transform: translateY(-1px);
+        }
+
+        button:active:not(:disabled) {
+            transform: translateY(1px);
+        }
+
+        button.primary {
+            background: #3b82f6;
+            border-color: #3b82f6;
+            color: white;
+            box-shadow: 0 2px 6px rgba(59, 130, 246, 0.2);
+        }
+
+        button.primary:hover:not(:disabled) {
+            background: #2563eb;
+        }
+
+        button.danger {
+            color: #dc2626;
+            border-color: #fecaca;
+        }
+
+        button.danger:hover:not(:disabled) {
+            background: #fef2f2;
+            border-color: #f87171;
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .recording-badge {
+            background: #fee2e2;
+            color: #b91c1c;
+            padding: 6px 14px;
+            border-radius: 40px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .status-area {
+            background: #f8fafc;
+            border-radius: 18px;
+            padding: 12px 16px;
+            font-family: 'SF Mono', 'Fira Code', monospace;
+            font-size: 12px;
+            max-height: 220px;
+            overflow-y: auto;
+            border: 1px solid #e2e8f0;
+            margin-top: 12px;
+        }
+
+        textarea {
+            width: 100%;
+            border: 1px solid #cbd5e1;
+            border-radius: 16px;
+            padding: 14px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 13px;
+            background: #fefefe;
+            transition: 0.2s;
+            resize: vertical;
+        }
+
+        textarea:focus {
+            outline: none;
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+        }
+
+        .section-title {
+            font-weight: 700;
+            font-size: 1.1rem;
+            margin-bottom: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+
+        .info-chip {
+            background: #eef2ff;
+            padding: 4px 12px;
+            border-radius: 30px;
+            font-size: 0.75rem;
+            font-weight: normal;
+            color: #1e40af;
+        }
+
+        .base64-container {
+            position: relative;
+        }
+
+        .file-save-hint {
+            background: #ecfdf5;
+            border-left: 4px solid #10b981;
+            padding: 8px 14px;
+            border-radius: 14px;
+            margin-top: 12px;
+            font-size: 0.8rem;
+        }
+
+        .file-save-hint.error {
+            background: #fef2f2;
+            border-left-color: #ef4444;
+            color: #991b1b;
+        }
+
+        .warning-badge {
+            background: #fffbeb;
+            border: 1px solid #fde047;
+            padding: 8px 12px;
+            border-radius: 12px;
+            font-size: 0.75rem;
+            color: #854d0e;
+            margin-top: 10px;
+        }
     </style>
 </head>
+
 <body>
-    <h1>🎤 实时语音识别</h1>
-    <p>点击开始录音，边说边显示文字</p>
-    
-    <div>
-        <button id="startBtn">开始录音</button>
-        <button id="stopBtn" disabled>停止</button>
-        <button id="resetBtn">清空</button>
+    <h1>🎙️ 语音识别 · 本地文件保存 (无需后端)</h1>
+    <div class="sub">
+        录音 → 生成Base64 → 保存到本地文件 <code>audio_base64.txt</code> (与HTML同目录) → 从该文件读取Base64 → 通过WebSocket识别
+        <br>
+        <span style="font-size: 0.75rem; color: #6b7280;">💡 使用 File System Access API，需要用户授权选择保存位置</span>
     </div>
-    
-    <div class="result">
-        <div id="finalText" class="final"></div>
-        <div id="interimText" class="interim"></div>
+
+    <div class="card">
+        <div class="button-group">
+            <button id="startBtn" class="primary">🎤 开始录音</button>
+            <button id="stopBtn" disabled>⏹️ 停止并处理</button>
+            <button id="clearBtn">🗑️ 清空面板</button>
+            <button id="copyBase64Btn" disabled>📋 复制Base64</button>
+            <button id="downloadBase64Btn" disabled>💾 下载Base64(.txt)</button>
+            <button id="selectFileBtn" disabled>📂 选择audio_base64.txt</button>
+        </div>
+        <div id="recordingStatus" style="margin-top: 12px; min-height: 40px;"></div>
     </div>
-    
-    <div id="status" class="status"></div>
-    
+
+    <!-- Base64 数据展示区 -->
+    <div class="card">
+        <div class="section-title">
+            <span>📄 Base64 音频编码</span>
+            <span id="base64Length" class="info-chip"></span>
+        </div>
+        <div class="base64-container">
+            <textarea id="base64Text" rows="6" placeholder="录音结束后，音频Base64数据将显示在这里..." readonly
+                style="font-size: 11px; font-family: monospace;"></textarea>
+        </div>
+        <div id="fileSaveResult" class="file-save-hint" style="display: none;"></div>
+        <div id="fileReadResult" class="file-save-hint" style="display: none;"></div>
+    </div>
+
+    <!-- 识别结果区 -->
+    <div class="card">
+        <div class="section-title">🔍 语音识别结果 (来自WebSocket服务端)</div>
+        <textarea id="resultText" rows="4" placeholder="识别文字将出现在这里..." readonly
+            style="font-family: inherit;"></textarea>
+    </div>
+
+    <!-- 状态与日志区 -->
+    <div class="card">
+        <div class="section-title">📡 实时日志</div>
+        <div id="status" class="status-area"></div>
+        <div id="audioInfo" style="margin-top: 12px; font-size: 12px; color: #4b5563;"></div>
+    </div>
+
+    <div class="warning-badge">
+        ⚠️ 注意：由于浏览器安全限制，首次保存文件时需要手动选择保存位置和文件名（建议命名为 audio_base64.txt）。
+        之后每次录音会自动保存到同一个文件（需要用户授权）。如需从文件读取识别，请先通过"选择audio_base64.txt"按钮授权。
+    </div>
+
     <script>
+        // ------------------- DOM 元素 -------------------
+        const startBtn = document.getElementById('startBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const clearBtn = document.getElementById('clearBtn');
+        const copyBase64Btn = document.getElementById('copyBase64Btn');
+        const downloadBase64Btn = document.getElementById('downloadBase64Btn');
+        const selectFileBtn = document.getElementById('selectFileBtn');
+        const resultText = document.getElementById('resultText');
+        const base64Text = document.getElementById('base64Text');
+        const base64LengthSpan = document.getElementById('base64Length');
+        const statusDiv = document.getElementById('status');
+        const audioInfoDiv = document.getElementById('audioInfo');
+        const recordingStatusDiv = document.getElementById('recordingStatus');
+
+        // ------------------- 全局变量 -------------------
         let mediaRecorder = null;
-        let ws = null;
+        let mediaStream = null;
         let isRecording = false;
-        let finalText = '';
-        
-        // 获取当前页面的 host 和 port
+        let audioChunks = [];
+        let recordingStartTime = null;
+        let recordingTimer = null;
+        let currentBase64Data = null;          // 存储当前录音生成的Base64字符串
+        let currentRawBlob = null;
+
+        // 文件句柄 - 用于保存到同一个文件
+        let fileHandle = null;
+        let readFileHandle = null;              // 用于读取的文件句柄
+
+        // WebSocket 连接配置
         const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const wsHost = window.location.hostname;
         const wsPort = window.location.port || '8000';
-        
-        // WebSocket 连接地址 - 修改为你的实际后端地址
-        // 如果前端和后端在同一台机器，使用 localhost
-        // 如果前端在浏览器访问，后端在 Docker 容器，需要配置正确的地址
-        let WS_URL = `${wsProtocol}//${wsHost}:${wsPort}/asr/test/user123`;
-        
-        // 如果上面的不行，可以尝试手动指定后端地址
-        // WS_URL = 'ws://localhost:8000/asr/test/user123';
-        // WS_URL = 'ws://127.0.0.1:8000/asr/test/user123';
-        // 如果你的后端在 Docker 容器，可能需要使用宿主机 IP
-        // WS_URL = 'ws://宿主机IP:8000/asr/test/user123';
-        
-        const startBtn = document.getElementById('startBtn');
-        const stopBtn = document.getElementById('stopBtn');
-        const resetBtn = document.getElementById('resetBtn');
-        const finalDiv = document.getElementById('finalText');
-        const interimDiv = document.getElementById('interimText');
-        const statusDiv = document.getElementById('status');
-        
-        function addStatus(message, isError = false) {
-            const time = new Date().toLocaleTimeString();
-            const className = isError ? 'error' : 'success';
-            statusDiv.innerHTML += `<div class="${className}">[${time}] ${message}</div>`;
+        // 实现 readTxtFile 函数
+        async function readTxtFile(filename) {
+            try {
+                // 使用 fetch 读取同目录下的文件
+                const response = await fetch(`./${filename}`);
+
+                if (!response.ok) {
+                    throw new Error(`文件不存在或无法访问: ${filename}`);
+                }
+
+                const content = await response.text();
+                return content;
+            } catch (error) {
+                console.error('读取文件失败:', error);
+                return null;
+            }
+        }
+        // ------------------- 辅助函数 -------------------
+        function addStatus(message, isError = false, isInfo = false) {
+            const time = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+            const prefix = isError ? '❌' : (isInfo ? 'ℹ️' : '✅');
+            const coloredMsg = `[${time}] ${prefix} ${message}`;
+            const div = document.createElement('div');
+            div.textContent = coloredMsg;
+            if (isError) div.style.color = '#dc2626';
+            else if (isInfo) div.style.color = '#2563eb';
+            else div.style.color = '#0f172a';
+            div.style.marginBottom = '6px';
+            div.style.fontSize = '12px';
+            statusDiv.appendChild(div);
             statusDiv.scrollTop = statusDiv.scrollHeight;
             console.log(message);
         }
-        
-        startBtn.onclick = async () => {
+
+        function updateTimerDisplay() {
+            if (!recordingStartTime) return;
+            const elapsed = Math.floor((Date.now() - recordingStartTime) / 1000);
+            const mins = Math.floor(elapsed / 60);
+            const secs = elapsed % 60;
+            recordingStatusDiv.innerHTML = `<div class="recording-badge">🔴 录音中 · ${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')} <span style="font-weight:normal;">(点击停止)</span></div>`;
+        }
+
+        function clearUIForNewRecord() {
+            base64Text.value = '';
+            base64LengthSpan.innerHTML = '';
+            currentBase64Data = null;
+            currentRawBlob = null;
+            audioInfoDiv.innerHTML = '';
+            copyBase64Btn.disabled = true;
+            downloadBase64Btn.disabled = true;
+            const fileHint = document.getElementById('fileSaveResult');
+            const readHint = document.getElementById('fileReadResult');
+            if (fileHint) fileHint.style.display = 'none';
+            if (readHint) readHint.style.display = 'none';
+        }
+
+        function displayBase64Content(base64String) {
+            if (!base64String) return;
+            const maxPreview = 600;
+            if (base64String.length > maxPreview) {
+                base64Text.value = base64String.substring(0, maxPreview) +
+                    `\n\n... (省略 ${base64String.length - maxPreview} 字符) ...\n\n` +
+                    base64String.substring(base64String.length - 200);
+            } else {
+                base64Text.value = base64String;
+            }
+            const sizeKB = (base64String.length * 0.75 / 1024).toFixed(2);
+            base64LengthSpan.innerHTML = `长度: ${base64String.length} 字符 | 约 ${sizeKB} KB`;
+            currentBase64Data = base64String;
+            copyBase64Btn.disabled = false;
+            downloadBase64Btn.disabled = false;
+        }
+
+        // ========== 核心功能1: 保存Base64到本地文件 (使用 File System Access API) ==========
+        async function saveBase64ToLocalFile(base64Data) {
+            if (!base64Data) {
+                addStatus('没有Base64数据，无法保存', true);
+                return false;
+            }
+
             try {
-                addStatus('正在请求麦克风权限...');
+                // 检查浏览器是否支持 File System Access API
+                if (!window.showSaveFilePicker) {
+                    addStatus('⚠️ 当前浏览器不支持 File System Access API，将使用传统下载方式', true);
+                    // 降级方案：使用传统下载
+                    const blob = new Blob([base64Data], { type: 'text/plain' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = 'audio_base64.txt';
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+                    addStatus('💾 已通过下载方式保存为 audio_base64.txt');
+                    const hintDiv = document.getElementById('fileSaveResult');
+                    if (hintDiv) {
+                        hintDiv.style.display = 'block';
+                        hintDiv.className = 'file-save-hint';
+                        hintDiv.innerHTML = `✅ 已通过下载保存: audio_base64.txt<br>文件大小: ${(base64Data.length * 0.75 / 1024).toFixed(2)} KB`;
+                    }
+                    return true;
+                }
+
+                // 如果没有保存过文件句柄，或者用户想重新选择，则弹出保存对话框
+                if (!fileHandle) {
+                    addStatus('📁 请选择保存位置 (建议命名为 audio_base64.txt)...', false, true);
+                    fileHandle = await window.showSaveFilePicker({
+                        suggestedName: 'audio_base64.txt',
+                        types: [{
+                            description: '文本文件',
+                            accept: { 'text/plain': ['.txt'] }
+                        }]
+                    });
+                    addStatus('✅ 已获得文件句柄，后续将自动保存到此文件');
+                }
+
+                // 写入文件
+                const writable = await fileHandle.createWritable();
+                await writable.write(base64Data);
+                await writable.close();
+
+                addStatus(`✅ Base64已成功保存到: ${fileHandle.name}`);
+                const hintDiv = document.getElementById('fileSaveResult');
+                if (hintDiv) {
+                    hintDiv.style.display = 'block';
+                    hintDiv.className = 'file-save-hint';
+                    hintDiv.innerHTML = `✅ 已保存到: ${fileHandle.name}<br>文件大小: ${(base64Data.length * 0.75 / 1024).toFixed(2)} KB`;
+                    setTimeout(() => {
+                        hintDiv.style.opacity = '0.7';
+                    }, 4000);
+                }
+                return true;
+            } catch (err) {
+                if (err.name === 'AbortError') {
+                    addStatus('用户取消了保存操作', true);
+                } else {
+                    addStatus(`❌ 保存文件失败: ${err.message}`, true);
+                    console.error(err);
+                }
+                return false;
+            }
+        }
+
+        // ========== 核心功能2: 从本地文件读取Base64 (用户选择文件) ==========
+        async function selectAndReadBase64File() {
+            try {
                 
-                // 获取麦克风
-                const stream = await navigator.mediaDevices.getUserMedia({ 
+                const content = await readTxtFile('audio_base64.txt');
+                
+                if (!content || content.trim() === '') {
+                    addStatus('⚠️ 文件内容为空', true);
+                    return null;
+                }
+
+                
+                return content;
+            } catch (err) {
+                if (err.name !== 'AbortError') {
+                    addStatus(`读取文件失败: ${err.message}`, true);
+                }
+                return null;
+            }
+        }
+
+        // 传统文件选择降级方案
+        function legacySelectFile() {
+            return new Promise((resolve) => {
+                const input = document.createElement('input');
+                input.type = 'file';
+                input.accept = '.txt';
+                input.onchange = async (e) => {
+                    const file = e.target.files[0];
+                    if (!file) {
+                        resolve(null);
+                        return;
+                    }
+                    const reader = new FileReader();
+                    reader.onload = (event) => {
+                        const content = event.target.result;
+                        addStatus(`✅ 成功读取文件: ${file.name}, 长度: ${content.length} 字符`);
+                        resolve(content);
+                    };
+                    reader.onerror = () => {
+                        addStatus('读取文件失败', true);
+                        resolve(null);
+                    };
+                    reader.readAsText(file);
+                };
+                input.click();
+            });
+        }
+
+        // ========== WebSocket 发送音频并识别 ==========
+        async function sendAudioForRecognition(base64Audio) {
+            return new Promise((resolve, reject) => {
+                addStatus('🌐 正在连接语音识别服务(WebSocket)...');
+                const sessionId = 'asr_' + Date.now() + '_' + Math.random().toString(36).substr(2, 8);
+                const wsUrl = `${wsProtocol}//${wsHost}:${wsPort}/asr/test/${sessionId}`;
+                addStatus(`🔌 WS地址: ${wsUrl}`);
+
+                let websocket = null;
+                let finalResultText = '';
+                let timeoutId = setTimeout(() => {
+                    if (websocket && websocket.readyState === WebSocket.OPEN) {
+                        websocket.close();
+                    }
+                    addStatus('❌ 识别超时(30秒)，请检查后端服务', true);
+                    reject(new Error('识别超时'));
+                }, 30000);
+
+                try {
+                    websocket = new WebSocket(wsUrl);
+
+                    websocket.onopen = () => {
+                        addStatus('✅ WebSocket已连接，发送Base64音频...');
+                        websocket.send(JSON.stringify({
+                            voice_base64: base64Audio
+                        }));
+                        setTimeout(() => {
+                            if (websocket && websocket.readyState === WebSocket.OPEN) {
+                                websocket.send(JSON.stringify({ action: 'end' }));
+                                addStatus('📤 已发送结束信号');
+                            }
+                        }, 150);
+                    };
+
+                    websocket.onmessage = (event) => {
+                        try {
+                            const data = JSON.parse(event.data);
+                            console.log('WS消息:', data);
+                            switch (data.event) {
+                                case 'asr_final':
+                                    addStatus(`🎯 最终识别结果: "${data.text}"`);
+                                    finalResultText = data.text;
+                                    break;
+                                case 'asr_interim':
+                                    addStatus(`📝 临时结果: ${data.text}`, false, true);
+                                    break;
+                                case 'session_started':
+                                    addStatus(`会话ID: ${data.session_id}`);
+                                    break;
+                                case 'session_ended':
+                                    addStatus(`🏁 会话结束，识别完成`);
+                                    if (finalResultText) {
+                                        const existing = resultText.value;
+                                        const newEntry = existing ? existing + '\n[新录音] ' + finalResultText : finalResultText;
+                                        resultText.value = newEntry;
+                                        addStatus(`📝 识别文本已添加到结果区`);
+                                    } else {
+                                        addStatus(`⚠️ 未获得最终识别文字`, true);
+                                    }
+                                    clearTimeout(timeoutId);
+                                    websocket.close();
+                                    resolve(finalResultText);
+                                    break;
+                                case 'error':
+                                    addStatus(`❌ 服务端错误: ${data.error}`, true);
+                                    clearTimeout(timeoutId);
+                                    websocket.close();
+                                    reject(new Error(data.error));
+                                    break;
+                                default:
+                                    console.log('其他事件', data);
+                            }
+                        } catch (e) {
+                            addStatus(`❌ 解析响应失败: ${e.message}`, true);
+                        }
+                    };
+
+                    websocket.onerror = (err) => {
+                        addStatus(`❌ WebSocket错误，请确认后端ASR服务运行在端口 ${wsPort}`, true);
+                        clearTimeout(timeoutId);
+                        reject(err);
+                    };
+
+                    websocket.onclose = (ev) => {
+                        addStatus(`🔌 WebSocket关闭 (code: ${ev.code})`);
+                        clearTimeout(timeoutId);
+                    };
+
+                } catch (error) {
+                    clearTimeout(timeoutId);
+                    addStatus(`创建WebSocket异常: ${error.message}`, true);
+                    reject(error);
+                }
+            });
+        }
+
+        // 处理录音停止后的完整流程
+        async function processRecordedAudio() {
+            if (!audioChunks.length) {
+                addStatus('警告: 没有录制到任何音频数据', true);
+                return;
+            }
+            const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+            currentRawBlob = audioBlob;
+            const sizeKB = (audioBlob.size / 1024).toFixed(2);
+            addStatus(`🎵 录音结束，原始音频大小: ${sizeKB} KB (${audioChunks.length} 数据块)`);
+            audioInfoDiv.innerHTML = `📦 音频Blob: ${sizeKB} KB, 类型: webm`;
+
+            const reader = new FileReader();
+            reader.onload = async () => {
+                const fullDataURL = reader.result;
+                const base64Only = fullDataURL.split(',')[1];
+                if (!base64Only) {
+                    addStatus('Base64转换失败', true);
+                    return;
+                }
+                addStatus(`🔄 Base64编码完成，长度: ${base64Only.length} 字符`);
+                displayBase64Content(base64Only);
+
+                // 步骤1: 保存Base64到本地文件 audio_base64.txt
+                addStatus('💾 正在保存Base64到本地文件...');
+                const saveSuccess = await saveBase64ToLocalFile(base64Only);
+                if (saveSuccess) {
+                    addStatus('✅ 文件保存完成');
+                }
+
+                // 步骤2: 使用当前Base64直接发送识别（也可以选择从文件读取，但直接用当前更高效）
+                addStatus('🚀 通过WebSocket发送Base64进行识别...');
+                try {
+                    await sendAudioForRecognition(base64Only);
+                    addStatus('✨ 识别流程完成');
+                } catch (err) {
+                    addStatus(`识别失败: ${err.message}`, true);
+                }
+            };
+            reader.onerror = () => {
+                addStatus('读取Blob为Base64时失败', true);
+            };
+            reader.readAsDataURL(audioBlob);
+        }
+
+        // 从文件读取并识别（手动触发）
+        async function readFromFileAndRecognize() {
+            const base64FromFile = await selectAndReadBase64File();
+            if (!base64FromFile) {
+                addStatus('未读取到Base64数据', true);
+                return;
+            }
+            addStatus(`📖 从文件读取到Base64，长度: ${base64FromFile.length} 字符`);
+            displayBase64Content(base64FromFile);
+
+            addStatus('🚀 从文件读取Base64，发送识别...');
+            try {
+                await sendAudioForRecognition(base64FromFile);
+                addStatus('✨ 识别完成');
+            } catch (err) {
+                addStatus(`识别失败: ${err.message}`, true);
+            }
+        }
+
+        // ------------------- 录音控制 -------------------
+        async function startRecording() {
+            if (isRecording) {
+                addStatus('已有录音在进行中', true);
+                return;
+            }
+            clearUIForNewRecord();
+            audioChunks = [];
+            try {
+                addStatus('🎙️ 请求麦克风权限...');
+                const stream = await navigator.mediaDevices.getUserMedia({
                     audio: {
                         sampleRate: 16000,
                         channelCount: 1,
@@ -82,117 +656,148 @@
                         noiseSuppression: true
                     }
                 });
-                
-                addStatus('麦克风权限已获取');
-                
-                // 连接WebSocket
-                addStatus(`正在连接 WebSocket: ${WS_URL}`);
-                ws = new WebSocket(WS_URL);
-                
-                ws.onopen = () => {
-                    addStatus('WebSocket 连接已建立');
-                    statusDiv.innerHTML += '<div class="recording">● 录音中...</div>';
-                    
-                    // 开始录音
-                    mediaRecorder = new MediaRecorder(stream, {
-                        mimeType: 'audio/webm'
-                    });
-                    
-                    mediaRecorder.ondataavailable = (event) => {
-                        if (ws.readyState === WebSocket.OPEN && event.data.size > 0) {
-                            const reader = new FileReader();
-                            reader.onload = () => {
-                                const base64 = reader.result.split(',')[1];
-                                ws.send(JSON.stringify({ voice_base64: base64 }));
-                            };
-                            reader.readAsDataURL(event.data);
-                        }
-                    };
-                    
-                    mediaRecorder.start(500);  // 每500ms发送一次
-                    isRecording = true;
-                    startBtn.disabled = true;
-                    stopBtn.disabled = false;
-                };
-                
-                ws.onmessage = (event) => {
-                    try {
-                        const data = JSON.parse(event.data);
-                        console.log('收到消息:', data);
-                        
-                        switch(data.event) {
-                            case 'asr_interim':
-                                interimDiv.innerHTML = data.text;
-                                addStatus(`临时识别: ${data.text}`);
-                                break;
-                            case 'asr_final':
-                                finalText += (finalText ? ' ' : '') + data.text;
-                                finalDiv.innerHTML = finalText;
-                                interimDiv.innerHTML = '';
-                                addStatus(`最终识别: ${data.text}`);
-                                break;
-                            case 'session_started':
-                                addStatus(`会话已启动: ${data.session_id} - ${data.message}`);
-                                break;
-                            case 'session_reset':
-                                addStatus('会话已重置');
-                                break;
-                            case 'session_ended':
-                                addStatus('会话已结束');
-                                break;
-                            case 'error':
-                                addStatus(`错误: ${data.error}`, true);
-                                break;
-                            default:
-                                addStatus(`未知消息类型: ${data.event}`);
-                        }
-                    } catch (e) {
-                        addStatus(`解析消息失败: ${e.message}`, true);
+                mediaStream = stream;
+                addStatus('✅ 麦克风已授权');
+
+                let mimeType = '';
+                if (MediaRecorder.isTypeSupported('audio/webm')) mimeType = 'audio/webm';
+                else if (MediaRecorder.isTypeSupported('audio/mp4')) mimeType = 'audio/mp4';
+                else mimeType = '';
+
+                mediaRecorder = new MediaRecorder(stream, { mimeType: mimeType });
+                mediaRecorder.ondataavailable = (event) => {
+                    if (event.data && event.data.size > 0) {
+                        audioChunks.push(event.data);
+                        const total = audioChunks.reduce((s, c) => s + c.size, 0);
+                        audioInfoDiv.innerHTML = `🎙️ 实时录制: ${(total / 1024).toFixed(1)} KB (${audioChunks.length} 块)`;
                     }
                 };
-                
-                ws.onerror = (error) => {
-                    addStatus(`WebSocket 错误: ${error}`, true);
-                    console.error('WebSocket错误:', error);
-                };
-                
-                ws.onclose = (event) => {
-                    addStatus(`WebSocket 连接已关闭: ${event.code} - ${event.reason}`);
-                    if (isRecording) {
-                        isRecording = false;
-                        startBtn.disabled = false;
-                        stopBtn.disabled = true;
+
+                mediaRecorder.onstop = async () => {
+                    addStatus('⏹️ 录音停止，开始处理音频数据...');
+                    await processRecordedAudio();
+                    if (mediaStream) {
+                        mediaStream.getTracks().forEach(track => track.stop());
+                        mediaStream = null;
                     }
+                    if (recordingTimer) clearInterval(recordingTimer);
+                    recordingTimer = null;
+                    recordingStatusDiv.innerHTML = '';
+                    isRecording = false;
+                    startBtn.disabled = false;
+                    stopBtn.disabled = true;
                 };
-                
-            } catch (error) {
-                addStatus(`错误: ${error.message}`, true);
-                console.error(error);
-            }
-        };
-        
-        stopBtn.onclick = () => {
-            if (mediaRecorder && isRecording) {
-                addStatus('停止录音...');
-                mediaRecorder.stop();
-                if (ws && ws.readyState === WebSocket.OPEN) {
-                    ws.send(JSON.stringify({ action: 'end' }));
-                }
-                isRecording = false;
+
+                mediaRecorder.start(1000);
+                isRecording = true;
+                recordingStartTime = Date.now();
+                recordingTimer = setInterval(updateTimerDisplay, 1000);
+                startBtn.disabled = true;
+                stopBtn.disabled = false;
+                addStatus('🔴 录音中... 请开始说话');
+                recordingStatusDiv.innerHTML = '<div class="recording-badge">🔴 录音进行中 ...</div>';
+            } catch (err) {
+                addStatus(`❌ 无法获取麦克风: ${err.message}`, true);
+                console.error(err);
                 startBtn.disabled = false;
                 stopBtn.disabled = true;
             }
-        };
-        
-        resetBtn.onclick = () => {
-            finalText = '';
-            finalDiv.innerHTML = '';
-            interimDiv.innerHTML = '';
-            if (ws && ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({ action: 'reset' }));
+        }
+
+        function stopRecording() {
+            if (mediaRecorder && isRecording && mediaRecorder.state === 'recording') {
+                addStatus('⏸️ 正在停止录音并处理...');
+                mediaRecorder.stop();
+                stopBtn.disabled = true;
+                if (recordingTimer) clearInterval(recordingTimer);
+                recordingTimer = null;
+            } else {
+                addStatus('没有正在进行的录音', true);
             }
-            addStatus('已清空显示内容');
-        };
+        }
+
+        function clearAll() {
+            resultText.value = '';
+            base64Text.value = '';
+            base64LengthSpan.innerHTML = '';
+            currentBase64Data = null;
+            copyBase64Btn.disabled = true;
+            downloadBase64Btn.disabled = true;
+            audioInfoDiv.innerHTML = '';
+            const fileHint = document.getElementById('fileSaveResult');
+            const readHint = document.getElementById('fileReadResult');
+            if (fileHint) fileHint.style.display = 'none';
+            if (readHint) readHint.style.display = 'none';
+            addStatus('🧹 已清空所有内容');
+            if (mediaRecorder && isRecording && mediaRecorder.state === 'recording') {
+                mediaRecorder.stop();
+                if (mediaStream) mediaStream.getTracks().forEach(t => t.stop());
+                isRecording = false;
+                startBtn.disabled = false;
+                stopBtn.disabled = true;
+                if (recordingTimer) clearInterval(recordingTimer);
+                recordingStatusDiv.innerHTML = '';
+            }
+        }
+
+        function copyBase64ToClipboard() {
+            if (currentBase64Data) {
+                navigator.clipboard.writeText(currentBase64Data).then(() => {
+                    addStatus('📋 Base64已复制到剪贴板');
+                    const original = copyBase64Btn.innerText;
+                    copyBase64Btn.innerText = '✅ 已复制!';
+                    setTimeout(() => copyBase64Btn.innerText = original, 1500);
+                }).catch(e => addStatus(`复制失败: ${e.message}`, true));
+            } else {
+                addStatus('无Base64数据', true);
+            }
+        }
+
+        function downloadBase64Locally() {
+            if (currentBase64Data) {
+                const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+                const filename = `base64_audio_${timestamp}.txt`;
+                const blob = new Blob([currentBase64Data], { type: 'text/plain' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = filename;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+                addStatus(`💾 本地下载Base64文件: ${filename}`);
+            } else {
+                addStatus('没有可下载的Base64', true);
+            }
+        }
+
+        // 绑定事件
+        startBtn.onclick = startRecording;
+        stopBtn.onclick = stopRecording;
+        clearBtn.onclick = clearAll;
+        copyBase64Btn.onclick = copyBase64ToClipboard;
+        downloadBase64Btn.onclick = downloadBase64Locally;
+        selectFileBtn.onclick = readFromFileAndRecognize;
+
+        window.addEventListener('beforeunload', () => {
+            if (mediaRecorder && isRecording && mediaRecorder.state === 'recording') {
+                mediaRecorder.stop();
+            }
+            if (mediaStream) mediaStream.getTracks().forEach(t => t.stop());
+        });
+
+        // 检查 File System Access API 支持情况
+        if (!window.showSaveFilePicker) {
+            addStatus('⚠️ 当前浏览器不支持 File System Access API，将使用传统下载方式保存文件', true);
+        } else {
+            selectFileBtn.disabled = false;
+            addStatus('✅ 支持 File System Access API，可自动保存到同一文件');
+        }
+
+        addStatus('🎤 页面就绪 | 工作流程: ①录音 ②生成Base64 ③保存到本地文件 ④WebSocket识别');
+        addStatus('💡 点击"选择audio_base64.txt"可以从已有文件读取Base64并识别');
     </script>
 </body>
+
 </html>

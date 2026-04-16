@@ -1,5 +1,4 @@
 # uvicorn app:app --host 0.0.0.0 --port 8000 --reload
-from asr.whisper_asr import asr
 import json
 import os 
 from typing import Optional
@@ -49,7 +48,8 @@ app.mount("/reports", StaticFiles(directory=REPORT_DIR), name="reports")
 from fastapi.staticfiles import StaticFiles
 
 # 挂载静态文件目录
-app.mount("/static", StaticFiles(directory="static"), name="static")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
 
 
 # ==================== 初始化语音和纠错模块 ====================
@@ -57,7 +57,7 @@ try:
     # 初始化语音识别器（使用Whisper后端）
     voice_recognizer = get_recognizer(
         backend="whisper",      # 可选: "whisper", "custom"
-        model_name="small",      # 可选: tiny, base, small, medium, large
+        model_name="medium",      # 可选: tiny, base, small, medium, large
         use_stream=True         # 启用流式处理
     )
     logger.info("语音识别器初始化成功")
@@ -67,7 +67,7 @@ except Exception as e:
 
 try:
     # 初始化文本纠错器
-    text_corrector = get_corrector(use_advanced=True)  # 使用高级纠错
+    text_corrector = get_corrector(use_advanced=False)  # 使用高级纠错
     logger.info("文本纠错器初始化成功")
 except Exception as e:
     logger.error(f"文本纠错器初始化失败: {e}")
@@ -110,31 +110,15 @@ session_id - 会话id，可以为空，为空就新建session
 async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str] = None):
     await websocket.accept()
     
-    # 初始化识别器
-    try:
-        from asr.voice_asr import get_recognizer
-        voice_recognizer = get_recognizer(backend="whisper", model_name="base")
-        
-        # 检查识别器是否可用
-        status = voice_recognizer.get_status()
-        if not status.get("available"):
-            logger.error("语音识别器不可用")
-            await safe_send_message(websocket, {
-                "event": "error",
-                "error": "语音识别服务不可用，请检查Whisper安装"
-            })
-            await websocket.close()
-            return
-            
-    except Exception as e:
-        logger.error(f"初始化识别器失败: {e}")
+    # 直接使用全局已初始化的识别器（删除重复初始化！）
+    if not voice_recognizer or not voice_recognizer.is_available:
+        logger.error("语音识别器不可用")
         await safe_send_message(websocket, {
             "event": "error",
-            "error": f"初始化失败: {str(e)}"
+            "error": "语音识别服务不可用，请检查Whisper安装"
         })
         await websocket.close()
         return
-    
     # 生成session_id
     if not session_id:
         session_id = str(uuid.uuid4())
@@ -197,11 +181,17 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
                     
                     if recognized_text:
                         logger.info(f"识别到: {recognized_text}")
-                        
+                        # ===== 在这里添加纠错 =====
+                        if text_corrector:
+                            corrected_text, _ = text_corrector.correct(recognized_text)
+                        else:
+                            corrected_text = recognized_text
+                        # ==========================
                         # 发送临时结果
                         await safe_send_message(websocket, {
                             "event": "asr_interim",
                             "text": recognized_text,
+                            "corrected": corrected_text,        # 纠错后
                             "timestamp": time.time()
                         })
                         
@@ -287,24 +277,7 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
             payload = json.loads(data)
              # ======================== 【多模态核心：统一入口解析】 ========================
             query = payload.get("query", "")
-            voice_base64 = payload.get("voice_base64", "")
-            image_base64 = payload.get("image_base64", "")
-
-            # 1. 语音转文字（离线ASR）
-            if voice_base64:
-                if isinstance(voice_base64, str):
-                    voice_base64 = voice_base64.encode('utf-8')
-                voice_text = asr.transcribe(voice_base64)
-                if voice_text:
-                    query = voice_text + " " + query
-                    # 把识别结果返回前端
-                    await safe_send_message(websocket, {
-                        "event": "asr_result",
-                        "text": voice_text
-                    })
-
-        
-
+          
             # 最终交给你Agent的文本（融合所有模态）
             query = query.strip()
             # ============================================================================
