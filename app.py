@@ -108,9 +108,16 @@ session_id - 会话id，可以为空，为空就新建session
 '''
 @app.websocket("/asr/{user_id}/{session_id}")
 async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str] = None):
+    """
+    WebSocket 语音识别接口
+    
+    客户端协议:
+    1. 发送音频帧: {"voice_base64": "base64_audio_data","action": "end"}
+    2. 重置会话: {"action": "reset"}
+    """
     await websocket.accept()
     
-    # 直接使用全局已初始化的识别器（删除重复初始化！）
+    # ========== 1. 初始化检查 ==========
     if not voice_recognizer or not voice_recognizer.is_available:
         logger.error("语音识别器不可用")
         await safe_send_message(websocket, {
@@ -126,13 +133,12 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
     thread_id = f'{user_id}-{session_id}'
     logger.info(f"ASR会话已建立: {thread_id}")
     
-    # 累积的完整文本
-    accumulated_text = ""
     
     # 发送会话开始消息
     await safe_send_message(websocket, {
         "event": "session_started",
         "session_id": session_id,
+        "user_id": user_id,
         "message": "实时语音识别已启动，请开始说话",
         "backend": voice_recognizer.backend
     })
@@ -141,8 +147,22 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
         while True:
             try:
                 # 接收音频数据
-                data = await websocket.receive_text()
-                payload = json.loads(data)
+                # 设置接收超时（可选，避免长时间阻塞）
+                data = await asyncio.wait_for(
+                    websocket.receive_text(),
+                    timeout=300.0  # 5分钟超时
+                )
+                # 解析消息
+                try:
+                    payload = json.loads(data)
+                except json.JSONDecodeError:
+                    session_state["error_count"] += 1
+                    await safe_send_message(websocket, {
+                        "event": "error",
+                        "error": "无效的JSON格式",
+                        "code": "INVALID_JSON"
+                    })
+                    continue
                 
                 voice_base64 = payload.get("voice_base64", "")
                 action = payload.get("action", "")
@@ -150,59 +170,45 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
                 # 控制命令
                 if action == "reset":
                     voice_recognizer.remove_session(session_id)
-                    accumulated_text = ""
                     await safe_send_message(websocket, {
                         "event": "session_reset",
+                        "session_id": session_id,
                         "message": "会话已重置"
                     })
                     continue
                 
                 if action == "end":
-                   # ✅ 强制保存到绝对路径
-                    RECORD_DIR = "/root/agentic-app"
-                    os.makedirs(RECORD_DIR, exist_ok=True)
-                    # 调用保存（会从 full_webm 转完整音频）
-                    saved_path = voice_recognizer.save_recording(session_id, save_dir=RECORD_DIR)
-                    logger.info(f"✅ 最终保存路径: {saved_path}")
-                    await safe_send_message(websocket, {
-                        "event": "session_ended",
-                        "final_text": accumulated_text,
-                        "message": "会话已结束"
-                    })
-                    break
+                   
+                #    # ✅ 强制保存到绝对路径
+                #     RECORD_DIR = "/root/agentic-app"
+                #     os.makedirs(RECORD_DIR, exist_ok=True)
+                #     # 调用保存（会从 full_webm 转完整音频）
+                #     saved_path = voice_recognizer.save_recording(session_id, save_dir=RECORD_DIR)
+                #     logger.info(f"✅ 最终保存路径: {saved_path}")
                 
-                # 实时语音识别
-                if voice_base64:
-                    # 异步识别
-                    recognized_text = await voice_recognizer.transcribe_stream_async(
-                        session_id, 
-                        voice_base64
-                    )
-                    
-                    if recognized_text:
-                        logger.info(f"识别到: {recognized_text}")
-                        # ===== 在这里添加纠错 =====
-                        if text_corrector:
-                            corrected_text, _ = text_corrector.correct(recognized_text)
-                        else:
-                            corrected_text = recognized_text
-                        # ==========================
-                        # 发送临时结果
-                        await safe_send_message(websocket, {
-                            "event": "asr_interim",
-                            "text": recognized_text,
-                            "corrected": corrected_text,        # 纠错后
-                            "timestamp": time.time()
-                        })
+                    # 实时语音识别
+                    if voice_base64:
+                        # 异步识别
+                        recognized_text = await voice_recognizer.transcribe_stream_async(
+                            session_id, 
+                            voice_base64
+                        )
                         
-                        # 判断句子是否结束
-                        if voice_recognizer.is_sentence_end(recognized_text):
-                            accumulated_text += (accumulated_text and " " or "") + recognized_text
+                        if recognized_text:
+                            logger.info(f"识别到: {recognized_text}")
+                            # ===== 在这里添加纠错 =====
+                            if text_corrector:
+                                corrected_text, _ = text_corrector.correct(recognized_text)
+                            else:
+                                corrected_text = recognized_text
+                            # ==========================
+                            # 发送临时结果
                             await safe_send_message(websocket, {
                                 "event": "asr_final",
-                                "text": recognized_text,
-                                "accumulated": accumulated_text
+                                "text": recognized_text,      # 纠错后
+                                "timestamp": time.time()
                             })
+                        
                 
             except json.JSONDecodeError:
                 await safe_send_message(websocket, {

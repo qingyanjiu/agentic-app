@@ -54,18 +54,21 @@ def _get_cached_whisper_model(model_name: str):
 class AudioProcessor:
     @staticmethod
     def base64_to_bytes(base64_str: str) -> bytes:
+        '''处理 Data URL 格式：data:audio/webm;base64,xxxxx 提取逗号后的纯 base64'''
         if ',' in base64_str:
             base64_str = base64_str.split(',')[1]
         return base64.b64decode(base64_str)
 
     @staticmethod
     def webm_to_pcm(webm_bytes: bytes):
+        #检查输入有效性，过短的音频直接返回空
         if not webm_bytes or len(webm_bytes) < 100:
             return b"", 0, 0, 0
         # 明确指定参数
         sample_rate = 16000
         channels = 1
         sample_width = 2  # s16le = 16bit = 2字节
+        #ffmpeg 命令行参数，从管道读取 WebM，输出 PCM 到管道
         cmd = [
             'ffmpeg',
             '-hide_banner',
@@ -106,7 +109,7 @@ class AudioProcessor:
 
 
 class WhisperASR:
-    def __init__(self, model_name="base", language="zh", convert_to_simplified=True):
+    def __init__(self, model_name="medium", language="zh", convert_to_simplified=True):
         self.model_name = model_name
         self.language = language
         self.model = None
@@ -166,7 +169,7 @@ class WhisperASR:
                     y=audio_np, 
                     sr=sample_rate, 
                     stationary=True, 
-                    prop_decrease=0.5  # 降低降噪强度
+                    prop_decrease=0.3  # 降低降噪强度
                 )
             except Exception as e:
                 logger.debug(f"降噪跳过: {e}")
@@ -244,29 +247,22 @@ class VoiceRecognizer:
             else:
                 audio_bytes = chunk
 
-            # 2) 永远追加到完整录音（用于最后保存，不动它）
-            if session_id not in self.full_webm:
-                self.full_webm[session_id] = b""
-            self.full_webm[session_id] += audio_bytes
+            # # 2) 永远追加到完整录音（用于最后保存，不动它）
+            # if session_id not in self.full_webm:
+            #     self.full_webm[session_id] = b""
+            # self.full_webm[session_id] += audio_bytes
 
-            # 3) 识别用的临时缓冲区（累积够了才识别一次）
-            buf = self.get_buffer(session_id)
-            buf += audio_bytes
-            self.set_buffer(session_id, buf)
+            # # 3) 识别用的临时缓冲区（累积够了才识别一次）
+            # buf = self.get_buffer(session_id)
+            # buf += audio_bytes
+            # self.set_buffer(session_id, buf)
 
-            # 4) 只有累积到足够长度，才识别一次
-            if len(buf) >= 40000:
-                # 用这一段有效语音去识别
-                text = self.asr_engine.transcribe(buf)
-                # 保留最后 6400 字节（约0.2秒）用于上下文
-                overlap_size = 6400
-                if len(buf) > overlap_size:
-                    self.buffers[session_id] = buf[-overlap_size:]
-                else:
-                    self.buffers[session_id] = b""
-                return text
+            if len(audio_bytes) < 10000:
+                return ""
+        
+            return self.asr_engine.transcribe(audio_bytes)
 
-            return ""
+            
 
         except Exception as e:
             logger.error(f"流识别错误: {e}")
