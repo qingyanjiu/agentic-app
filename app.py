@@ -11,11 +11,12 @@ from models.llm import CustomLLMFactory
 # from graph.graph_pipeline import LangGraphPipeline
 from graph.reactive_pipeline import InfoDoubleCheckPipeline
 from graph.gen_doc_pipeline import GenDocPipeline
+from graph.asr_pipeline import TextCorrectorPipeline
 from tools.load_tools import load_tools
 import logging
 import uuid
 import time
-
+import asyncio
 from asr.voice_asr import get_recognizer, VoiceRecognizer
 from asr.text_corrector import get_corrector, TextCorrector
 
@@ -92,13 +93,17 @@ def _safe_serialize(obj):
 async def safe_send_message(websocket: WebSocket, message: dict):
     """安全地发送WebSocket消息，处理连接断开的情况"""
     try:
+        # 最重要：先判断连接状态
+        if not websocket.client_state.CONNECTED:
+            return False
+        
         await websocket.send_text(json.dumps(message, ensure_ascii=False))
         return True
-    except (WebSocketDisconnect, RuntimeError) as e:
-        logging.info(f"WebSocket send failed: {str(e)}")
+    except (WebSocketDisconnect, RuntimeError, OSError):
+        # 静默失败，不打冗余日志
         return False
     except Exception as e:
-        logging.error(f"Unexpected error in safe_send_message: {str(e)}")
+        logger.error(f"消息发送失败: {str(e)}")
         return False
 '''
 语音识别WebSocket接口
@@ -107,7 +112,7 @@ user_id - 用户id，必填
 session_id - 会话id，可以为空，为空就新建session
 '''
 @app.websocket("/asr/{user_id}/{session_id}")
-async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str] = None):
+async def asr_ws(websocket: WebSocket, user_id: str, session_id: Optional[str] = None):
     """
     WebSocket 语音识别接口
     
@@ -116,7 +121,8 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
     2. 重置会话: {"action": "reset"}
     """
     await websocket.accept()
-    
+    connected = True
+    session_state = {"error_count": 0}
     # ========== 1. 初始化检查 ==========
     if not voice_recognizer or not voice_recognizer.is_available:
         logger.error("语音识别器不可用")
@@ -142,10 +148,17 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
         "message": "实时语音识别已启动，请开始说话",
         "backend": voice_recognizer.backend
     })
+    try:
+        correctorPipeline = TextCorrectorPipeline(llm, user_id=user_id, session_id=session_id)
+    except Exception as e:
+        logger.error(f"初始化纠错器失败: {e}")
+        await websocket.close()
+        return
     
     try:
-        while True:
+        while connected:
             try:
+
                 # 接收音频数据
                 # 设置接收超时（可选，避免长时间阻塞）
                 data = await asyncio.wait_for(
@@ -155,12 +168,12 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
                 # 解析消息
                 try:
                     payload = json.loads(data)
-                except json.JSONDecodeError:
-                    session_state["error_count"] += 1
+                except json.JSONDecodeError as e:
+                    logger.error(f"JSON解析失败: {e}, 原始数据: {repr(data)}")
                     await safe_send_message(websocket, {
                         "event": "error",
-                        "error": "无效的JSON格式",
-                        "code": "INVALID_JSON"
+                        "error": f"无效的JSON格式: {str(e)}"
+                        
                     })
                     continue
                 
@@ -177,7 +190,8 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
                     })
                     continue
                 
-                if action == "end":
+                if action == "end" and voice_base64:
+                    try:
                    
                 #    # ✅ 强制保存到绝对路径
                 #     RECORD_DIR = "/root/agentic-app"
@@ -186,8 +200,7 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
                 #     saved_path = voice_recognizer.save_recording(session_id, save_dir=RECORD_DIR)
                 #     logger.info(f"✅ 最终保存路径: {saved_path}")
                 
-                    # 实时语音识别
-                    if voice_base64:
+            
                         # 异步识别
                         recognized_text = await voice_recognizer.transcribe_stream_async(
                             session_id, 
@@ -196,11 +209,17 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
                         
                         if recognized_text:
                             logger.info(f"识别到: {recognized_text}")
-                            # ===== 在这里添加纠错 =====
-                            if text_corrector:
-                                corrected_text, _ = text_corrector.correct(recognized_text)
-                            else:
-                                corrected_text = recognized_text
+                            # ===== 使用大模型进行文本纠错 =====
+                            async def stream_writer(data):
+                                if connected and websocket.client_state.CONNECTED:
+                                    await safe_send_message(websocket, data)
+
+                            corrected_text = await correctorPipeline.correct(recognized_text,stream_writer)
+                            # # ===== 在这里添加纠错 =====
+                            # if text_corrector:
+                            #     corrected_text, _ = text_corrector.correct(recognized_text)
+                            # else:
+                            #     corrected_text = recognized_text
                             # ==========================
                             # 发送临时结果
                             await safe_send_message(websocket, {
@@ -208,27 +227,37 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
                                 "text": recognized_text,      # 纠错后
                                 "timestamp": time.time()
                             })
-                        
+                            connected = False
+                    except Exception as e:
+                        logger.error(f"识别/纠错失败: {e}")
+                        continue
                 
-            except json.JSONDecodeError:
-                await safe_send_message(websocket, {
-                    "event": "error",
-                    "error": "无效的JSON格式"
-                })
+            # -------------------- 捕获断开 --------------------
+            except WebSocketDisconnect:
+                logger.info(f"客户端主动断开: {thread_id}")
+                connected = False
+                break
+
+            # -------------------- 捕获超时 --------------------
+            except asyncio.TimeoutError:
+                logger.info(f"WebSocket超时: {thread_id}")
+                connected = False
+                break
+
+            # -------------------- 其他错误 --------------------
             except Exception as e:
                 logger.error(f"处理消息出错: {e}")
-                await safe_send_message(websocket, {
-                    "event": "error",
-                    "error": str(e)
-                })
+                connected = False
+                break
                 
-    except WebSocketDisconnect:
-        logger.info(f"ASR会话断开: {thread_id}")
+    # 最外层捕获（兜底）
     except Exception as e:
-        logger.error(f"WebSocket异常: {e}")
+        logger.error(f"WebSocket全局异常: {e}")
     finally:
+        connected = False
         voice_recognizer.remove_session(session_id)
         logger.info(f"ASR会话已清理: {thread_id}")
+        return
 
             
 
@@ -264,7 +293,7 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
             session_id=session_id,
             use_evaluator=False # 是否启用结果评估器（可选
         )
-        logging.info("GenDocPipeline创建成功")
+        logging.info("chatPipeline创建成功")
     except Exception as e:
         error_msg = f"Pipeline创建失败：{str(e)}"
         logging.error(error_msg)
@@ -336,7 +365,7 @@ user_id - 用户id，必填
 session_id - 会话id，可以为空，为空就新建session
 '''
 @app.websocket("/gen_doc/{user_id}/{session_id}")
-async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str] = None):
+async def doc_ws(websocket: WebSocket, user_id: str, session_id: Optional[str] = None):
     # 1. 接受WebSocket连接
     await websocket.accept()
     
