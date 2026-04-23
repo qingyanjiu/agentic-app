@@ -2,7 +2,7 @@
 import json
 import os 
 from typing import Optional
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from agent.executor import AgentExecutorWrapper
@@ -52,7 +52,14 @@ from fastapi.staticfiles import StaticFiles
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
 
+# 图片上传目录
+UPLOAD_FOLDER = "/root/agentic-app/uploads"
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
+# 挂载图片目录
+app.mount("/uploads", StaticFiles(directory=UPLOAD_FOLDER), name="uploads")
+# 前端访问图片的地址（你的服务地址）
+BASE_URL = "http://127.0.0.1:8001"
 # ==================== 初始化语音和纠错模块 ====================
 try:
     # 初始化语音识别器（使用Whisper后端）
@@ -263,7 +270,24 @@ async def asr_ws(websocket: WebSocket, user_id: str, session_id: Optional[str] =
 
         
 
+# 上传图片接口
+@app.post("/upload/image")
+async def upload_image(file: UploadFile = File(...)):
+    # 生成唯一文件名，防止重名
+    ext = file.filename.split(".")[-1]
+    filename = f"{uuid.uuid4()}.{ext}"
+    save_path = os.path.join(UPLOAD_FOLDER, filename)
 
+    # 保存图片
+    with open(save_path, "wb") as f:
+        f.write(await file.read())
+
+    # 返回可访问的URL
+    image_url = f"{BASE_URL}/uploads/{filename}"
+    return {
+        "image_url": image_url,
+        "filename": filename
+    }
 
 '''
 对话智能体
@@ -312,19 +336,30 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
             payload = json.loads(data)
              # ======================== 【多模态核心：统一入口解析】 ========================
             query = payload.get("query", "")
-          
-            # 最终交给你Agent的文本（融合所有模态）
-            query = query.strip()
-            # ============================================================================
+            image_url = payload.get("image_url", "")        # 新增：url图片
 
-             # 校验用户输入：空查询直接返回错误
-            if not query:
-                await websocket.send_text(json.dumps({"error": "empty query"}))
+            # 构建多模态消息内容（兼容文本+图片）
+            content = []
+            # 1. 添加文本内容
+            if query:
+                content.append({"type": "text", "text": query})
+            
+            # 2. 添加图片（优先base64，其次url）
+            if image_url:
+                content.append({
+                    "type": "image_url",
+                    "image_url": {"url": image_url}
+                })
+            # 如果最终没有任何内容，返回错误
+            if not content:
+                await websocket.send_text(json.dumps({"error": "empty query or image"}))
                 continue
+           
+            
             # 核心：流式运行LangGraph流水线，返回Agent执行过程
             # 假设 agent 是通过 create_agent 创建的，并且支持 astream
             
-            async for chunk in rag_pipeline.astream_run(query, user_id, session_id):
+            async for chunk in rag_pipeline.astream_run(content, user_id, session_id):
                  # 序列化chunk（解决LangChain对象无法JSON化问题）
                 text = _safe_serialize(chunk)
                 ##################################

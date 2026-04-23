@@ -3,12 +3,15 @@
 这是一个基于 LangChain 的智能代理系统，实现多轮、交互式、自我优化的复杂任务处理。系统通过反应式工作流能够理解用户意图，动态补充参数，调用工具完成查询，并通过评估循环确保输出质量。
 
 ## ✨ 核心特性
-- 🎯 **意图识别与参数补全**: 自动分析用户意图，动态请求缺失参数
+- 🎯 **意图识别与参数补全**: 自动分析用户意图，动态补充参数
 - 🔄 **反应式工作流**: 基于LangGraph的状态机，支持评估迭代优化
 - 🛠️ **动态工具系统**: 配置驱动的工具生成，支持RAG知识库检索
 - 🔌 **MCP多服务器集成**: 支持连接多个MCP服务器，动态加载外部工具
 - 💾 **记忆持久化**: SQLite/JSON双重存储，多用户对话管理
 - 🌐 **实时交互**: WebSocket流式API，支持工具调用状态可视化
+- 🎤 **语音识别**: 基于Whisper的实时语音转文字
+- 🖼️ **多模态交互**: 支持图片上传和识别，文本+图片混合输入
+- 📝 **文档生成**: 智能生成各类统计报告文档
 
 ## 📋 核心能力矩阵
 
@@ -16,6 +19,13 @@
 - **意图识别**: 自动分析用户查询目的和参数需求
 - **参数补全**: 智能识别缺失参数并主动询问用户
 - **多轮对话**: 保持上下文连贯性，支持复杂任务分解
+- **多模态**: 支持文本+图片混合输入，智能理解图片内容
+
+### 语音识别能力
+- **语音转写**: 基于Whisper模型语音识别
+- **多语言支持**: 中文、英文等多语言识别
+- **文本纠错**: 集成LLM进行语音识别后文本纠错
+- **模型选择**: 支持tiny/base/small/medium/large多种模型
 
 ### 工作流引擎
 - **状态机驱动**: 基于LangGraph构建的反应式工作流
@@ -32,6 +42,11 @@
 - **双重持久化**: SQLite（生产）和JSON（开发）两种存储方案
 - **多用户支持**: 基于user_id和session_id的会话隔离
 - **记忆窗口**: 可配置的对话历史保留长度
+
+### 文档生成能力
+- **智能生成**: 根据数据模板自动生成Word文档
+- **统计报告**: 支持安防、能耗、运营等多类型报告
+- **流式输出**: 支持生成过程实时反馈
 
 ## 🏗️ 系统架构
 
@@ -63,6 +78,8 @@
 
 ## 🛠️ 技术栈
 
+### 技术栈
+
 ### 核心框架
 - **LangChain + LangGraph**: 代理框架和工作流引擎
 - **FastAPI**: Web服务器和WebSocket支持
@@ -72,6 +89,14 @@
 - **SiliconFlow API**: Qwen/Qwen3-30B-A3B-Instruct-2507（默认）
 - **OpenAI兼容接口**: 支持本地部署的OpenAI兼容模型
 - **Ollama**: 可选本地模型部署（已注释支持）
+- **Whisper**: 语音识别模型，支持流式ASR
+- **多模态模型**: 支持视觉理解的LLM（如Qwen2.5-VL）
+
+### 语音处理
+- **Whisper**: OpenAI开源语音识别模型
+- **noisereduce**: 音频降噪处理
+- **ffmpeg**: 音频格式转换
+- **opencc**: 简繁体转换
 
 ### 数据存储
 - **SQLite**: 生产环境推荐，支持事务和多用户
@@ -91,6 +116,10 @@
 - `PyYAML==6.0.1`: YAML配置解析
 - `langchain_mcp_adapters==0.2.1`: mcp客户端适配器
 - `python-docx==1.2.0`: word库
+- `whisper`: OpenAI语音识别模型
+- `openai==2.7.2`: OpenAI客户端
+- `numpy==1.26.3`: 数值计算
+- `noisereduce`: 音频降噪
 
 ## ⚡ 快速开始
 
@@ -129,72 +158,208 @@ uvicorn app:app --host 0.0.0.0 --port 8000 --reload
 # http://localhost:8000/docs
 ```
 
-### 验证服务
-使用浏览器或工具测试WebSocket连接：
-- Agent对话WebSocket端点: `ws://localhost:8000/chat/{user_id}/{session_id}`
-- 文档生成WebSocket端点: `ws://localhost:8001/genDoc/{user_id}/{session_id}`
 
 ## 📖 API使用指南
 
-### WebSocket连接
+### 1. 对话智能体 WebSocket 接口
 系统通过WebSocket提供流式交互接口：
-
 ```javascript
-// JavaScript客户端示例
-const ws = new WebSocket('ws://localhost:8000/chat/user_1/session_1');
+const ws = new WebSocket('ws://localhost:8001/gen_doc/{user_id}/{session_id}');
 
 ws.onopen = () => {
-  console.log('连接已建立');
-  ws.send(JSON.stringify({query: "查询北京天气"}));
+  // 发送生成请求
+  ws.send(JSON.stringify({
+   {
+    "query": "理解下这图片",
+    "image_url":"http://localhost:8001/uploads/c2deb3f4-7f40-4d70-8615-47de2dc060e7.png"
+}  }))
 };
 
-ws.onmessage = (event) => {
-  const data = JSON.parse(event.data);
-  switch(data.event) {
-    case 'token':
-      console.log('AI回答:', data.data);
-      break;
-    case 'custom':
-      if (data.data.type === 'tool') {
-        console.log('工具状态:', data.data.content);
-      } else if (data.data.type === 'intent_desc') {
-        console.log('意图分析:', data.data.content);
-      }
-      break;
-  }
-};
+```
+**服务端响应格式**：
+```json
+{
+	"event": "custom",
+	"data": {
+		"type": "intent_desc",
+		"content": "之前的用户意图是：，最新的用户输入是：[{'type': 'text', 'text': '理解下这图片'}, {'type': 'image_url', 'image_url': {'url': 'http://127.0.0.1:8001/uploads/c2deb3f4-7f40-4d70-8615-47de2dc060e7.png'}}, '\\n', '[', '用', '户', '上', '传', '了', '图', '片', '，', '请', '结', '合', '图', '片', '理', '解', '意', '图', ']']"
+	}
+}
+{
+	"event": "custom",
+	"data": {
+		"type": "answer",
+		"content": "好的，你上传的图片....."
+	}
+}
+```
+### 2. 语音转文字接口
 
-ws.onerror = (error) => {
-  console.error('WebSocket错误:', error);
+上传图片并获取访问URL，用于后续的多模态识别：
+
+```bash
+const ws = new WebSocket('ws://localhost:8001/asr/{user_id}/{session_id}');
+
+ws.onopen = () => {
+  // 发送生成请求
+  ws.send(JSON.stringify({
+   {
+     "action":"end",
+    "voice_base64":"..."
+}  }))
 };
 ```
 
-```python
-# Python客户端示例
-import websocket
-import json
-import threading
+**响应格式**：
+```json
+{
+    "event": "asr_final",
+    "text": "今天天气很好",      
+    "timestamp": ""
+}
+```
 
-def test_agent():
-    ws = websocket.WebSocket()
-    ws.connect("ws://localhost:8000/chat/user_id/session_id")
-    
-    # 发送查询
-    ws.send(json.dumps({"query": "今天天气怎么样"}))
-    
-    # 接收流式响应
-    while True:
-        try:
-            response = ws.recv()
-            data = json.loads(response)
-            print(f"响应: {data}")
-        except websocket.WebSocketConnectionClosedException:
-            print("连接已关闭")
-            break
+### 3. 图片上传接口
 
-# 在新线程中运行
-thread = threading.Thread(target=test_agent)
-thread.start()
+上传图片并获取访问URL，用于后续的多模态识别：
+
+```bash
+# 使用curl上传图片
+curl -X POST "http://localhost:8001/upload/image" \
+  -H "accept: application/json" \
+  -H "Content-Type: multipart/form-data" \
+  -F "file=@/path/to/image.jpg"
+```
+
+**响应格式**：
+```json
+{
+	"image_url": "http://127.0.0.1:8001/uploads/c2deb3f4-7f40-4d70-8615-47de2dc060e7.png",
+	"filename": "c2deb3f4-7f40-4d70-8615-47de2dc060e7.png"
+}
+```
+
+### 4. 文档生成 WebSocket 接口
+
+```javascript
+const ws = new WebSocket('ws://localhost:8001/gen_doc/{user_id}/{session_id}');
+
+ws.onopen = () => {
+  // 发送生成请求
+  ws.send(JSON.stringify({
+    query: 
+    {
+    "query": {
+        "company": "设计院",
+        "start_date": "2025-01-01",
+        "end_date": "2025-12-31",
+        "data":{
+        "security": {
+            "type": "安防",
+            "date": "2025",
+            "company": "A公司",
+            "overview": {
+                "total_month": 12,
+                "total_alerts": 15717,
+                "avg_monthly_alerts": 1309.75,
+                "max_month": "2025-07",
+                "min_month": "2025-02",
+                "alert_type_ratio": {
+                    "intrusion_alert": {
+                        "ratio": "40.2%"
+                    },
+                    "abnormal_gathering_alert": {
+                        "ratio": "34.8%"
+                    },
+                    "fire_alert": {
+                        "ratio": "25.0%"
+                    }
+                },
+                "severe_alerts": {
+                    "count": 90.67
+                },
+                "face_recognition_match_rate": {
+                    "rate": "92.9%"
+                },
+                "cctv_online_rate": {
+                    "rate": "97.3%"
+                },
+                "key_events": "全年发生重大入侵事件32起，消防误报26起，主要集中在B栋办公区及园区北门",
+                "root_cause": "夏季（7-8月）因人员流动频繁导致告警量偏高，春节、国庆假期因人员减少告警量显著下降"
+            }
+        },
+        "energy": {
+            "type": "能耗",
+            "date": "2025",
+            "overview": {
+                "total_month": 12,
+                "total_alerts": 15717,
+                "avg_monthly_alerts": 1309.75,
+                "max_month": "2025-07",
+                "min_month": "2025-02",
+                "alert_type_ratio": {
+                    "intrusion_alert": {
+                        "ratio": "40.2%"
+                    },
+                    "abnormal_gathering_alert": {
+                        "ratio": "34.8%"
+                    },
+                    "fire_alert": {
+                        "ratio": "25.0%"
+                    }
+                },
+                "severe_alerts": {
+                    "count": 90.67
+                },
+                "face_recognition_match_rate": {
+                    "rate": "92.9%"
+                },
+                "cctv_online_rate": {
+                    "rate": "97.3%"
+                },
+                "key_events": "全年发生重大入侵事件32起，消防误报26起，主要集中在B栋办公区及园区北门",
+                "root_cause": "夏季（7-8月）因人员流动频繁导致告警量偏高，春节、国庆假期因人员减少告警量显著下降"
+            }
+        },
+        "operation": {
+            "type": "运营",
+            "date": "2025",
+            "overview": {
+                "total_month": 12,
+                "total_alerts": 15717,
+                "avg_monthly_alerts": 1309.75,
+                "max_month": "2025-07",
+                "min_month": "2025-02",
+                "alert_type_ratio": {
+                    "intrusion_alert": {
+                        "ratio": "40.2%"
+                    },
+                    "abnormal_gathering_alert": {
+                        "ratio": "34.8%"
+                    },
+                    "fire_alert": {
+                        "ratio": "25.0%"
+                    }
+                },
+                "severe_alerts": {
+                    "count": 90.67
+                },
+                "face_recognition_match_rate": {
+                    "rate": "92.9%"
+                },
+                "cctv_online_rate": {
+                    "rate": "97.3%"
+                },
+                "key_events": "全年发生重大入侵事件32起，消防误报26起，主要集中在B栋办公区及园区北门",
+                "root_cause": "夏季（7-8月）因人员流动频繁导致告警量偏高，春节、国庆假期因人员减少告警量显著下降"
+            }
+        }}
+    }
+
+}
+  }));
+};
+
 ```
 
 ### 响应格式
@@ -357,141 +522,7 @@ async def load_mcp_tools():
 
 配置MCP服务器时，需在 `mcp_server_config.yaml` 中定义服务器地址、传输协议和认证信息。
 
-## 🧪 测试与部署
-
-### 测试示例
-```bash
-# 通过curl测试WebSocket（使用websocat工具）
-websocat ws://localhost:8000/agentic_rag_query/test/test
-
-# 发送测试消息（交互式）
-{"query": "查询知识库中有哪些文档？"}
-```
-
-### 对话示例
-```
-用户: 查询北京天气
-系统: 请提供查询日期
-用户: 今天
-系统: 正在查询天气... 北京今天晴天，25°C
-```
-```运营报告生成
-# 通过curl测试WebSocket（使用websocat工具）
-websocat ws://localhost:8001/gen_doc/zhangsan/24654262
-
-# 发送测试消息（交互式）
-{
-    "query": {
-        "company": "设计院",
-        "start_date": "2025-01-01",
-        "end_date": "2025-12-31",
-        "data":{
-        "security": {
-            "type": "安防",
-            "date": "2025",
-            "company": "A公司",
-            "overview": {
-                "total_month": 12,
-                "total_alerts": 15717,
-                "avg_monthly_alerts": 1309.75,
-                "max_month": "2025-07",
-                "min_month": "2025-02",
-                "alert_type_ratio": {
-                    "intrusion_alert": {
-                        "ratio": "40.2%"
-                    },
-                    "abnormal_gathering_alert": {
-                        "ratio": "34.8%"
-                    },
-                    "fire_alert": {
-                        "ratio": "25.0%"
-                    }
-                },
-                "severe_alerts": {
-                    "count": 90.67
-                },
-                "face_recognition_match_rate": {
-                    "rate": "92.9%"
-                },
-                "cctv_online_rate": {
-                    "rate": "97.3%"
-                },
-                "key_events": "全年发生重大入侵事件32起，消防误报26起，主要集中在B栋办公区及园区北门",
-                "root_cause": "夏季（7-8月）因人员流动频繁导致告警量偏高，春节、国庆假期因人员减少告警量显著下降"
-            }
-        },
-        "energy": {
-            "type": "能耗",
-            "date": "2025",
-            "overview": {
-                "total_month": 12,
-                "total_alerts": 15717,
-                "avg_monthly_alerts": 1309.75,
-                "max_month": "2025-07",
-                "min_month": "2025-02",
-                "alert_type_ratio": {
-                    "intrusion_alert": {
-                        "ratio": "40.2%"
-                    },
-                    "abnormal_gathering_alert": {
-                        "ratio": "34.8%"
-                    },
-                    "fire_alert": {
-                        "ratio": "25.0%"
-                    }
-                },
-                "severe_alerts": {
-                    "count": 90.67
-                },
-                "face_recognition_match_rate": {
-                    "rate": "92.9%"
-                },
-                "cctv_online_rate": {
-                    "rate": "97.3%"
-                },
-                "key_events": "全年发生重大入侵事件32起，消防误报26起，主要集中在B栋办公区及园区北门",
-                "root_cause": "夏季（7-8月）因人员流动频繁导致告警量偏高，春节、国庆假期因人员减少告警量显著下降"
-            }
-        },
-        "operation": {
-            "type": "运营",
-            "date": "2025",
-            "overview": {
-                "total_month": 12,
-                "total_alerts": 15717,
-                "avg_monthly_alerts": 1309.75,
-                "max_month": "2025-07",
-                "min_month": "2025-02",
-                "alert_type_ratio": {
-                    "intrusion_alert": {
-                        "ratio": "40.2%"
-                    },
-                    "abnormal_gathering_alert": {
-                        "ratio": "34.8%"
-                    },
-                    "fire_alert": {
-                        "ratio": "25.0%"
-                    }
-                },
-                "severe_alerts": {
-                    "count": 90.67
-                },
-                "face_recognition_match_rate": {
-                    "rate": "92.9%"
-                },
-                "cctv_online_rate": {
-                    "rate": "97.3%"
-                },
-                "key_events": "全年发生重大入侵事件32起，消防误报26起，主要集中在B栋办公区及园区北门",
-                "root_cause": "夏季（7-8月）因人员流动频繁导致告警量偏高，春节、国庆假期因人员减少告警量显著下降"
-            }
-        }}
-    }
-
-}
-
-```
-
+## 🧪 部署
 
 ### Docker生产部署
 ```dockerfile
@@ -522,10 +553,17 @@ agentic-app/
 │   ├── info_double_check_prompts.py # 主要问答流程的系统提示词
 │   ├── intent_get_prompt.py # 识别用户意图和工具的提示词
 │   ├── get_intent_and_select_tools_prompt.py # 选择工具和获取参数的提示词
+│   ├── text_corrector_prompt.py # 语音识别文本纠错提示词
 │   └── rag_prompts.py      # RAG（检索增强生成）相关的系统提示词
+├── asr/                    # 语音识别模块
+│   ├── voice_asr.py        # Whisper语音识别核心，支持流式识别
+│   ├── text_corrector.py   # 文本纠错器，支持pycorrector规则和LLM纠错
+│   └── voice_recognizer.py # 语音识别封装类
 ├── graph/                  # 图形工作流模块，定义了工作流节点和流程
-│   ├── reactive_pipeline.py # 反应式工作流的核心文件，实现了包含意图识别、参数请求、主代理执行、评估和组装的完整流程
-│   └── langgraph开发模板代码.py # 可能是模板参考文件
+│   ├── reactive_pipeline.py # 反应式工作流的核心文件
+│   ├── gen_doc_pipeline.py  # 文档生成工作流
+│   ├── asr_pipeline.py      # 语音识别纠错工作流
+│   └── langgraph开发模板代码.py # 模板参考文件
 ├── memory/                 # 记忆管理模块，用于持久化保存对话历史
 │   ├── store.py            # 记忆存储服务，提供统一接口
 │   ├── memory_persistor.py # 记忆持久化抽象基类
@@ -535,26 +573,32 @@ agentic-app/
 │   ├── rag_tools.py        # RAG（检索增强生成）核心工具，实现了知识库检索
 │   ├── custom_tool.py      # 自定义工具基类，用于生成动态工具
 │   ├── system_tools.py     # 系统级工具的集合
-│   └── dify_datasets_controller.py # Dify知识库控制器，封装了与Dify API的交互
+│   └── dify_datasets_controller.py # Dify知识库控制器
 ├── dynamic_tools/          # 动态工具模块，支持从外部数据源动态加载工具
 │   ├── api_dynamic_tool.py # 基于API的动态工具实现类
 │   ├── file_dynamic_tool.py # 基于文件的动态工具实现类
 │   ├── dynamic_tool_generator.py # 动态工具生成器，抽象基类
-│   └── dynamic-tools-data.json # 工具描述数据文件，定义了可用工具的元信息
+│   └── dynamic-tools-data.json # 工具描述数据文件
 ├── models/                 # 模型配置模块，管理大模型实例
-│   └── llm.py              # 大模型工厂类，支持多种模型（OpenAI, Ollama）
-├── utils/                  # 工具函数模块
-│   ├── utils.py            # 通用工具函数，如配置读取
-│   └── static.py           # 静态配置，如文件路径
-├── mcp_client/             # MCP客户端模块，支持多MCP服务器集成
-│   ├── mcp_loader.py       # MCP配置加载器，提供异步工具加载功能
-│   └── mcp_server_config.yaml # MCP服务器配置文件
+│   └── llm.py              # 大模型工厂类，支持多种模型
+├── static/                 # 静态文件目录
+│   └── index.html          # 前端交互页面（语音识别）
 ├── app.py                  # 主应用入口，FastAPI服务器
-├── global_config.json      # 全局配置文件，包含各种参数
-├── memory_store.json       # 内存存储的JSON文件（仅用于测试）
+├── global_config.json      # 全局配置文件
+├── memory_store.json       # 内存存储的JSON文件
 ├── memory_store.db         # 内存存储的SQLite数据库文件
-└── workflow.png            # 工作流图（由代码自动生成）
+└── workflow.png            # 工作流图
 ```
+
+### 核心目录说明
+
+- **`asr/`**: 语音识别模块
+  - `voice_asr.py`: Whisper模型封装，支持流式音频识别
+  - `text_corrector.py`: 基于规则和LLM的文本纠错器
+- **`graph/`**: 工作流模块
+  - `asr_pipeline.py`: 语音识别纠错工作流
+  - `gen_doc_pipeline.py`: 文档生成工作流
+
 
 ## 🔍 详细功能模块说明
 
@@ -595,8 +639,35 @@ agentic-app/
 - **`static.py`**：静态配置。定义了内存存储文件的路径，便于管理和维护。
 
 ### 8. `app.py` 模块
-- **FastAPI 服务器**：主入口，监听 WebSocket `/agentic_rag_query/{user_id}/{session_id}` 路径。当收到用户消息时，它会初始化 `InfoDoubleCheckPipeline` 实例，并通过 `astream_run` 方法进行流式调用，将结果（包括工具调用状态、最终答案等）实时返回给前端。这实现了真正的对话式交互体验。
+- **FastAPI 服务器**：主入口，提供多个 WebSocket 接口：
+  - `/chat/{user_id}/{session_id}`: 对话智能体接口（支持多模态）
+  - `/asr/{user_id}/{session_id}`: 语音识别接口
+  - `/gen_doc/{user_id}/{session_id}`: 文档生成接口
+  - `/upload/image`: 图片上传接口
+- **静态文件服务**：
+  - `/uploads/`: 上传文件访问
+  - `/reports/`: 生成报告下载
 
 ### 9. `mcp_client/` 模块
 - **`mcp_loader.py`**：MCP配置加载器。`load_mcp_config()` 函数从 YAML 文件读取 MCP 服务器配置，`get_mcp_tools()` 异步函数加载配置并通过 `MultiServerMCPClient` 获取 LangChain 兼容的工具列表。这实现了与多个 MCP 服务器的动态集成。
 - **`mcp_server_config.yaml`**：MCP服务器配置文件。以 YAML 格式定义多个 MCP 服务器的连接信息，当前配置包含 `local` 服务器（使用 streamable_http 传输连接到指定 URL），支持扩展添加更多服务器。
+
+### 10. `asr/` 语音识别模块
+- **`voice_asr.py`**: Whisper语音识别核心模块
+  - `AudioProcessor`: 音频格式转换（WebM→PCM）
+  - `WhisperASR`: Whisper模型封装，支持噪声抑制和简繁体转换
+  - `VoiceRecognizer`: 流式识别封装，支持多会话管理
+  - 支持模型缓存和单例模式
+- **`text_corrector.py`**: 文本纠错器
+  - 支持 pycorrector 规则纠错
+  - 支持 LLM 智能纠错（可选）
+  - 简繁体转换
+  - 专业术语保护
+
+### 11. `graph/` 工作流模块
+- **`asr_pipeline.py`**: 语音识别纠错工作流
+  - `TextCorrectorPipeline`: 封装 LLM 纠错逻辑
+  - 支持流式输出模拟
+- **`gen_doc_pipeline.py`**: 文档生成工作流
+  - 根据模板生成 Word 文档
+  - 支持安防、能耗、运营等多类型报告
