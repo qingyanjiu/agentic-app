@@ -13,6 +13,7 @@ from models.llm import CustomLLMFactory
 from graph.reactive_pipeline import InfoDoubleCheckPipeline
 from graph.gen_doc_pipeline import GenDocPipeline
 from tools.load_tools import load_tools
+from skills.mcp_agent import McpSkillAgent
 import logging
 import uuid
 
@@ -38,7 +39,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 # 挂载报告文件目录为静态文件服务
-REPORT_DIR = "/root/agentic-app/reports"
+REPORT_DIR = "./reports"
 os.makedirs(REPORT_DIR, exist_ok=True)
 # 将 reports 目录挂载为静态目录，前端可直接访问 /reports/文件名.docx 下载
 app.mount("/reports", StaticFiles(directory=REPORT_DIR), name="reports")
@@ -244,3 +245,58 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
 
         except Exception as e:
             await websocket.send_text(json.dumps({"error": str(e)}))
+
+
+'''
+MCP Skill Agent — 单Agent智能调用MCP工具
+用户只需用自然语言描述想查什么，Agent自动判断用哪个MCP工具、提取参数、调用并返回结果
+'''
+@app.websocket("/mcp_skill/{user_id}/{session_id}")
+async def mcp_skill_ws(websocket: WebSocket, user_id: str, session_id: Optional[str] = None):
+    await websocket.accept()
+
+    if not session_id:
+        session_id = str(uuid.uuid4())
+
+    # 初始化 Agent（连接MCP服务器、创建AgentExecutor）
+    try:
+        agent = McpSkillAgent(
+            llm=llm,
+            mcp_yaml_path="mcp_client/mcp_server_config.yaml",
+        )
+        await agent.initialize()
+        logging.info("McpSkillAgent 初始化成功，可用工具: %s", agent.available_tools)
+    except Exception as e:
+        error_msg = f"McpSkillAgent 初始化失败: {str(e)}"
+        logging.error(error_msg)
+        await websocket.send_text(json.dumps({
+            "type": "error",
+            "message": error_msg,
+            "code": "AGENT_INIT_FAILED"
+        }))
+        await websocket.close()
+        return
+
+    # 对话循环
+    while True:
+        try:
+            data = await websocket.receive_text()
+            payload = json.loads(data)
+            query = payload.get("query", "")
+
+            if not query:
+                await websocket.send_text(json.dumps({"type": "error", "message": "empty query"}))
+                continue
+
+            # 流式执行 Agent
+            async for event in agent.stream_chat(query):
+                await websocket.send_text(json.dumps(event, ensure_ascii=False))
+
+            await websocket.send_text(json.dumps({"type": "done"}))
+
+        except WebSocketDisconnect:
+            logging.info("客户端断开连接: %s-%s", user_id, session_id)
+            break
+        except Exception as e:
+            logging.exception("对话异常")
+            await websocket.send_text(json.dumps({"type": "error", "message": str(e)}))

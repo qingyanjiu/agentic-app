@@ -19,8 +19,8 @@ async def load_tools():
     # tools = fileDynamicTool.generate_tools()
     
     # # 基础工具
-    # tools = genSystemTools()
+    tools = genSystemTools()
 
     # mcp工具
-    tools = await get_mcp_tools('mcp_client/mcp_server_config.yaml')
+    # tools = await get_mcp_tools('mcp_client/mcp_server_config.yaml')
     return tools
