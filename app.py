@@ -1,9 +1,8 @@
 # uvicorn app:app --host 0.0.0.0 --port 8000 --reload
-
 import json
 import os 
 from typing import Optional
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from agent.executor import AgentExecutorWrapper
@@ -12,10 +11,15 @@ from models.llm import CustomLLMFactory
 # from graph.graph_pipeline import LangGraphPipeline
 from graph.reactive_pipeline import InfoDoubleCheckPipeline
 from graph.gen_doc_pipeline import GenDocPipeline
+from graph.asr_pipeline import TextCorrectorPipeline
 from tools.load_tools import load_tools
 from skills.mcp_agent import McpSkillAgent
 import logging
 import uuid
+import time
+import asyncio
+from asr.voice_asr import get_recognizer, VoiceRecognizer
+from asr.text_corrector import get_corrector, TextCorrector
 
 # docker开发环境
 # docker run -d -v /Users/louisliu/dev/AI_projects/agentic-app:/root/agentic-app --name langchain-agent-dev qingyanjiu/langchain:1.0.3 tail -f /dev/null
@@ -28,7 +32,7 @@ logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(levelname)s - %(name)s - %(message)s'
 )
-
+logger = logging.getLogger(__name__)
 app = FastAPI()
 # 添加 CORS 支持（解决跨域问题）
 app.add_middleware(
@@ -43,6 +47,40 @@ REPORT_DIR = "./reports"
 os.makedirs(REPORT_DIR, exist_ok=True)
 # 将 reports 目录挂载为静态目录，前端可直接访问 /reports/文件名.docx 下载
 app.mount("/reports", StaticFiles(directory=REPORT_DIR), name="reports")
+from fastapi.staticfiles import StaticFiles
+
+# 挂载静态文件目录
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
+
+# 图片上传目录
+UPLOAD_FOLDER = "/root/agentic-app/uploads"
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+# 挂载图片目录
+app.mount("/uploads", StaticFiles(directory=UPLOAD_FOLDER), name="uploads")
+# 前端访问图片的地址（你的服务地址）
+BASE_URL = "http://127.0.0.1:8001"
+# ==================== 初始化语音和纠错模块 ====================
+try:
+    # 初始化语音识别器（使用Whisper后端）
+    voice_recognizer = get_recognizer(
+        backend="whisper",      # 可选: "whisper", "custom"
+        model_name="medium",      # 可选: tiny, base, small, medium, large
+        use_stream=True         # 启用流式处理
+    )
+    logger.info("语音识别器初始化成功")
+except Exception as e:
+    logger.error(f"语音识别器初始化失败: {e}")
+    voice_recognizer = None
+
+try:
+    # 初始化文本纠错器
+    text_corrector = get_corrector(use_advanced=False)  # 使用高级纠错
+    logger.info("文本纠错器初始化成功")
+except Exception as e:
+    logger.error(f"文本纠错器初始化失败: {e}")
+    text_corrector = None
 
 # 全局模型和工具
 llm_factory = CustomLLMFactory()
@@ -63,14 +101,194 @@ def _safe_serialize(obj):
 async def safe_send_message(websocket: WebSocket, message: dict):
     """安全地发送WebSocket消息，处理连接断开的情况"""
     try:
+        # 最重要：先判断连接状态
+        if not websocket.client_state.CONNECTED:
+            return False
+        
         await websocket.send_text(json.dumps(message, ensure_ascii=False))
         return True
-    except (WebSocketDisconnect, RuntimeError) as e:
-        logging.info(f"WebSocket send failed: {str(e)}")
+    except (WebSocketDisconnect, RuntimeError, OSError):
+        # 静默失败，不打冗余日志
         return False
     except Exception as e:
-        logging.error(f"Unexpected error in safe_send_message: {str(e)}")
+        logger.error(f"消息发送失败: {str(e)}")
         return False
+'''
+语音识别WebSocket接口
+    支持实时语音转文字 + 文本纠错
+user_id - 用户id，必填
+session_id - 会话id，可以为空，为空就新建session
+'''
+@app.websocket("/asr/{user_id}/{session_id}")
+async def asr_ws(websocket: WebSocket, user_id: str, session_id: Optional[str] = None):
+    """
+    WebSocket 语音识别接口
+    
+    客户端协议:
+    1. 发送音频帧: {"voice_base64": "base64_audio_data","action": "end"}
+    2. 重置会话: {"action": "reset"}
+    """
+    await websocket.accept()
+    connected = True
+    session_state = {"error_count": 0}
+    # ========== 1. 初始化检查 ==========
+    if not voice_recognizer or not voice_recognizer.is_available:
+        logger.error("语音识别器不可用")
+        await safe_send_message(websocket, {
+            "event": "error",
+            "error": "语音识别服务不可用，请检查Whisper安装"
+        })
+        await websocket.close()
+        return
+    # 生成session_id
+    if not session_id:
+        session_id = str(uuid.uuid4())
+    
+    thread_id = f'{user_id}-{session_id}'
+    logger.info(f"ASR会话已建立: {thread_id}")
+    
+    
+    # 发送会话开始消息
+    await safe_send_message(websocket, {
+        "event": "session_started",
+        "session_id": session_id,
+        "user_id": user_id,
+        "message": "实时语音识别已启动，请开始说话",
+        "backend": voice_recognizer.backend
+    })
+    try:
+        correctorPipeline = TextCorrectorPipeline(llm, user_id=user_id, session_id=session_id)
+    except Exception as e:
+        logger.error(f"初始化纠错器失败: {e}")
+        await websocket.close()
+        return
+    
+    try:
+        while connected:
+            try:
+
+                # 接收音频数据
+                # 设置接收超时（可选，避免长时间阻塞）
+                data = await asyncio.wait_for(
+                    websocket.receive_text(),
+                    timeout=300.0  # 5分钟超时
+                )
+                # 解析消息
+                try:
+                    payload = json.loads(data)
+                except json.JSONDecodeError as e:
+                    logger.error(f"JSON解析失败: {e}, 原始数据: {repr(data)}")
+                    await safe_send_message(websocket, {
+                        "event": "error",
+                        "error": f"无效的JSON格式: {str(e)}"
+                        
+                    })
+                    continue
+                
+                voice_base64 = payload.get("voice_base64", "")
+                action = payload.get("action", "")
+                
+                # 控制命令
+                if action == "reset":
+                    voice_recognizer.remove_session(session_id)
+                    await safe_send_message(websocket, {
+                        "event": "session_reset",
+                        "session_id": session_id,
+                        "message": "会话已重置"
+                    })
+                    continue
+                
+                if action == "end" and voice_base64:
+                    try:
+                   
+                #    # ✅ 强制保存到绝对路径
+                #     RECORD_DIR = "/root/agentic-app"
+                #     os.makedirs(RECORD_DIR, exist_ok=True)
+                #     # 调用保存（会从 full_webm 转完整音频）
+                #     saved_path = voice_recognizer.save_recording(session_id, save_dir=RECORD_DIR)
+                #     logger.info(f"✅ 最终保存路径: {saved_path}")
+                
+            
+                        # 异步识别
+                        recognized_text = await voice_recognizer.transcribe_stream_async(
+                            session_id, 
+                            voice_base64
+                        )
+                        
+                        if recognized_text:
+                            logger.info(f"识别到: {recognized_text}")
+                            # ===== 使用大模型进行文本纠错 =====
+                            async def stream_writer(data):
+                                if connected and websocket.client_state.CONNECTED:
+                                    await safe_send_message(websocket, data)
+
+                            corrected_text = await correctorPipeline.correct(recognized_text,stream_writer)
+                            # # ===== 在这里添加纠错 =====
+                            # if text_corrector:
+                            #     corrected_text, _ = text_corrector.correct(recognized_text)
+                            # else:
+                            #     corrected_text = recognized_text
+                            # ==========================
+                            # 发送临时结果
+                            await safe_send_message(websocket, {
+                                "event": "asr_final",
+                                "text": recognized_text,      # 纠错后
+                                "timestamp": time.time()
+                            })
+                            connected = False
+                    except Exception as e:
+                        logger.error(f"识别/纠错失败: {e}")
+                        continue
+                
+            # -------------------- 捕获断开 --------------------
+            except WebSocketDisconnect:
+                logger.info(f"客户端主动断开: {thread_id}")
+                connected = False
+                break
+
+            # -------------------- 捕获超时 --------------------
+            except asyncio.TimeoutError:
+                logger.info(f"WebSocket超时: {thread_id}")
+                connected = False
+                break
+
+            # -------------------- 其他错误 --------------------
+            except Exception as e:
+                logger.error(f"处理消息出错: {e}")
+                connected = False
+                break
+                
+    # 最外层捕获（兜底）
+    except Exception as e:
+        logger.error(f"WebSocket全局异常: {e}")
+    finally:
+        connected = False
+        voice_recognizer.remove_session(session_id)
+        logger.info(f"ASR会话已清理: {thread_id}")
+        return
+
+            
+
+        
+
+# 上传图片接口
+@app.post("/upload/image")
+async def upload_image(file: UploadFile = File(...)):
+    # 生成唯一文件名，防止重名
+    ext = file.filename.split(".")[-1]
+    filename = f"{uuid.uuid4()}.{ext}"
+    save_path = os.path.join(UPLOAD_FOLDER, filename)
+
+    # 保存图片
+    with open(save_path, "wb") as f:
+        f.write(await file.read())
+
+    # 返回可访问的URL
+    image_url = f"{BASE_URL}/uploads/{filename}"
+    return {
+        "image_url": image_url,
+        "filename": filename
+    }
 
 '''
 对话智能体
@@ -100,7 +318,7 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
             session_id=session_id,
             use_evaluator=False # 是否启用结果评估器（可选
         )
-        logging.info("GenDocPipeline创建成功")
+        logging.info("chatPipeline创建成功")
     except Exception as e:
         error_msg = f"Pipeline创建失败：{str(e)}"
         logging.error(error_msg)
@@ -116,15 +334,33 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
         try:
             # 接收客户端发送的JSON数据（格式：{"query": "用户问题"}）
             data = await websocket.receive_text()
-            query = json.loads(data).get("query")
-             # 校验用户输入：空查询直接返回错误
-            if not query:
-                await websocket.send_text(json.dumps({"error": "empty query"}))
+            payload = json.loads(data)
+             # ======================== 【多模态核心：统一入口解析】 ========================
+            query = payload.get("query", "")
+            image_url = payload.get("image_url", "")        # 新增：url图片
+
+            # 构建多模态消息内容（兼容文本+图片）
+            content = []
+            # 1. 添加文本内容
+            if query:
+                content.append({"type": "text", "text": query})
+            
+            # 2. 添加图片（优先base64，其次url）
+            if image_url:
+                content.append({
+                    "type": "image_url",
+                    "image_url": {"url": image_url}
+                })
+            # 如果最终没有任何内容，返回错误
+            if not content:
+                await websocket.send_text(json.dumps({"error": "empty query or image"}))
                 continue
+           
+            
             # 核心：流式运行LangGraph流水线，返回Agent执行过程
             # 假设 agent 是通过 create_agent 创建的，并且支持 astream
             
-            async for chunk in rag_pipeline.astream_run(query, user_id, session_id):
+            async for chunk in rag_pipeline.astream_run(content, user_id, session_id):
                  # 序列化chunk（解决LangChain对象无法JSON化问题）
                 text = _safe_serialize(chunk)
                 ##################################
@@ -165,7 +401,7 @@ user_id - 用户id，必填
 session_id - 会话id，可以为空，为空就新建session
 '''
 @app.websocket("/gen_doc/{user_id}/{session_id}")
-async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str] = None):
+async def doc_ws(websocket: WebSocket, user_id: str, session_id: Optional[str] = None):
     # 1. 接受WebSocket连接
     await websocket.accept()
     

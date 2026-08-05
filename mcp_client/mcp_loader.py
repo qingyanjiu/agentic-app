@@ -29,4 +29,10 @@ async def get_mcp_tools(yaml_path: str) -> list:
     mcp_dict = load_mcp_config(yaml_path)# 1. 加载配置
     client = MultiServerMCPClient(mcp_dict) # 2. 创建客户端
     tools = await client.get_tools() # 3. 异步获取工具
+     # ====================== 加这里 ======================
+    # print(tools)
+    # for idx, tool in enumerate(tools):
+    #     print(f"{idx+1}. 工具名：{tool.name}")
+    #     print(f"   描述：{tool.description}\n")
+    # # ===================================================
     return tools

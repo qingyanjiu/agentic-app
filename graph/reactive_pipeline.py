@@ -50,6 +50,7 @@ class MyState(TypedDict, total=False):
     last_turn: list[dict]
     eval_decision: str
     final_answer: Dict[str, Any]
+    image_content: Optional[Any]
 
 class InfoDoubleCheckPipeline:
     '''
@@ -141,6 +142,11 @@ class InfoDoubleCheckPipeline:
         query = state["query"]
         params_got = state.get("params_got", [])
         intent_desc = state.get("intent_desc", "")
+
+        #如果有图片，拼进query让模型识别
+        if state.get("image_content"):
+            query += "\n[用户上传了图片，请结合图片理解意图]"
+
         inputs = {
             "input": query,                    # 用户问题
             "tool_json_desc": self.tool_json_desc,  # 可用工具描述
@@ -218,9 +224,20 @@ class InfoDoubleCheckPipeline:
         intent_desc = state.get("intent_desc", "") # 意图描述
          # 已获取的参数
         params_got = state.get("params_got", [])
-        # 构建输入：将参数和意图组合成JSON字符串
-        input = f'{{"params_got": {params_got}, "intent_desc": {intent_desc}}}'
-        input_str = json.dumps(input)
+
+         # 把图片带入主Agent
+        # ==============================================
+        if state.get("image_content"):
+            input_str = json.dumps({
+                "params_got": params_got,
+                "intent_desc": intent_desc,
+                "image": "已上传图片"
+            })
+        else:
+            input_str = json.dumps({
+                "params_got": params_got,
+                "intent_desc": intent_desc
+            })
 
         # 如果没超过最大迭代次数，则迭代，否则，啥都不做，也就是使用上一次的结果(不改变 state 中的 agent_output)
         if(state["evaluator_iter"] < self.max_iters):
@@ -478,12 +495,28 @@ MainAgent 回答: {agent_out}
     流式调用langgraph，流式返回最终节点数据
     数据格式 {"query": "用户问题", "sessionId": "对话id"}
     '''
-    async def astream_run(self, query: str, user_id: str, session_id: str):
-        thread_id = f'{user_id}|{session_id}'        
+    async def astream_run(self, query: str| list, user_id: str, session_id: str):
+        thread_id = f'{user_id}|{session_id}'     
+        # 解析 文本 + 图片
+        text_content = ""
+        image_content = None
+        if isinstance(query, list):
+            # 多模态：文本 + 图片
+            text_parts = []
+            for item in query:
+                if item["type"] == "text":
+                    text_parts.append(item["text"])
+                elif item["type"] == "image_url":
+                    image_content = item  # 保存图片
+            text_content = " ".join(text_parts)
+        else:
+            # 纯文本
+            text_content = str(content)
         # 初始 state
         # evaluator_iter: 评估节点迭代次数，不能超过 max_iters
         init_state: MyState = {
             "query": query, 
+            "image_content": image_content,  # 保存图片
             "evaluator_iter": 0
         }
         

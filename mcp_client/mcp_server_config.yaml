@@ -1,8 +1,21 @@
 mcp_servers:
   local:
     transport: streamable_http
-    url: http://192.168.100.58:2222/mcp
+    # url: http://host.docker.internal:2222/mcp
+    url: http://host.docker.internal:2222/mcp
 
+  # 智慧园区报修工单生成 MCP
+  # campus_work_order:
+  #   transport: stdio 
+  #   command: python
+  #   args:
+  #     - ./mcp_servers/work_order_server.py
+  # #会议室 MCP  
+  # meeting_room:
+  #   transport: stdio
+  #   command: python
+  #   args: 
+  #     - ./mcp_servers/meet_room_server.py
   # math_server:
   #   transport: stdio
   #   command: python

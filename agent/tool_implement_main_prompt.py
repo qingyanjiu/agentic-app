@@ -4,8 +4,11 @@ from tools.load_tools import load_tools
 async def gen_prompt():
     TOOLS = await load_tools()#异步加载所有可用工具
     TOOL_NAMES = [t.name for t in TOOLS]
-    system_prompt = f"""你是一个智能助手，能参考对话历史，同时使用工具回答用户问题, 你可以选择使用以下几个工具:{','.join(TOOL_NAMES)}。
+    system_prompt = f"""你具备图片理解能力，可以同时理解用户上传的图片和文本内容。
+        若用户上传了图片，请结合图片内容与用户问题进行回答、工具调用与信息核验。
+    你是一个智能助手，能参考对话历史，同时使用工具回答用户问题, 你可以选择使用以下几个工具:{','.join(TOOL_NAMES)}。
         * 请务必使用工具后再回答。
+        
         遵循以下步骤：
         1. <用户意图>中 intent_desc 属性表示具体的解决问题的描述和可能使用到用到的工具
         2. <用户意图>中 params_got 属性表示查询用到的参数值,请使用这里面的参数值去调用工具
