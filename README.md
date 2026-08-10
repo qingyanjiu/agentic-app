@@ -129,19 +129,23 @@
 export OPENAI_API_KEY="您的SiliconFlow API密钥"
 # 或使用Dify知识库密钥
 export DIFY_API_KEY="您的Dify API密钥"
+严禁有空格
 ```
 
 ### Docker开发环境（推荐）
 ```bash
 # 使用预配置的开发容器
 docker run -d -p 8001:8001 -v $(pwd):/root/agentic-app --name langchain-agent-dev qingyanjiu/langchain:1.0.3 tail -f /dev/null
-
+例子：
+docker run -d -p 8001:8001 -v d:/work/Company_project/AI/ai-agentic-app:/root/agentic-app --name langchain-agent-dev qingyanjiu/langchain:1.0.3 tail -f /dev/null
+docker run -d -p 8001:8001 -v d:\work\Company_project\AI\ai-agentic-app:/root/agentic-app --name langchain-agent-dev qingyanjiu/langchain tail -f /dev/null
+docker run -d -p 8001:8001 -v d:\work\Company_project\AI\ai-agentic-app:/root/agentic-app  -v D:\work\models\bge-small-zh-v1.5:/root/agentic-app/agent/intent/models/BAAI_bge-small-zh-v1.5 -e INTENT_MODEL_PATH=/root/agentic-app/agent/intent/models/BAAI_bge-small-zh-v1.5   --name langchain-agent-dev qingyanjiu/langchain tail -f /dev/null
 # 进入容器
 docker exec -it langchain-agent-dev /bin/bash
 
 # 在容器内启动服务
 cd /root/agentic-app
-python app.py
+python app.py 或者 python -m uvicorn app:app --host 0.0.0.0 --port 8001 --reload
 ```
 
 ### 本地启动

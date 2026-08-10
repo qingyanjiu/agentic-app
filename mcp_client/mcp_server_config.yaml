@@ -4,6 +4,13 @@ mcp_servers:
     # url: http://host.docker.internal:2222/mcp
     url: http://host.docker.internal:2222/mcp
 
+  #新增人员态势 MCP 服务 
+  # 使用 stdio 方式启动，服务端是 mcp_servers/person_status_server.py
+  person_status:
+    transport: stdio
+    command: python
+    args:
+      - ./mcp_servers/person_status_server.py
   # 智慧园区报修工单生成 MCP
   # campus_work_order:
   #   transport: stdio 

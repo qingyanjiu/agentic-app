@@ -18,6 +18,11 @@ import logging
 import uuid
 import time
 import asyncio
+
+# 新增：人员态势意图识别相关导入
+from agent.intent import classify_intent, PersonStatusHandler
+from graph.person_status_pipeline import PersonStatusPipeline
+from memory.session_state import session_state, IntentState
 # from asr.voice_asr import get_recognizer, VoiceRecognizer
 # from asr.text_corrector import get_corrector, TextCorrector
 
@@ -25,10 +30,16 @@ import asyncio
 # docker run -d -v /Users/louisliu/dev/AI_projects/agentic-app:/root/agentic-app --name langchain-agent-dev qingyanjiu/langchain:1.0.3 tail -f /dev/null
 
 #日志
+# logging.basicConfig(
+#     filename='app.log',
+#     # 追加模式 'a'，覆盖模式 'w' 
+#     filemode='w',
+#     level=logging.DEBUG,
+#     format='%(asctime)s - %(levelname)s - %(name)s - %(message)s'
+# )
 logging.basicConfig(
     filename='app.log',
-    # 追加模式 'a'，覆盖模式 'w' 
-    filemode='w',
+    filemode='a',  # 改成 'a'
     level=logging.DEBUG,
     format='%(asctime)s - %(levelname)s - %(name)s - %(message)s'
 )
@@ -86,7 +97,12 @@ except Exception as e:
 llm_factory = CustomLLMFactory()
 llm = llm_factory.llms['silicon']
 # llm = llm_factory.llms['zp']
-
+@app.on_event("startup")
+async def startup():
+    logger.info("[startup] 开始预加载意图识别模型...")
+    from agent.intent import get_classifier
+    await get_classifier()
+    logger.info("[startup] 意图识别模型预加载完成")
 
 def _safe_serialize(obj):
     """递归将 BaseMessage 转为 dict（解决WebSocket传输序列化问题）"""
@@ -335,6 +351,115 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
             # 接收客户端发送的JSON数据（格式：{"query": "用户问题"}）
             data = await websocket.receive_text()
             payload = json.loads(data)
+            # 从 payload 中获取用户输入
+            query = payload.get("query", "")
+
+            # ============================================================
+            # 人员态势 MVP 分支
+            # 先判断是否有正在进行的追问状态
+            # 再判断是否为新的人员态势意图
+            # 否则走原有 pipeline
+            # ============================================================
+            active_state = session_state.get(user_id, session_id)
+
+            # 情况 1：当前有进行中的追问状态，且是人员态势
+            if active_state and active_state.module == "person_status":
+                print("[DEBUG] 进入追问分支")
+                handler = PersonStatusHandler()
+                
+                # 让 handler 判断用户回复是否相关，并更新状态
+                result = await handler.handle_reply(active_state, query, llm)
+                
+                # 情况 1.1：连续不相关超过阈值，放弃任务
+                if result["action"] == "give_up":
+                    # 清空会话状态
+                    session_state.clear(user_id, session_id)
+                    
+                    await websocket.send_text(json.dumps({
+                        "event": "custom",
+                        "data": {"type": "answer", "content": result["answer"]}
+                    }, ensure_ascii=False))
+                    continue  # 跳过原有 pipeline
+                
+                # 情况 1.2：用户回复不相关，但未超限，再次追问
+                elif result["action"] == "re_ask":
+                    # 保存更新后的状态
+                    session_state.set(user_id, session_id, result["state"])
+                    
+                    await websocket.send_text(json.dumps({
+                        "event": "custom",
+                        "data": {
+                            "type": "ask",
+                            "question": result["answer"],
+                            "missing_params": result["state"].missing_params,
+                            "unrelated_count": result["state"].unrelated_count
+                        }
+                    }, ensure_ascii=False))
+                    continue  # 跳过原有 pipeline
+                
+                # 情况 1.3：用户回复相关，继续执行 pipeline
+                elif result["action"] == "continue":
+                    # 保存更新后的状态
+                    session_state.set(user_id, session_id, result["state"])
+                    
+                    # 创建人员态势 pipeline
+                    ps_pipeline = await PersonStatusPipeline.create(llm=llm)
+                    
+                    # 流式执行
+                    async for chunk in ps_pipeline.astream_run(result["state"], user_id, session_id):
+                        text = _safe_serialize(chunk)
+                        await websocket.send_text(json.dumps(text, ensure_ascii=False))
+                        
+                        # 如果进入追问，保留状态并跳出
+                        if chunk.get("event") == "custom" and chunk.get("data", {}).get("type") == "ask":
+                            break
+                        
+                        # 如果完成，清空状态
+                        if chunk.get("event") == "custom" and chunk.get("data", {}).get("type") == "done":
+                            session_state.clear(user_id, session_id)
+                    
+                    continue  # 跳过原有 pipeline
+
+            # 情况 2：没有进行中状态，但新意图属于人员态势
+            elif (await classify_intent(query))["intent"] == "person_status":
+                print("[DEBUG] 进入新意图分支, query:", query)
+                
+                handler = PersonStatusHandler()
+                
+                # 从用户输入中抽取初始 slots
+                slots = handler.extract_slots(query)
+                
+                # 判断初始 slots 是否完整
+                missing = handler._get_missing_params(slots)
+                
+                # 创建新的会话状态
+                state = IntentState(
+                    module="person_status",
+                    slots=slots,
+                    missing_params=missing,
+                    ask_count=0,
+                    unrelated_count=0,
+                    original_query=query,
+                    done=False
+                )
+                session_state.set(user_id, session_id, state)
+                
+                # 创建人员态势 pipeline 并执行
+                ps_pipeline = await PersonStatusPipeline.create(llm=llm)
+                async for chunk in ps_pipeline.astream_run(state, user_id, session_id):
+                    text = _safe_serialize(chunk)
+                    await websocket.send_text(json.dumps(text, ensure_ascii=False))
+                    
+                    # 如果进入追问，保留状态并跳出
+                    if chunk.get("event") == "custom" and chunk.get("data", {}).get("type") == "ask":
+                        break
+                    
+                    # 如果完成，清空状态
+                    if chunk.get("event") == "custom" and chunk.get("data", {}).get("type") == "done":
+                        session_state.clear(user_id, session_id)
+                
+                continue  # 跳过原有 pipeline
+
              # ======================== 【多模态核心：统一入口解析】 ========================
             query = payload.get("query", "")
             image_url = payload.get("image_url", "")        # 新增：url图片
@@ -391,7 +516,15 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
             logging.info(f"answer done -- {user_id}-{session_id}")
         # 异常处理：捕获所有错误，返回给客户端
         except Exception as e:
-            await websocket.send_text(json.dumps({"error": str(e)}))
+            error_msg = f"处理消息异常: {str(e)}"
+            logger.error(error_msg, exc_info=True)  # 关键：打印完整堆栈
+            try:
+                await websocket.send_text(json.dumps({"error": error_msg}))
+            except Exception:
+                logger.warning("客户端已断开，无法发送错误消息")
+            break
+        # except Exception as e:
+        #     await websocket.send_text(json.dumps({"error": str(e)}))
 
 
 

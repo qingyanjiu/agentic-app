@@ -17,8 +17,8 @@ class CustomLLMFactory():
             { 
                 "name": "silicon",
                 "type": "openai",
-                "model_url": "https://api.siliconflow.cn/v1", # 硅基流动API地址
-                "model_name": "Qwen/Qwen3-30B-A3B-Instruct-2507",
+                "model_url": "https://api.deepseek.com", # 硅基流动API地址
+                "model_name": "deepseek-v4-flash",
                 # 优先级：先读SILICON_API_KEY，没有则读OPENAI_API_KEY
                 "api_key": os.getenv("SILICON_API_KEY") if os.getenv("SILICON_API_KEY") else os.getenv("OPENAI_API_KEY")
             },
