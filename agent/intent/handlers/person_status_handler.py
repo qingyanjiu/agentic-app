@@ -26,10 +26,11 @@ class PersonStatusHandler(IntentHandler):
         """
         判断用户回复是否与当前人员态势任务相关
         用于追问轮
-        :param state: 当前会话状态
-        :param query: 用户最新回复
-        :return: 是否相关
         """
+        # 0. 如果正在等待用户确认是否查询今日数据，任何简短回复都视为相关
+        if state.slots.get("_pending_confirm"):
+            return True
+
         # 1. 如果用户明确说放弃，直接判为不相关
         if any(k in query for k in ["算了", "不查了", "取消", "不问了", "结束"]):
             return False
@@ -54,12 +55,8 @@ class PersonStatusHandler(IntentHandler):
         # 5. 如果用户只回复了简短内容，且当前还缺参数，大概率是补充
         if len(query) <= 4 and missing:
             return True
-                # 4. 如果缺区域，用户回复了区域词，判定为相关
-        if "area" in missing:
-            if any(k in query for k in ["A栋", "B栋", "主楼", "食堂", "停车场", "大门口"]):
-                return True
 
-        # 新增：如果用户回复了人员态势相关关键词，也判定为相关
+        # 6. 如果用户回复了人员态势相关关键词，也判定为相关
         person_status_keywords = [
             "实时", "进入", "离开", "人数", "流动", "结构", "分布",
             "中通服", "省公司", "规划设计院", "异常", "轨迹", "位置"
@@ -72,11 +69,27 @@ class PersonStatusHandler(IntentHandler):
     async def handle_reply(self, state: IntentState, query: str, llm) -> dict:
         """
         处理用户在追问阶段的回复
-        :return: 下一步动作
-            action = continue: 继续执行，参数已补齐
-            action = re_ask: 用户不相关但未超限，再次追问
-            action = give_up: 连续不相关超限，放弃任务
         """
+        # 如果正在等待确认是否查询今日数据
+        pending = state.slots.get("_pending_confirm")
+        if pending:
+            # 用户明确拒绝
+            if any(k in query for k in ["不要", "不用", "不查", "不看", "算了", "否"]):
+                return {
+                    "action": "give_up",
+                    "reason": "用户拒绝查询今日数据",
+                    "answer": "好的，已取消查询。请问您还有其他问题吗？"
+                }
+
+            # 其他回复（可以/好/是的/查一下/直接回车）都视为确认
+            state.slots["_confirm_proceed"] = True
+            del state.slots["_pending_confirm"]
+            state.unrelated_count = 0
+            return {
+                "action": "continue",
+                "state": state,
+                "slots": state.slots
+            }
         is_related = self.is_related(state, query)
         
         if not is_related:

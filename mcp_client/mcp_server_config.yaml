@@ -1,16 +1,20 @@
 mcp_servers:
+  # Java MCP Sidecar - 人员态势模块
+  # 端点路径是 /mcp/personStatus（与 Java 侧车 PersonStatusMcpServerConfig 一致）
+  # 根据部署方式二选一：
+  # - Java 跑在宿主机：url: http://host.docker.internal:2222/mcp/personStatus
+  # - Java 跑在 Docker 且与 Python 同网络：url: http://mcp-sidecar:2222/mcp/personStatus
   local:
     transport: streamable_http
-    # url: http://host.docker.internal:2222/mcp
-    url: http://host.docker.internal:2222/mcp
+    url: http://host.docker.internal:2222/mcp/personStatus
 
-  #新增人员态势 MCP 服务 
-  # 使用 stdio 方式启动，服务端是 mcp_servers/person_status_server.py
-  person_status:
-    transport: stdio
-    command: python
-    args:
-      - ./mcp_servers/person_status_server.py
+  # 本地 Python 实现的 person_status MCP 服务
+  # 当前已改用 Java MCP Sidecar，先注释掉，避免与 Java 侧车的工具冲突
+  # person_status:
+  #   transport: stdio
+  #   command: python
+  #   args:
+  #     - /root/agentic-app/mcp_servers/person_status_server.py
   # 智慧园区报修工单生成 MCP
   # campus_work_order:
   #   transport: stdio 
