@@ -216,6 +216,38 @@ class PersonStatusPipeline:
         query_type = state.slots.get("query_type")
         date_slots = state.slots.get("date", {})
 
+        # 未来时间直接提醒，不查询
+        if date_slots.get("time_type") == "future":
+            yield {
+                "event": "custom",
+                "data": {
+                    "type": "answer",
+                    "content": "明天还没到呢，目前只能查询今天及历史的人员态势数据哦。"
+                }
+            }
+            state.done = True
+            yield {"event": "custom", "data": {"type": "done"}}
+            return
+
+        # 模糊时间先让用户确认具体范围
+        if date_slots.get("time_type") == "vague":
+            options = date_slots.get("options", ["近三天", "近一周", "近一个月"])
+            state.slots["_pending_date_clarify"] = True
+            state.slots["_date_options"] = options
+            options_str = "、".join(options)
+            question = f"您想查询近几天？可以直接回复具体天数，例如“近两天”、“近四天”，或选择：{options_str}"
+            state.last_question = question
+            yield {
+                "event": "custom",
+                "data": {
+                    "type": "ask",
+                    "question": question,
+                    "missing_params": [],
+                    "ask_count": state.ask_count
+                }
+            }
+            return
+
         # 4. 根据 query_type 映射到 Java 侧车暴露的 MCP 工具
         java_tool_name = _JAVA_TOOL_MAP.get(query_type)
         if not java_tool_name:

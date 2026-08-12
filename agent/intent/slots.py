@@ -1,5 +1,5 @@
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from jionlp import parse_time
 
 # ============================================================
@@ -60,35 +60,166 @@ EMPLOYEE_NAMES = [
 ]
 
 
+def _parse_chinese_number(num_str: str) -> int:
+    """
+    简单中文数字转换，支持一到九十九
+    也兼容阿拉伯数字
+    """
+    mapping = {
+        "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5,
+        "六": 6, "七": 7, "八": 8, "九": 9, "十": 10
+    }
+
+    # 阿拉伯数字
+    if num_str.isdigit():
+        return int(num_str)
+
+    # 纯中文：十一、十二、二十、二十三等
+    total = 0
+    last = 0
+    for ch in num_str:
+        if ch in mapping:
+            v = mapping[ch]
+            if v == 10:
+                if last == 0:
+                    total = 10
+                else:
+                    total += last * 10
+                    last = 0
+            else:
+                last = v
+    total += last
+    return total if total > 0 else 2
+
+
 def parse_time_slot(query: str) -> dict:
     """
-    使用 jionlp 解析用户输入中的时间描述
+    解析用户输入中的时间描述
     
-    支持：
-        - 相对时间：今天、明天、昨天、后天、前天
-        - 时间段：本周、上周、本月、上月
-        - 具体日期：2024-08-06、8月6日
-        - 带时刻：上午9点、下午3点
-    
-    :param query: 用户输入
-    :return: 标准化后的时间参数字典
-             {
-                 "time_type": "point" | "span",
-                 "start_time": "2024-08-06T00:00:00",
-                 "end_time": "2024-08-06T23:59:59",
-                 "raw": "今天"
-             }
+    先处理 jionlp 识别不了的口语化表达（这两天、本周等），
+    再交给 jionlp 兜底。
     """
-    # 以当前时间为基准，解析相对时间
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
+    now = datetime.now()
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    # ============================================================
+    # 1. 手工处理口语化时间
+    # ============================================================
+
+    # 近N天 / 最近N天 / 前N天 / 过去N天 / 这N天
+    # 例如：近两天、近2天、最近四天、前3天、过去五天
+    m = re.search(r"(近|最近|前|过去|这)(\d+|[一二两三四五六七八九十]+)(?:个)?天", query)
+    if m:
+        n = _parse_chinese_number(m.group(2))
+        days_back = max(1, n - 1)
+        start = (now - timedelta(days=days_back)).replace(hour=0, minute=0, second=0, microsecond=0)
+        return {
+            "time_type": "span",
+            "start_time": start.isoformat(),
+            "end_time": now.isoformat(),
+            "raw": f"近{n}天"
+        }
+
+    # 本周 / 这星期 / 这个星期 / 近一周 / 最近一周
+    if re.search(r"(本|这|近|最近一)个?[星期周]", query):
+        monday = today_start - timedelta(days=today_start.weekday())
+        return {
+            "time_type": "span",
+            "start_time": monday.isoformat(),
+            "end_time": now.isoformat(),
+            "raw": "本周"
+        }
+
+    # 上周 / 上星期 / 上个星期
+    if re.search(r"上(个)?[星期周]", query):
+        last_monday = today_start - timedelta(days=today_start.weekday() + 7)
+        last_sunday = last_monday + timedelta(days=6, hours=23, minutes=59, seconds=59)
+        return {
+            "time_type": "span",
+            "start_time": last_monday.isoformat(),
+            "end_time": last_sunday.isoformat(),
+            "raw": "上周"
+        }
+
+    # 本月 / 这个月 / 近一个月 / 最近一个月
+    if re.search(r"(本|这|近|最近一)个?月", query):
+        month_start = today_start.replace(day=1)
+        return {
+            "time_type": "span",
+            "start_time": month_start.isoformat(),
+            "end_time": now.isoformat(),
+            "raw": "本月"
+        }
+
+    # 上个月 / 上月
+    if re.search(r"上(个)?月", query):
+        last_month_end = today_start.replace(day=1) - timedelta(days=1)
+        last_month_start = last_month_end.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        return {
+            "time_type": "span",
+            "start_time": last_month_start.isoformat(),
+            "end_time": last_month_end.replace(hour=23, minute=59, second=59).isoformat(),
+            "raw": "上个月"
+        }
+
+    # 昨天
+    if "昨天" in query:
+        yesterday_start = today_start - timedelta(days=1)
+        yesterday_end = today_start - timedelta(seconds=1)
+        return {
+            "time_type": "span",
+            "start_time": yesterday_start.isoformat(),
+            "end_time": yesterday_end.isoformat(),
+            "raw": "昨天"
+        }
+
+    # 前天
+    if "前天" in query:
+        before_yesterday_start = today_start - timedelta(days=2)
+        before_yesterday_end = today_start - timedelta(days=1, seconds=1)
+        return {
+            "time_type": "span",
+            "start_time": before_yesterday_start.isoformat(),
+            "end_time": before_yesterday_end.isoformat(),
+            "raw": "前天"
+        }
+
+    # ============================================================
+    # 1.5 模糊时间表达：需要向用户确认具体范围
+    # ============================================================
+    _VAGUE_TIME_PATTERNS = {
+        r"(这几|最近几|近几|前几|过去几)[天]|这段(日子|时间)|近段时间|最近": {
+            "options": ["近三天", "近一周", "近一个月"],
+            "default": "近三天"
+        }
+    }
+    for pattern, meta in _VAGUE_TIME_PATTERNS.items():
+        if re.search(pattern, query):
+            return {
+                "time_type": "vague",
+                "start_time": None,
+                "end_time": None,
+                "options": meta["options"],
+                "raw": query
+            }
+
+    # 明天 / 后天 / 大后天（未来时间，人员态势无法查询）
+    if any(k in query for k in ["明天", "后天", "大后天"]):
+        return {
+            "time_type": "future",
+            "start_time": None,
+            "end_time": None,
+            "raw": query
+        }
+
+    # ============================================================
+    # 2. jionlp 原生解析
+    # ============================================================
+    now_str = now.strftime("%Y-%m-%d %H:%M:%S")
     try:
-        # jionlp 返回时间解析结果
-        res = parse_time(query, time_base=now)
+        res = parse_time(query, time_base=now_str)
         if res:
             time_info = res["time"]
-            
-            # 时间点的场景：如"上午9点"
             if res["type"] == "time_point":
                 return {
                     "time_type": "point",
@@ -96,7 +227,6 @@ def parse_time_slot(query: str) -> dict:
                     "end_time": time_info,
                     "raw": query
                 }
-            # 时间段的场景：如"今天"、"本周"
             elif res["type"] == "time_span":
                 return {
                     "time_type": "span",
@@ -105,18 +235,17 @@ def parse_time_slot(query: str) -> dict:
                     "raw": query
                 }
     except Exception:
-        # jionlp 解析失败时，进入兜底逻辑
         pass
-    
-    # 兜底：默认返回今天
-    now_dt = datetime.now()
+
+    # ============================================================
+    # 3. 兜底：默认返回今天
+    # ============================================================
     return {
         "time_type": "span",
-        "start_time": now_dt.replace(hour=0, minute=0, second=0).isoformat(),
-        "end_time": now_dt.isoformat(),
+        "start_time": today_start.isoformat(),
+        "end_time": now.isoformat(),
         "raw": "今天"
     }
-
 
 def parse_area_slot(query: str) -> str:
     """
@@ -241,7 +370,7 @@ def extract_person_status_slots(query: str) -> dict:
     # ============================================================
     elif re.search(
         r"人员结构|人员分布|人员组成|人员构成|占比|饼图|环形图|"
-        r"各部门|各公司|各单位|中通服|省公司|规划设计院", q
+        r"各部门|各公司|各单位|中通服|省公司|规划设计院|和信", q
     ):
         slots["query_type"] = "structure"
 

@@ -21,7 +21,7 @@ import asyncio
 
 # 新增：人员态势意图识别相关导入
 from agent.intent import classify_intent, PersonStatusHandler
-from graph.person_status_pipeline import PersonStatusPipeline
+from graph.person_status_langgraph import build_person_status_graph, load_person_status_tools
 from memory.session_state import session_state, IntentState
 # from asr.voice_asr import get_recognizer, VoiceRecognizer
 # from asr.text_corrector import get_corrector, TextCorrector
@@ -114,6 +114,73 @@ def _safe_serialize(obj):
         return {k: _safe_serialize(v) for k, v in obj.items()}
     else:
         return obj
+
+# ============================================================
+# 人员态势 LangGraph 执行助手
+# build_person_status_graph 需要传入 MCP tools，加载会 fork 子进程，故模块级缓存
+# ============================================================
+_person_status_graph = None
+
+async def get_person_status_graph():
+    """懒加载：首次调用时从 MCP 加载人员态势工具并编译图，之后复用"""
+    global _person_status_graph
+    if _person_status_graph is None:
+        tools = await load_person_status_tools()
+        # 传入 llm，让 call_tool 节点用 LLM 根据 query_type 分析 MCP 返回生成回答
+        _person_status_graph = build_person_status_graph(tools, llm=llm)
+    return _person_status_graph
+
+
+async def run_person_status_graph(websocket, state, user_id, session_id):
+    """
+    用 LangGraph 图执行人员态势流程：
+      1. 把 IntentState(dataclass) 转成图需要的 PersonStatusGraphState(TypedDict)
+      2. ainvoke 跑图（call_tool 是异步节点，必须用 ainvoke）
+      3. 把图更新后的 slots/ask_count/last_question 回写到会话状态
+      4. 发送 events；有 ask 事件则保留状态等下一轮，否则清空
+    """
+    graph = await get_person_status_graph()
+
+    # 组装喂给图的输入状态
+    graph_input = {
+        "slots": state.slots,
+        "missing_params": state.missing_params,
+        "ask_count": state.ask_count,
+        "unrelated_count": state.unrelated_count,
+        "last_question": state.last_question,
+        "original_query": state.original_query,
+        "answer": None,
+        "error": None,
+        "done": state.done,
+        "events": [],
+    }
+    print(f"[GRAPH INPUT] user={user_id}, session={session_id}")
+    print(json.dumps(graph_input, ensure_ascii=False, default=str))
+
+    final_state = await graph.ainvoke(graph_input)
+
+    print(f"[GRAPH OUTPUT] user={user_id}, session={session_id}")
+    print(json.dumps(final_state, ensure_ascii=False, default=str))
+
+    # 图内多轮追问会更新这些字段，回写供下一轮 handle_reply 使用
+    state.slots = final_state["slots"]
+    state.missing_params = final_state["missing_params"]
+    state.ask_count = final_state["ask_count"]
+    state.last_question = final_state["last_question"]
+
+    # 发送事件；存在 ask 事件说明进入追问，保留状态等待用户补充
+    keep_state = False
+    for chunk in final_state["events"]:
+        text = _safe_serialize(chunk)
+        await websocket.send_text(json.dumps(text, ensure_ascii=False))
+        if chunk.get("event") == "custom" and chunk.get("data", {}).get("type") == "ask":
+            keep_state = True
+
+    if keep_state:
+        session_state.set(user_id, session_id, state)
+    else:
+        session_state.clear(user_id, session_id)
+
 async def safe_send_message(websocket: WebSocket, message: dict):
     """安全地发送WebSocket消息，处理连接断开的情况"""
     try:
@@ -402,22 +469,9 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
                     # 保存更新后的状态
                     session_state.set(user_id, session_id, result["state"])
                     
-                    # 创建人员态势 pipeline
-                    ps_pipeline = await PersonStatusPipeline.create(llm=llm)
-                    
-                    # 流式执行
-                    async for chunk in ps_pipeline.astream_run(result["state"], user_id, session_id):
-                        text = _safe_serialize(chunk)
-                        await websocket.send_text(json.dumps(text, ensure_ascii=False))
-                        
-                        # 如果进入追问，保留状态并跳出
-                        if chunk.get("event") == "custom" and chunk.get("data", {}).get("type") == "ask":
-                            break
-                        
-                        # 如果完成，清空状态
-                        if chunk.get("event") == "custom" and chunk.get("data", {}).get("type") == "done":
-                            session_state.clear(user_id, session_id)
-                    
+                    # 用 LangGraph 图执行人员态势流程（内部会回写/清理会话状态）
+                    await run_person_status_graph(websocket, result["state"], user_id, session_id)
+
                     continue  # 跳过原有 pipeline
 
             # 情况 2：没有进行中状态，但新意图属于人员态势
@@ -427,7 +481,7 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
                 handler = PersonStatusHandler()
                 
                 # 从用户输入中抽取初始 slots
-                slots = handler.extract_slots(query)
+                slots = await handler.extract_slots(query)
                 
                 # 判断初始 slots 是否完整
                 missing = handler._get_missing_params(slots)
@@ -444,20 +498,9 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
                 )
                 session_state.set(user_id, session_id, state)
                 
-                # 创建人员态势 pipeline 并执行
-                ps_pipeline = await PersonStatusPipeline.create(llm=llm)
-                async for chunk in ps_pipeline.astream_run(state, user_id, session_id):
-                    text = _safe_serialize(chunk)
-                    await websocket.send_text(json.dumps(text, ensure_ascii=False))
-                    
-                    # 如果进入追问，保留状态并跳出
-                    if chunk.get("event") == "custom" and chunk.get("data", {}).get("type") == "ask":
-                        break
-                    
-                    # 如果完成，清空状态
-                    if chunk.get("event") == "custom" and chunk.get("data", {}).get("type") == "done":
-                        session_state.clear(user_id, session_id)
-                
+                # 用 LangGraph 图执行人员态势流程（内部会回写/清理会话状态）
+                await run_person_status_graph(websocket, state, user_id, session_id)
+
                 continue  # 跳过原有 pipeline
 
              # ======================== 【多模态核心：统一入口解析】 ========================
