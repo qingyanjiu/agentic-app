@@ -392,3 +392,113 @@ def extract_person_status_slots(query: str) -> dict:
 
     print(f"[slots] query={q} => {slots}")
     return slots
+
+
+# ============================================================
+# 安防态势 slot 抽取
+# 目前只支持告警列表（alarm_list）
+# 后续如需扩展其他子类型（入侵/巡逻/视频/门禁/火警/设备/异常事件），
+# 在 extract_security_status_slots 里加正则判断即可
+# ============================================================
+def extract_security_status_slots(query: str) -> dict:
+    """
+    抽取安防态势相关的 slot（当前只支持告警列表）
+
+    event_type：固定为 alarm_list（告警列表）
+    date：时间范围，由 parse_time_slot 解析
+          取 date["start_time"] / date["end_time"]
+          作为调 MCP 服务的参数 {startTime, endTime}
+
+    注意：
+      - parse_time_slot 对"最近几天"这类模糊时间会返回 time_type="vague"，
+        start_time/end_time 为 None，此时需要先向用户确认时间范围
+        （由 LangGraph 图的 vague_date 节点处理）
+      - 对未来时间会返回 time_type="future"，直接提示不可查
+
+    :param query: 用户输入
+    :return: {"event_type": "alarm_list", "date": {"start_time": ..., "end_time": ..., "raw": ...}}
+    """
+    slots = {
+        # 目前只做告警列表，后续扩展子类型时在此加正则判断
+        "event_type": "alarm_list",
+        # 时间范围：date["start_time"] / date["end_time"]
+        # 对应 MCP 工具参数 {startTime, endTime}
+        "date": parse_time_slot(query),
+    }
+
+    print(f"[security slots] query={query} => {slots}")
+    return slots
+
+
+# ============================================================
+# 食堂管理 slot 抽取
+# 目前支持子类型（event_type）：
+#   dish_rank    -> 本月菜品热度排行
+#   week_menu    -> 本周菜谱
+#   dining_count -> 就餐人数统计
+# 可选 slot：meal（餐次，用于"本周午餐菜单"这类说法）
+# ============================================================
+
+# 餐次别名词典：把用户各种说法统一映射到标准餐次
+MEAL_DICT = {
+    "早餐": ["早餐", "早饭", "早"],
+    "午餐": ["午餐", "午饭", "中餐", "中午"],
+    "晚餐": ["晚餐", "晚饭", "晚上"],
+    "夜宵": ["夜宵", "宵夜"],
+}
+
+
+def parse_meal_slot(query: str) -> str:
+    """
+    从用户输入中抽取餐次（早餐/午餐/晚餐/夜宵）
+    未命中返回空字符串
+    """
+    for meal, aliases in MEAL_DICT.items():
+        for alias in aliases:
+            if alias in query:
+                return meal
+    return ""
+
+
+def extract_canteen_status_slots(query: str) -> dict:
+    """
+    抽取食堂管理相关的 slot
+
+    返回结构：
+      {
+        "event_type": "dish_rank",        # 子类型
+        "date": parse_time_slot(query),   # 时间范围 -> MCP 的 {startTime, endTime}
+        "meal": "午餐",                    # 餐次（可能为空，仅菜谱查询需要）
+      }
+
+    注意：
+      - event_type 用正则按"人数 -> 热度排行 -> 菜谱"顺序判定
+      - parse_time_slot 对"本周/本月/上周/上个月"等已能直接解析成时间区间，
+        所以 date 天然就有 {start_time, end_time}
+      - 正则匹配不到时默认 week_menu（本周菜谱），保证流程不断
+    """
+    q = query
+    slots = {
+        "event_type": "week_menu",
+        "date": parse_time_slot(query),
+        "meal": parse_meal_slot(query),
+    }
+
+    # ============================================================
+    # event_type 判定
+    # ============================================================
+
+    # 1. 就餐人数统计：最明确，优先判断
+    if re.search(r"多少人|就餐人数|人次|用餐人数|吃饭的人|人流量|人多少|人数统计", q):
+        slots["event_type"] = "dining_count"
+
+    # 2. 本月菜品热度排行
+    elif re.search(r"热度|排行|热门|销量|最受欢迎|卖得好|排名|点单榜", q):
+        slots["event_type"] = "dish_rank"
+
+    # 3. 兜底：本周菜谱 / 菜单
+    elif re.search(r"菜谱|菜单|吃什么|菜品|有什么菜|菜", q):
+        slots["event_type"] = "week_menu"
+
+    print(f"[canteen slots] query={q} => {slots}")
+    return slots

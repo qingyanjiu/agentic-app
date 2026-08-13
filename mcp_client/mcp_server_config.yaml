@@ -8,6 +8,24 @@ mcp_servers:
     transport: streamable_http
     url: http://host.docker.internal:2222/mcp/personStatus
 
+  # Java MCP Sidecar - 安防态势模块
+  # 端点路径是 /mcp/securityStatus（与 Java 侧车 SecurityStatusMcpServerConfig 一致）
+  # 部署方式与人员态势一致：
+  # - Java 跑在宿主机：url: http://host.docker.internal:2222/mcp/securityStatus
+  # - Java 跑在 Docker 且与 Python 同网络：url: http://mcp-sidecar:2222/mcp/securityStatus
+  security:
+    transport: streamable_http
+    url: http://host.docker.internal:2222/mcp/securityStatus
+
+  # Java MCP Sidecar - 食堂管理模块
+  # 端点路径是 /mcp/canteen（与 Java 侧 DiningHallMcpServerConfig 一致）
+  # 部署方式与人员态势一致：
+  # - Java 跑在宿主机：url: http://host.docker.internal:2222/mcp/canteen
+  # - Java 跑在 Docker 且与 Python 同网络：url: http://mcp-sidecar:2222/mcp/canteen
+  canteen:
+    transport: streamable_http
+    url: http://host.docker.internal:2222/mcp/canteen
+
   # 本地 Python 实现的 person_status MCP 服务
   # 当前已改用 Java MCP Sidecar，先注释掉，避免与 Java 侧车的工具冲突
   # person_status:

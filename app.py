@@ -19,9 +19,12 @@ import uuid
 import time
 import asyncio
 
-# 新增：人员态势意图识别相关导入
-from agent.intent import classify_intent, PersonStatusHandler
+# 新增：人员态势/安防态势意图识别相关导入
+# classify_security_sub_type：安防态势子类型（event_type）判定，供安防 handler 追问/兜底使用
+from agent.intent import classify_intent, classify_security_sub_type, PersonStatusHandler, SecurityStatusHandler, CanteenStatusHandler
 from graph.person_status_langgraph import build_person_status_graph, load_person_status_tools
+from graph.security_status_langgraph import build_security_status_graph, load_security_tools
+from graph.canteen_status_langgraph import build_canteen_status_graph, load_canteen_tools
 from memory.session_state import session_state, IntentState
 # from asr.voice_asr import get_recognizer, VoiceRecognizer
 # from asr.text_corrector import get_corrector, TextCorrector
@@ -140,6 +143,140 @@ async def run_person_status_graph(websocket, state, user_id, session_id):
       4. 发送 events；有 ask 事件则保留状态等下一轮，否则清空
     """
     graph = await get_person_status_graph()
+
+    # 组装喂给图的输入状态
+    graph_input = {
+        "slots": state.slots,
+        "missing_params": state.missing_params,
+        "ask_count": state.ask_count,
+        "unrelated_count": state.unrelated_count,
+        "last_question": state.last_question,
+        "original_query": state.original_query,
+        "answer": None,
+        "error": None,
+        "done": state.done,
+        "events": [],
+    }
+    print(f"[GRAPH INPUT] user={user_id}, session={session_id}")
+    print(json.dumps(graph_input, ensure_ascii=False, default=str))
+
+    final_state = await graph.ainvoke(graph_input)
+
+    print(f"[GRAPH OUTPUT] user={user_id}, session={session_id}")
+    print(json.dumps(final_state, ensure_ascii=False, default=str))
+
+    # 图内多轮追问会更新这些字段，回写供下一轮 handle_reply 使用
+    state.slots = final_state["slots"]
+    state.missing_params = final_state["missing_params"]
+    state.ask_count = final_state["ask_count"]
+    state.last_question = final_state["last_question"]
+
+    # 发送事件；存在 ask 事件说明进入追问，保留状态等待用户补充
+    keep_state = False
+    for chunk in final_state["events"]:
+        text = _safe_serialize(chunk)
+        await websocket.send_text(json.dumps(text, ensure_ascii=False))
+        if chunk.get("event") == "custom" and chunk.get("data", {}).get("type") == "ask":
+            keep_state = True
+
+    if keep_state:
+        session_state.set(user_id, session_id, state)
+    else:
+        session_state.clear(user_id, session_id)
+
+
+# ============================================================
+# 安防态势 LangGraph 执行助手
+# build_security_status_graph 需要传入 MCP tools，加载会 fork 子进程，故模块级缓存
+# ============================================================
+_security_status_graph = None
+
+async def get_security_status_graph():
+    """懒加载：首次调用时从 MCP 加载安防工具并编译图，之后复用"""
+    global _security_status_graph
+    if _security_status_graph is None:
+        tools = await load_security_tools()
+        # 传入 llm，让 call_tool 节点用 LLM 组织 MCP 返回生成回答
+        _security_status_graph = build_security_status_graph(tools, llm=llm)
+    return _security_status_graph
+
+
+async def run_security_status_graph(websocket, state, user_id, session_id):
+    """
+    用 LangGraph 图执行安防态势流程（与人员态势对称）：
+      1. 把 IntentState(dataclass) 转成图需要的 SecurityStatusGraphState(TypedDict)
+      2. ainvoke 跑图（call_tool 是异步节点，必须用 ainvoke）
+      3. 把图更新后的 slots/ask_count/last_question 回写到会话状态
+      4. 发送 events；有 ask 事件则保留状态等下一轮，否则清空
+    """
+    graph = await get_security_status_graph()
+
+    # 组装喂给图的输入状态
+    graph_input = {
+        "slots": state.slots,
+        "missing_params": state.missing_params,
+        "ask_count": state.ask_count,
+        "unrelated_count": state.unrelated_count,
+        "last_question": state.last_question,
+        "original_query": state.original_query,
+        "answer": None,
+        "error": None,
+        "done": state.done,
+        "events": [],
+    }
+    print(f"[GRAPH INPUT] user={user_id}, session={session_id}")
+    print(json.dumps(graph_input, ensure_ascii=False, default=str))
+
+    final_state = await graph.ainvoke(graph_input)
+
+    print(f"[GRAPH OUTPUT] user={user_id}, session={session_id}")
+    print(json.dumps(final_state, ensure_ascii=False, default=str))
+
+    # 图内多轮追问会更新这些字段，回写供下一轮 handle_reply 使用
+    state.slots = final_state["slots"]
+    state.missing_params = final_state["missing_params"]
+    state.ask_count = final_state["ask_count"]
+    state.last_question = final_state["last_question"]
+
+    # 发送事件；存在 ask 事件说明进入追问，保留状态等待用户补充
+    keep_state = False
+    for chunk in final_state["events"]:
+        text = _safe_serialize(chunk)
+        await websocket.send_text(json.dumps(text, ensure_ascii=False))
+        if chunk.get("event") == "custom" and chunk.get("data", {}).get("type") == "ask":
+            keep_state = True
+
+    if keep_state:
+        session_state.set(user_id, session_id, state)
+    else:
+        session_state.clear(user_id, session_id)
+
+
+# ============================================================
+# 食堂管理 LangGraph 执行助手
+# 与安防态势对称：懒加载图，用图执行食堂管理流程
+# ============================================================
+_canteen_status_graph = None
+
+async def get_canteen_status_graph():
+    """懒加载：首次调用时从 MCP 加载食堂工具并编译图，之后复用"""
+    global _canteen_status_graph
+    if _canteen_status_graph is None:
+        tools = await load_canteen_tools()
+        # 传入 llm，让 call_tool 节点用 LLM 组织 MCP 返回生成回答
+        _canteen_status_graph = build_canteen_status_graph(tools, llm=llm)
+    return _canteen_status_graph
+
+
+async def run_canteen_status_graph(websocket, state, user_id, session_id):
+    """
+    用 LangGraph 图执行食堂管理流程（与人员/安防态势对称）：
+      1. 把 IntentState(dataclass) 转成图需要的 CanteenStatusGraphState(TypedDict)
+      2. ainvoke 跑图（call_tool 是异步节点，必须用 ainvoke）
+      3. 把图更新后的 slots/ask_count/last_question 回写到会话状态
+      4. 发送 events；有 ask 事件则保留状态等下一轮，否则清空
+    """
+    graph = await get_canteen_status_graph()
 
     # 组装喂给图的输入状态
     graph_input = {
@@ -422,17 +559,31 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
             query = payload.get("query", "")
 
             # ============================================================
-            # 人员态势 MVP 分支
+            # 人员态势 / 安防态势 MVP 分支
             # 先判断是否有正在进行的追问状态
-            # 再判断是否为新的人员态势意图
+            # 再判断是否为新的人员/安防态势意图
             # 否则走原有 pipeline
             # ============================================================
             active_state = session_state.get(user_id, session_id)
 
-            # 情况 1：当前有进行中的追问状态，且是人员态势
-            if active_state and active_state.module == "person_status":
-                print("[DEBUG] 进入追问分支")
-                handler = PersonStatusHandler()
+            # 预计算顶层意图（人员态势 / 安防态势 / 食堂管理 / other），只算一次
+            # 有进行中任务时不调用模型，避免追问轮重复编码
+            if active_state and active_state.module in ("person_status", "security_status", "canteen_status"):
+                top_intent = None
+            else:
+                top_intent = (await classify_intent(query))["intent"]
+
+            # 情况 1：当前有进行中的追问状态（人员态势 / 安防态势 / 食堂管理）
+            if active_state and active_state.module in ("person_status", "security_status", "canteen_status"):
+                print("[DEBUG] 进入追问分支, module:", active_state.module)
+
+                # 按模块选择对应 handler（人员态势 / 安防态势 / 食堂管理）
+                if active_state.module == "person_status":
+                    handler = PersonStatusHandler()
+                elif active_state.module == "security_status":
+                    handler = SecurityStatusHandler()
+                else:
+                    handler = CanteenStatusHandler()
                 
                 # 让 handler 判断用户回复是否相关，并更新状态
                 result = await handler.handle_reply(active_state, query, llm)
@@ -469,13 +620,20 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
                     # 保存更新后的状态
                     session_state.set(user_id, session_id, result["state"])
                     
-                    # 用 LangGraph 图执行人员态势流程（内部会回写/清理会话状态）
-                    await run_person_status_graph(websocket, result["state"], user_id, session_id)
+                    if active_state.module == "person_status":
+                        # 用 LangGraph 图执行人员态势流程（内部会回写/清理会话状态）
+                        await run_person_status_graph(websocket, result["state"], user_id, session_id)
+                    elif active_state.module == "security_status":
+                        # 用 LangGraph 图执行安防态势流程（内部会回写/清理会话状态）
+                        await run_security_status_graph(websocket, result["state"], user_id, session_id)
+                    else:
+                        # 用 LangGraph 图执行食堂管理流程（内部会回写/清理会话状态）
+                        await run_canteen_status_graph(websocket, result["state"], user_id, session_id)
 
                     continue  # 跳过原有 pipeline
 
             # 情况 2：没有进行中状态，但新意图属于人员态势
-            elif (await classify_intent(query))["intent"] == "person_status":
+            elif top_intent == "person_status":
                 print("[DEBUG] 进入新意图分支, query:", query)
                 
                 handler = PersonStatusHandler()
@@ -500,6 +658,64 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
                 
                 # 用 LangGraph 图执行人员态势流程（内部会回写/清理会话状态）
                 await run_person_status_graph(websocket, state, user_id, session_id)
+
+                continue  # 跳过原有 pipeline
+
+            # 情况 2.1：没有进行中状态，但新意图属于安防态势
+            elif top_intent == "security_status":
+                print("[DEBUG] 进入安防态势新意图分支, query:", query)
+
+                handler = SecurityStatusHandler()
+
+                # 从用户输入中抽取初始 slots
+                slots = await handler.extract_slots(query)
+
+                # 判断初始 slots 是否完整
+                missing = handler._get_missing_params(slots)
+
+                # 创建新的会话状态
+                state = IntentState(
+                    module="security_status",
+                    slots=slots,
+                    missing_params=missing,
+                    ask_count=0,
+                    unrelated_count=0,
+                    original_query=query,
+                    done=False
+                )
+                session_state.set(user_id, session_id, state)
+
+                # 用 LangGraph 图执行安防态势流程（内部会回写/清理会话状态）
+                await run_security_status_graph(websocket, state, user_id, session_id)
+
+                continue  # 跳过原有 pipeline
+
+            # 情况 2.2：没有进行中状态，但新意图属于食堂管理
+            elif top_intent == "canteen_status":
+                print("[DEBUG] 进入食堂管理新意图分支, query:", query)
+
+                handler = CanteenStatusHandler()
+
+                # 从用户输入中抽取初始 slots
+                slots = await handler.extract_slots(query)
+
+                # 判断初始 slots 是否完整
+                missing = handler._get_missing_params(slots)
+
+                # 创建新的会话状态
+                state = IntentState(
+                    module="canteen_status",
+                    slots=slots,
+                    missing_params=missing,
+                    ask_count=0,
+                    unrelated_count=0,
+                    original_query=query,
+                    done=False
+                )
+                session_state.set(user_id, session_id, state)
+
+                # 用 LangGraph 图执行食堂管理流程（内部会回写/清理会话状态）
+                await run_canteen_status_graph(websocket, state, user_id, session_id)
 
                 continue  # 跳过原有 pipeline
 
