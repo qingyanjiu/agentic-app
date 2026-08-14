@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import traceback
 from typing import Annotated, Any, Optional, TypedDict
@@ -18,7 +19,7 @@ logger = logging.getLogger(__name__)
 #   dining_count -> canteen:getDiningCount   ⏳ Java 尚未实现（占位，实现了再启用）
 # ============================================================
 _JAVA_TOOL_MAP = {
-    "dish_rank": "canteen:getDishHotRank",
+    "dish_rank": "canteen:getDishPopularity",
     "week_menu": "canteen:getWeekMenu",
     "dining_count": "canteen:getDiningCount",
 }
@@ -30,9 +31,16 @@ def _extract_text(result: Any) -> str:
     兼容：
       - 普通字符串
       - LangChain 的 [{type: 'text', text: '...'}] 列表
+      - {'content': [{type: 'text', text: '...'}], 'id': '...'} 字典包装
     """
     if isinstance(result, str):
         return result
+
+    # 先解开外层 dict 里的 content 列表
+    if isinstance(result, dict):
+        content = result.get("content")
+        if isinstance(content, list):
+            result = content
 
     if isinstance(result, list) and result:
         first = result[0]
@@ -67,16 +75,23 @@ async def _llm_format_canteen_result(
         label = _query_type_label(event_type)
         original_query = state.get("original_query") or event_type
 
+        # 今天日期 + 星期，让 LLM 知道今天周几（用户问"今天吃什么"时能正确回应当天）
+        from datetime import datetime
+        _today = datetime.now().date()
+        today_label = "周" + "一二三四五六日"[_today.weekday()]
+        today_str = f"{_today}（{today_label}）"
+
         # 每种子类型给不同的整理要求
         requirement = {
             "dish_rank": "按热度从高到低列出菜品，给出排名和热度/销量信息；",
-            "week_menu": "按星期把每天的菜单列出来，有餐次区分的话按餐次分组；",
+            "week_menu": "有日期/星期区分就按天列，有餐次区分就按餐次分组；只有一天的数据就直接列出当天的菜；",
             "dining_count": "直接告诉用户就餐人数，如果是多个时间段，按时间列出；",
         }.get(event_type, "把返回数据整理清楚；")
 
         prompt = (
             "你是智慧园区食堂管理助手。下面是一次 MCP 工具查询的原始返回，"
             "请用中文自然、简洁地整理给用户。\n\n"
+            f"今天日期：{today_str}\n"
             f"用户查询类型：{event_type}（{label}）\n"
             f"用户原话：{original_query}\n"
             "MCP 工具返回的原始数据：\n"
@@ -265,6 +280,10 @@ def route_date_type(state: CanteenStatusGraphState) -> str:
     time_type = date_slots.get("time_type")
 
     if time_type == "future":
+        # 本周菜谱的数据是整周的（平台一次返回周一~周日），明天/后天等未来日期可以直接查；
+        # 其他类型（热度排行/就餐人数）没有未来数据，仍走 future_date 拒绝
+        if state["slots"].get("event_type") == "week_menu":
+            return "call_tool"
         return "future_date"
     if time_type == "vague":
         return "vague_date"
@@ -322,6 +341,142 @@ def vague_date(state: CanteenStatusGraphState) -> dict:
     }
 
 
+# ============================================================
+# 本周菜谱优化：紧凑化
+# 背景：平台 getWeeklyRecipe 一次返回整周菜谱（N 天 × 3 餐次 × 菜品，
+#       每菜还带 image/elementJson 等长字段），原始 JSON 很大，
+#       直接喂 LLM 又慢又费 token。
+# 这里在每次调用 MCP 后，把原始数据压成紧凑文本（只保留 日期/餐次/菜名/价格/单位），
+# 并按用户问的日期和餐次过滤，再喂给 LLM，大幅减小 token、加快回复。
+# 注意：Python 侧不再缓存整周菜谱，每次查询都会真正调用 MCP。
+# ============================================================
+
+# 餐次 key -> 中文标签（对应平台返回的 breakfast/lunch/dinner）
+_MEAL_LABELS = {"breakfast": "早餐", "lunch": "午餐", "dinner": "晚餐"}
+
+
+def _weekday_label(date_obj) -> str:
+    """把日期转成平台的星期标签（'周一' ~ '周日'）"""
+    return "周" + "一二三四五六日"[date_obj.weekday()]
+
+
+async def _get_week_menu_raw(tool, tool_args) -> tuple:
+    """
+    获取整周菜谱原始数据：每次直接调用 MCP，不再在 Python 侧做周缓存
+    返回 (result, False)
+    """
+    result = await tool.ainvoke(tool_args)
+    print(f"[week_menu] 已调用 MCP 获取整周菜谱")
+    return result, False
+
+
+def _compact_week_menu(result, state: dict) -> str:
+    """
+    把整周菜谱的原始数据压成紧凑文本，再喂给 LLM
+
+    原始数据结构（来自平台）：
+      data: [
+        {"day": "周一", "breakfast": [...], "lunch": [...], "dinner": [...]},
+        ...
+      ]
+      每个菜品还带 image / elementJson / memberPrice 等长字段，整体很大。
+
+    这里只保留：day、餐次、dishName、price、unit，
+    并按用户问的日期（今天/昨天/前天）和餐次过滤，
+    大幅减小喂给 LLM 的 token，加快回复。
+
+    解析失败时兜底返回原始文本，保证流程不断。
+    """
+    from datetime import datetime, timedelta
+
+    # 兼容字符串 JSON 和已解析的 dict/list
+    if isinstance(result, str):
+        try:
+            data = json.loads(result)
+        except Exception:
+            return result
+    else:
+        data = result
+
+    # 数据可能在 {data: [...]} 包装里，也可能直接是列表
+    items = data.get("data") if isinstance(data, dict) else data
+    if not isinstance(items, list):
+        return str(data)
+
+    # 用户问的具体日期（来自 slot 的 raw 提示词）
+    date_slots = state.get("slots", {}).get("date", {})
+    raw_hint = str(date_slots.get("raw", ""))
+    today = datetime.now().date()
+    if "前天" in raw_hint:
+        target_date = today - timedelta(days=2)
+    elif "昨天" in raw_hint:
+        target_date = today - timedelta(days=1)
+    elif "今天" in raw_hint:
+        target_date = today
+    elif "大后天" in raw_hint:
+        target_date = today + timedelta(days=3)
+    elif "后天" in raw_hint:
+        target_date = today + timedelta(days=2)
+    elif "明天" in raw_hint:
+        target_date = today + timedelta(days=1)
+    else:
+        target_date = None
+    target_day = _weekday_label(target_date) if target_date else None
+
+    # 食堂菜单只有周一~周五，问周末（周六/周日）直接提示没有数据
+    if target_date and target_date.weekday() >= 5:
+        return f"{target_day}是周末，食堂暂无菜单数据。"
+
+    # 用户问的具体餐次（如"本周午餐" -> 午餐）
+    target_meal = state.get("slots", {}).get("meal") or ""
+
+    lines = []
+    for day_item in items:
+        if not isinstance(day_item, dict):
+            continue
+        day_label = str(day_item.get("day", ""))
+
+        # 按日期过滤：问"今天"就只留对应那一天
+        if target_day and not (target_day in day_label or day_label in target_day):
+            continue
+
+        meal_lines = []
+        for meal_key, meal_label in _MEAL_LABELS.items():
+            # 按餐次过滤
+            if target_meal and meal_label != target_meal:
+                continue
+            dishes = day_item.get(meal_key)
+            if not isinstance(dishes, list) or not dishes:
+                continue
+            names = []
+            for d in dishes:
+                if not isinstance(d, dict):
+                    continue
+                name = d.get("dishName")
+                if not name:
+                    continue
+                price = d.get("price")
+                unit = d.get("unit")
+                if price:
+                    names.append(f"{name}({price}元/{unit})" if unit else f"{name}({price}元)")
+                else:
+                    names.append(name)
+            if names:
+                meal_lines.append(f"{meal_label}: {'、'.join(names)}")
+
+        if meal_lines:
+            prefix = f"{day_label} " if day_label else ""
+            lines.append(prefix + " | ".join(meal_lines))
+
+    if lines:
+        return "\n".join(lines)
+
+    # 解析成功但按日期/餐次过滤后没有数据
+    # （如明天是周末、明天不在本周数据范围内），返回空串让 LLM 如实说没查到，
+    # 而不是把整周数据又喂进去
+    return ""
+
+
 def make_call_tool_node(tools: dict, llm=None):
     """
     构造调用 MCP 工具的节点
@@ -367,10 +522,18 @@ def make_call_tool_node(tools: dict, llm=None):
         print(f"[MCP CALL] tool={java_tool_name}, args={tool_args}")
 
         try:
-            result = await tool.ainvoke(tool_args)
-            print(f"[MCP RAW RESULT] event_type={event_type}, result={result}")
-
-            raw_text = _extract_text(result)
+            # 本周菜谱：每次直接调用 MCP，然后在 Python 侧做紧凑化再喂给 LLM
+            if event_type == "week_menu":
+                result, _ = await _get_week_menu_raw(tool, tool_args)
+                print(f"[MCP RAW RESULT] event_type={event_type}, result={result}")
+                # 整周菜谱原始数据很大，先压成紧凑文本（含按日期/餐次过滤）
+                # 再喂 LLM，大幅减少 token、加快回复
+                raw_text = _compact_week_menu(_extract_text(result), state)
+                print(f"[week_menu] compact raw_text={raw_text[:200]}...")
+            else:
+                result = await tool.ainvoke(tool_args)
+                print(f"[MCP RAW RESULT] event_type={event_type}, result={result}")
+                raw_text = _extract_text(result)
             answer_text = await _llm_format_canteen_result(
                 llm, event_type, state, raw_text
             )
