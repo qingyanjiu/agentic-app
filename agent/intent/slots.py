@@ -431,6 +431,87 @@ def extract_security_status_slots(query: str) -> dict:
 
 
 # ============================================================
+# 车辆态势 slot 抽取
+# 目前支持子类型（query_type）：
+#   parking_space        -> 停车位统计
+#   traffic_flow         -> 车流量统计
+#   parking_structure    -> 停车结构
+#   official_vehicle     -> 公车统计
+#   parking_duration_rank-> 停车时长排名
+#   parking_monitor      -> 停车场监控
+#   vehicle_access_record-> 车辆通行记录
+#   count                -> 一般车辆统计（兜底）
+# ============================================================
+
+def extract_vehicle_status_slots(query: str) -> dict:
+    """
+    统一抽取车辆态势相关的所有 slot
+    """
+    slots = {
+        "query_type": "count",
+        "date": parse_time_slot(query),
+        "area": parse_area_slot(query),
+    }
+
+    q = query
+
+    # 1. 停车位统计
+    if re.search(
+        r"停车位|剩余车位|空车位|车位余量|车位统计|车位.*多少|剩余多少.*车位|还有.*车位|车位情况",
+        q,
+    ):
+        slots["query_type"] = "parking_space"
+
+    # 2. 车流量统计
+    elif re.search(
+        r"车流量|车辆.*流量|进出车辆|通行车辆|车辆.*多少|进出.*统计|今天.*多少.*车",
+        q,
+    ):
+        slots["query_type"] = "traffic_flow"
+
+    # 3. 停车结构
+    elif re.search(
+        r"停车结构|车辆结构|车型分布|车辆类型|车辆占比|停车场.*结构|车位类型",
+        q,
+    ):
+        slots["query_type"] = "parking_structure"
+
+    # 4. 公车统计
+    elif re.search(
+        r"公车|公务车|公务用车|单位车辆|公家车|公务.*统计|公车.*多少",
+        q,
+    ):
+        slots["query_type"] = "official_vehicle"
+
+    # 5. 停车时长排名
+    elif re.search(
+        r"停车时长|停车.*时间|停车.*排名|停最久|停最长|停车时长.*排行|停车时长.*统计",
+        q,
+    ):
+        slots["query_type"] = "parking_duration_rank"
+
+    # 6. 停车场监控
+    elif re.search(
+        r"停车场监控|停车.*监控|车库监控|车位监控|监控.*停车场|监控.*车库|看.*停车场",
+        q,
+    ):
+        slots["query_type"] = "parking_monitor"
+
+    # 7. 车辆通行记录
+    elif re.search(
+        r"通行记录|车辆.*记录|进出记录|过车记录|出入记录|车辆.*通行|通行.*查询|通行.*统计",
+        q,
+    ):
+        slots["query_type"] = "vehicle_access_record"
+
+    # 8. 兜底：一般车辆统计
+    # 默认 count，无需再判断
+
+    print(f"[vehicle slots] query={q} => {slots}")
+    return slots
+
+
+# ============================================================
 # 食堂管理 slot 抽取
 # 目前支持子类型（event_type）：
 #   dish_rank    -> 本月菜品热度排行

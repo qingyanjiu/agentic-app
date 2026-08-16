@@ -26,6 +26,15 @@ mcp_servers:
     transport: streamable_http
     url: http://host.docker.internal:2222/mcp/canteen
 
+  # Java MCP Sidecar - 车辆态势模块
+  # 端点路径是 /mcp/vehicleStatus（与 Java 侧车 VehicleStatusMcpServerConfig 一致）
+  # 部署方式与人员态势一致：
+  # - Java 跑在宿主机：url: http://host.docker.internal:2222/mcp/vehicleStatus
+  # - Java 跑在 Docker 且与 Python 同网络：url: http://mcp-sidecar:2222/mcp/vehicleStatus
+  vehicle:
+    transport: streamable_http
+    url: http://host.docker.internal:2222/mcp/vehicleStatus
+
   # 本地 Python 实现的 person_status MCP 服务
   # 当前已改用 Java MCP Sidecar，先注释掉，避免与 Java 侧车的工具冲突
   # person_status:

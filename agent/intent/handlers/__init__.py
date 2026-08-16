@@ -3,5 +3,6 @@
 from .person_status_handler import PersonStatusHandler
 from .security_status_handler import SecurityStatusHandler
 from .canteen_status_handler import CanteenStatusHandler
+from .vehicle_status_handler import VehicleStatusHandler
 
-__all__ = ["PersonStatusHandler", "SecurityStatusHandler", "CanteenStatusHandler"]
+__all__ = ["PersonStatusHandler", "SecurityStatusHandler", "CanteenStatusHandler", "VehicleStatusHandler"]

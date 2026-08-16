@@ -30,6 +30,7 @@ LOCAL_MODEL_PATH = os.getenv("INTENT_MODEL_PATH", "BAAI/bge-small-zh-v1.5")
 PERSON_STATUS_THRESHOLD = 0.65
 SECURITY_STATUS_THRESHOLD = 0.65
 CANTEEN_STATUS_THRESHOLD = 0.65
+VEHICLE_STATUS_THRESHOLD = 0.65
 
 
 # ============================================================
@@ -283,6 +284,137 @@ SECURITY_STATUS_EXAMPLES = {
         "行为异常",
         "群体性事件预警",
         "异常聚集",
+    ],
+}
+
+# ============================================================
+# 车辆态势模块的示例语料库（按子类型分组）
+# 每个 key 对应 extract_vehicle_status_slots 里的 query_type：
+#   parking_space         -> 停车位统计
+#   traffic_flow          -> 车流量统计
+#   parking_structure     -> 停车结构
+#   official_vehicle      -> 公车统计
+#   parking_duration_rank -> 停车时长排名
+#   parking_monitor       -> 停车场监控
+#   vehicle_access_record -> 车辆通行记录
+#   count                 -> 一般车辆统计（兜底）
+#
+# 用途（与 PERSON_STATUS_EXAMPLES 相同）：
+#   1. 所有示例的平均向量 = 车辆态势意图中心（is_vehicle_status）
+#   2. 每个子类型的平均向量 = 子类型中心（classify_vehicle_sub_type）
+# 示例越多、覆盖越广，判断越准
+# ============================================================
+VEHICLE_STATUS_EXAMPLES = {
+    # 停车位统计（parking_space）
+    "parking_space": [
+        "停车位统计",
+        "剩余车位多少",
+        "停车场还有多少空位",
+        "车位余量",
+        "空车位数量",
+        "今天剩余车位",
+        "车位统计情况",
+        "停车位总数",
+        "还剩几个车位",
+        "车位使用情况",
+    ],
+
+    # 车流量统计（traffic_flow）
+    "traffic_flow": [
+        "车流量统计",
+        "今天进出多少车",
+        "车流量多少",
+        "进出车辆统计",
+        "园区车流量",
+        "车辆进出情况",
+        "今天通行车辆数",
+        "车流量趋势",
+        "进出园区车辆",
+        "车辆流量统计",
+    ],
+
+    # 停车结构（parking_structure）
+    "parking_structure": [
+        "停车结构",
+        "停车结构分布",
+        "车辆类型占比",
+        "车型分布",
+        "停车位结构",
+        "停车结构统计",
+        "各类车辆占比",
+        "停车结构情况",
+        "停车场结构",
+        "车辆结构分析",
+    ],
+
+    # 公车统计（official_vehicle）
+    "official_vehicle": [
+        "公车统计",
+        "公务车有多少",
+        "单位车辆统计",
+        "公车数量",
+        "公务用车情况",
+        "公家车统计",
+        "公车在线情况",
+        "公务车停放情况",
+        "单位公车数量",
+        "公务车辆统计",
+    ],
+
+    # 停车时长排名（parking_duration_rank）
+    "parking_duration_rank": [
+        "停车时长排名",
+        "停车时长排行",
+        "停车最久的车辆",
+        "停车时长统计",
+        "停车时间排名",
+        "停车最久的车",
+        "车辆停车时长",
+        "停车时长情况",
+        "长时间停车车辆",
+        "停车时长榜单",
+    ],
+
+    # 停车场监控（parking_monitor）
+    "parking_monitor": [
+        "停车场监控",
+        "查看停车场监控",
+        "停车场视频监控",
+        "车库监控",
+        "车位监控",
+        "停车场实时画面",
+        "停车区域监控",
+        "地下停车场监控",
+        "停车场摄像头",
+        "停车场监控画面",
+    ],
+
+    # 车辆通行记录（vehicle_access_record）
+    "vehicle_access_record": [
+        "车辆通行记录",
+        "车辆进出记录",
+        "车辆出入记录",
+        "过车记录",
+        "通行记录查询",
+        "车辆通行统计",
+        "今天车辆通行记录",
+        "车辆进出查询",
+        "园区通行记录",
+        "车辆通行情况",
+    ],
+
+    # 一般车辆统计（count）：兜底
+    "count": [
+        "车辆统计",
+        "今天多少车",
+        "园区车辆",
+        "车辆总数",
+        "车辆情况",
+        "停车场车辆",
+        "车辆多少",
+        "车有多少",
+        "车辆态势",
+        "车辆状态",
     ],
 }
 
@@ -788,6 +920,23 @@ class PersonStatusClassifier:
             center = np.mean(all_can, axis=0)
             self.canteen_center = center / np.linalg.norm(center)
 
+        # 5. 车辆态势整体中心向量 + 子类型中心向量
+        self.vehicle_center = None
+        self.vehicle_sub_centers = {}
+        vehicle_vectors = []
+        for sub_type, examples in VEHICLE_STATUS_EXAMPLES.items():
+            vecs = self.model.encode(
+                examples, convert_to_numpy=True, normalize_embeddings=True
+            )
+            vehicle_vectors.append(vecs)
+            center = np.mean(vecs, axis=0)
+            self.vehicle_sub_centers[sub_type] = center / np.linalg.norm(center)
+
+        if vehicle_vectors:
+            all_vehicle = np.concatenate(vehicle_vectors, axis=0)
+            center = np.mean(all_vehicle, axis=0)
+            self.vehicle_center = center / np.linalg.norm(center)
+
 
         logger.info("[classifier] 意图识别模型加载完成")
 
@@ -827,6 +976,15 @@ class PersonStatusClassifier:
         logger.info(f"[classifier] query={query}, security_score={score:.4f}")
         return score >= threshold, score
 
+    def is_vehicle_status(self, query: str, threshold: float = VEHICLE_STATUS_THRESHOLD) -> tuple:
+        """判断用户输入是否属于车辆态势意图"""
+        if self.vehicle_center is None:
+            return False, 0.0
+        query_vec = self._encode(query)
+        score = float(np.dot(query_vec, self.vehicle_center))
+        logger.info(f"[classifier] query={query}, vehicle_score={score:.4f}")
+        return score >= threshold, score
+
 
     def classify_top_intent(self, query: str) -> tuple:
         """
@@ -840,6 +998,8 @@ class PersonStatusClassifier:
             if self.security_center is not None else -1.0,
             "canteen_status": float(np.dot(query_vec, self.canteen_center))
             if self.canteen_center is not None else -1.0,
+            "vehicle_status": float(np.dot(query_vec, self.vehicle_center))
+            if self.vehicle_center is not None else -1.0,
         }
         best = max(scores, key=scores.get)
         best_score = scores[best]
@@ -847,6 +1007,7 @@ class PersonStatusClassifier:
             "person_status": PERSON_STATUS_THRESHOLD,
             "security_status": SECURITY_STATUS_THRESHOLD,
             "canteen_status": CANTEEN_STATUS_THRESHOLD,
+            "vehicle_status": VEHICLE_STATUS_THRESHOLD,
         }.get(best, PERSON_STATUS_THRESHOLD)
         if best_score >= threshold:
             return best, best_score
@@ -874,6 +1035,17 @@ class PersonStatusClassifier:
             if score > best_score:
                 best_type, best_score = sub_type, score
         logger.info(f"[classifier] query={query}, canteen_sub_type={best_type}, score={best_score:.4f}")
+        return best_type, best_score
+
+    def classify_vehicle_sub_type(self, query: str) -> tuple:
+        """车辆态势子类型判定，对称于 classify_sub_type"""
+        query_vec = self._encode(query)
+        best_type, best_score = None, -1.0
+        for sub_type, center in self.vehicle_sub_centers.items():
+            score = float(np.dot(query_vec, center))
+            if score > best_score:
+                best_type, best_score = sub_type, score
+        logger.info(f"[classifier] query={query}, vehicle_sub_type={best_type}, score={best_score:.4f}")
         return best_type, best_score
 
 
@@ -927,10 +1099,10 @@ async def get_classifier():
 
 async def classify_intent(query: str) -> dict:
     """
-    统一意图识别入口（人员态势 / 安防态势 / 其他）
+    统一意图识别入口（人员态势 / 安防态势 / 食堂管理 / 车辆态势 / 其他）
 
     :param query: 用户输入
-    :return: {"intent": "person_status" | "security_status" | "other", "score": 相似度}
+    :return: {"intent": "person_status" | "security_status" | "canteen_status" | "vehicle_status" | "other", "score": 相似度}
     """
     # 获取分类器单例
     # 第一次调用时会在线程池中加载模型
@@ -1001,5 +1173,22 @@ async def classify_canteen_sub_type(query: str) -> tuple:
     return await loop.run_in_executor(
         None,
         classifier.classify_canteen_sub_type,
+        query
+    )
+
+
+async def classify_vehicle_sub_type(query: str) -> tuple:
+    """
+    异步判断车辆态势的子类型（query_type）
+
+    :param query: 用户输入
+    :return: (query_type, 相似度分数)，例如 ("parking_space", 0.72)
+    """
+    classifier = await get_classifier()
+
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        None,
+        classifier.classify_vehicle_sub_type,
         query
     )
