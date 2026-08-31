@@ -76,6 +76,125 @@
 
 详细工作流图: [workflow.png](workflow.png)
 
+## 🎯 意图识别与参数提取
+
+针对**人员态势 / 安防态势 / 食堂管理 / 车辆态势**四个园区业务模块，系统采用「**Embedding 小模型意图分类 + 正则规则参数抽取 + Handler 多轮追问补参 + LangGraph 状态机编排**」的组合方案，实现轻量、可解释、低延迟的意图识别与参数提取；通用业务则走 LLM 提示词方案（见「通用工具参数校验」）。
+
+### 整体流程
+
+```
+用户输入 query
+   │
+   ├─ classify_intent()              顶层意图：person_status / security_status / canteen_status / vehicle_status / other
+   │
+   ├─ 对应 Handler.extract_slots()   抽取 query_type / person_name / date / area / meal 等参数(slots)
+   │
+   ├─ IntentState(session_state)     保存多轮追问状态(module, slots, missing_params, ask_count ...)
+   │
+   └─ LangGraph 图                   check_missing_params → ask_param / check_date → call_tool(MCP) → LLM 组织回答
+```
+
+### 1. 顶层意图识别（Embedding 小模型）
+
+代码：[agent/intent/classifier.py](agent/intent/classifier.py)
+
+- **模型**：`BAAI/bge-small-zh-v1.5`（sentence-transformers），路径由环境变量 `INTENT_MODEL_PATH` 指定，容器内可挂载本地模型避免联网下载
+- **语料**：每个模块维护一份按子类型分组的示例语料库（`*_STATUS_EXAMPLES`，如 [PERSON_STATUS_EXAMPLES](agent/intent/classifier.py#L54)），所有示例向量的**归一化平均向量**即该意图的「中心向量」
+- **判定**：一次编码用户输入，分别与四个意图中心向量计算余弦相似度（向量已归一化，点积即余弦），取最高分；**只有最高分超过该意图的阈值才命中**，否则归为 `other`
+- **阈值**：四个意图阈值统一为 `0.65`（`*_STATUS_THRESHOLD`），语料不足时可调低
+
+| 顶层意图 | intent | 子类型（query_type / event_type） |
+|---|---|---|
+| 人员态势 | person_status | location / trace / realtime / enter / leave / flow / structure / abnormal / count |
+| 安防态势 | security_status | alarm_list / alarm_detail / intrusion / patrol / video / access / fire / device / abnormal |
+| 食堂管理 | canteen_status | dish_rank（菜品热度）/ week_menu（菜谱）/ dining_count（就餐人数） |
+| 车辆态势 | vehicle_status | parking_space / traffic_flow / parking_structure / official_vehicle / parking_duration_rank / parking_monitor / vehicle_access_record / count |
+
+> **性能注意**：SentenceTransformer 的加载与 encode 是同步阻塞操作，模型通过 `get_classifier()` **单例加载一次**，并在 `run_in_executor` 线程池中执行，避免阻塞 Uvicorn 主事件循环 / WebSocket。
+
+### 2. 子类型识别
+
+- **人员 / 车辆**：**正则为主、分类器兜底** —— `extract_*_slots` 先用正则抽取 `query_type`；仅当正则落到兜底类型（`count`）时，才调用 `classify_sub_type` / `classify_vehicle_sub_type` 做 embedding 判定，分数 ≥ `0.6`（`SUB_TYPE_THRESHOLD`）则覆盖正则结果
+- **安防 / 食堂**：当前以正则判定 `event_type` 为主，后续可对称扩展分类器兜底
+
+### 3. 参数抽取（Slot 抽取）
+
+代码：[agent/intent/slots.py](agent/intent/slots.py)
+
+**通用 slot 解析器：**
+
+- `parse_time_slot(query)`：时间解析。先手工处理口语化时间（近N天 / 本周 / 上周 / 本月 / 上个月 / 昨天 / 前天 等直接转成 `{start_time, end_time}` 时间区间），再交给 `jionlp.parse_time` 兜底。返回结构：
+  - `time_type="span" / "point"`：可直接查询的具体时间区间
+  - `time_type="vague"`：模糊时间（如"最近几天"），附带候选 `options`，由图中 `vague_date` 节点追问确认
+  - `time_type="future"`：未来时间（明天/后天），由图中 `future_date` 节点提示不可查
+- `parse_area_slot(query)`：区域别名词典映射（如"A座 / A楼" → 标准区域"A栋"）
+- `parse_meal_slot(query)`：餐次别名词典映射（"早饭 / 早" → "早餐"）
+- `extract_person_name(query)`：**员工名单精确匹配**，避免正则把"一下人员"等通用词错当人名
+- `_parse_chinese_number()`：中文数字（一~九十九）转阿拉伯数字
+
+**各模块 slots：**
+
+| 模块 | 抽取函数 | slots 结构 | 判定要点 |
+|---|---|---|---|
+| 人员态势 | `extract_person_status_slots` | query_type, person_name, date, area | query_type 按 轨迹→位置→异常→流动→进入→离开→结构→实时→count 的**优先级正则**判定 |
+| 安防态势 | `extract_security_status_slots` | event_type=alarm_list, date | 当前仅告警列表，date 映射为 MCP 参数 `{startTime, endTime}` |
+| 食堂管理 | `extract_canteen_status_slots` | event_type, date, meal | 按「人数 → 热度排行 → 菜谱」优先级判定，兜底 week_menu |
+| 车辆态势 | `extract_vehicle_status_slots` | query_type, date, area | 按 停车位→车流量→结构→公车→时长排名→监控→通行记录→count 优先级正则判定 |
+
+### 4. 意图处理器 Handler（多轮追问）
+
+代码：[agent/intent/handlers/](agent/intent/handlers/)（基类 [base.py](agent/intent/handlers/base.py)）
+
+每个模块一个 Handler，统一继承 `IntentHandler` 抽象基类，职责：
+
+| 方法 | 说明 |
+|---|---|
+| `extract_slots(query)` | 从用户输入抽取本模块参数 |
+| `is_related(state, query)` | 追问阶段判断用户回复是否与当前任务相关（按缺人名/时间/区域的关键词判定；连续不相关累计超过 `MAX_UNRELATED=3` 次则放弃任务） |
+| `handle_reply(state, query, llm)` | 处理追问轮回复，增量更新 slots、重新计算 `missing_params` |
+| `_get_missing_params(slots)` | 判断还缺哪些必填参数（人员态势的 location/trace **必须有人名**；安防/食堂**必须有时段**；车辆态势当前不强制） |
+| `generate_question(state)` | 按缺失参数优先级生成追问问题 |
+
+Handler 还内置了确认逻辑：`_pending_confirm`（人员/车辆后端仅支持今日数据时，询问"是否为您展示今日X？"）、`_pending_date_clarify`（模糊时间范围确认），并识别同意（`AGREE_KEYWORDS`）/ 拒绝（`DECLINE_KEYWORDS`）关键词。
+
+### 5. 会话状态 IntentState
+
+代码：[memory/session_state.py](memory/session_state.py)
+
+`IntentState` dataclass 保存多轮追问状态：`module`（当前模块）、`slots`（已抽取参数）、`missing_params`（缺失参数）、`ask_count`（追问次数，>3 放弃）、`unrelated_count`（连续不相关次数）、`last_question`（上次问题）、`original_query`（用户原话）、`done`。按 `user_id:session_id` 存入 `SessionStateManager`（默认 5 分钟过期）。
+
+### 6. LangGraph 状态机编排
+
+代码：[graph/person_status_langgraph.py](graph/person_status_langgraph.py)、[graph/security_status_langgraph.py](graph/security_status_langgraph.py)、[graph/canteen_status_langgraph.py](graph/canteen_status_langgraph.py)、[graph/vehicle_status_langgraph.py](graph/vehicle_status_langgraph.py)（四个模块结构一致）
+
+```
+init → check_missing_params
+    ├─ ask_param        缺失参数：追问（ask_count > 3 → give_up）
+    ├─ check_date
+    │    ├─ future_date 未来时间：直接提示不可查
+    │    ├─ vague_date  模糊时间：让用户确认具体范围（近三天/近一周/近一个月）
+    │    └─ check_confirm → confirm_today  人员/车辆：非今天查询先确认是否看今日数据
+    │         └─ call_tool → finalize → END
+```
+
+- `call_tool` 通过 `_JAVA_TOOL_MAP` 把 Python 的 query_type / event_type 映射到 **Java MCP 工具名**（如 `person_status:getTodayPersonnelAffairs`、`canteen:getWeekMenu`），工具从 `mcp_client/mcp_server_config.yaml` 动态加载
+- 工具返回后优先用 LLM 按查询类型组织自然语言回答；**LLM 不可用 / 失败时降级为 Python 正则提取**（如人员态势按 query_type 提取"实时在园人数 / 今日进入人数"等字段），保证流程不断
+
+### 7. app.py 路由
+
+`/chat` WebSocket 中（[app.py](app.py)）：
+
+1. 若当前会话存在**进行中的态势任务**（`module` ∈ 四个模块），直接调用对应 Handler 的 `handle_reply` 处理追问
+2. 否则调用 `classify_intent(query)` 预判顶层意图，命中四个模块则 `extract_slots` → 构造 `IntentState` → 进入对应 LangGraph 图
+3. 其它意图走原有 LLM pipeline
+
+### 8. 通用工具参数校验（LLM 提示词方案）
+
+非态势类业务走 LLM 方案：
+
+- [agent/get_intent_and_select_tools_prompt.py](agent/get_intent_and_select_tools_prompt.py)：LLM 充当「工具参数校验器」，结合工具 JSON 描述、用户最新输入与已理解意图，输出 `intent_desc` + `intent_get_result`（内含 `params_got` / `missing_params`），支持多轮补参。相对时间（今天 / 本周 / 本月）视为已获得参数不追问；含"坏了 / 故障 / 报修"等关键词时直接判定为园区报修工单生成
+- [agent/ask_for_param_prompt.py](agent/ask_for_param_prompt.py)：参数缺失时生成礼貌的追问文本（面向语音输入，选择方便口述的格式）
+
 ## 🛠️ 技术栈
 
 ### 技术栈
@@ -557,6 +676,10 @@ agentic-app/
 │   ├── info_double_check_prompts.py # 主要问答流程的系统提示词
 │   ├── intent_get_prompt.py # 识别用户意图和工具的提示词
 │   ├── get_intent_and_select_tools_prompt.py # 选择工具和获取参数的提示词
+│   ├── intent/             # 意图识别与参数提取模块
+│   │   ├── classifier.py   # Embedding 意图分类器（顶层意图 + 子类型判定）
+│   │   ├── slots.py        # 参数(slot)抽取：时间/区域/餐次/人名/query_type
+│   │   └── handlers/       # 各模块意图处理器（追问、相关性判断、缺失参数）
 │   ├── text_corrector_prompt.py # 语音识别文本纠错提示词
 │   └── rag_prompts.py      # RAG（检索增强生成）相关的系统提示词
 ├── asr/                    # 语音识别模块
@@ -567,6 +690,10 @@ agentic-app/
 │   ├── reactive_pipeline.py # 反应式工作流的核心文件
 │   ├── gen_doc_pipeline.py  # 文档生成工作流
 │   ├── asr_pipeline.py      # 语音识别纠错工作流
+│   ├── person_status_langgraph.py   # 人员态势 LangGraph 编排
+│   ├── security_status_langgraph.py # 安防态势 LangGraph 编排
+│   ├── canteen_status_langgraph.py  # 食堂管理 LangGraph 编排
+│   ├── vehicle_status_langgraph.py  # 车辆态势 LangGraph 编排
 │   └── langgraph开发模板代码.py # 模板参考文件
 ├── memory/                 # 记忆管理模块，用于持久化保存对话历史
 │   ├── store.py            # 记忆存储服务，提供统一接口
