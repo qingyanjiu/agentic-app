@@ -92,6 +92,37 @@ def _parse_chinese_number(num_str: str) -> int:
     return total if total > 0 else 2
 
 
+# 序数选择表达式：第一个 / 第1个 / 第 2 个
+_ORDINAL_CHOICE_RE = re.compile(r"第\s*([0-9]+|[一二两三四五六七八九十]+)\s*个?")
+
+
+def parse_ordinal_choice(query: str, max_index: int) -> int | None:
+    """
+    从用户回复中解析"序数选选项"的表达，供追问轮使用（通用，各域可复用）
+
+    支持：第一个 / 第1个 / 第 2 个 / 就第三个吧 / 1 / 2（整句纯数字）
+    不带「第」前缀的句子（如"近三天"）不会误命中。
+
+    :param query: 用户回复
+    :param max_index: 选项总数（1-based 上限）
+    :return: 1-based 序号；解析不到或超出范围返回 None
+    """
+    q = query.strip()
+
+    # 整句纯数字，如「1」「2」
+    if q.isdigit():
+        n = int(q)
+        return n if 1 <= n <= max_index else None
+
+    m = _ORDINAL_CHOICE_RE.search(q)
+    if m:
+        n = _parse_chinese_number(m.group(1))
+        if 1 <= n <= max_index:
+            return n
+
+    return None
+
+
 def parse_time_slot(query: str) -> dict:
     """
     解析用户输入中的时间描述
@@ -396,15 +427,43 @@ def extract_person_status_slots(query: str) -> dict:
 
 # ============================================================
 # 安防态势 slot 抽取
-# 目前只支持告警列表（alarm_list）
+# 当前支持：alarm_list / alarm_detail / patrol / device
 # 后续如需扩展其他子类型（入侵/巡逻/视频/门禁/火警/设备/异常事件），
 # 在 extract_security_status_slots 里加正则判断即可
 # ============================================================
+
+def extract_alarm_id(query: str) -> str:
+    """
+    从用户输入中抽取告警 ID
+    支持：第3条告警、告警ID 123、告警 456、id 789 等
+    """
+    patterns = [
+        r"(?:第\s*)(\d+)(?:\s*条(?:告警)?)?",
+        r"告警(?:ID|id)?[\s:：]+(\d+)",
+        r"告警\s+(\d+)",
+        r"id[\s:：]+(\d+)",
+        r"编号[\s:：]+(\d+)",
+    ]
+    for p in patterns:
+        m = re.search(p, query)
+        if m:
+            return m.group(1)
+    return ""
+
+
 def extract_security_status_slots(query: str) -> dict:
     """
-    抽取安防态势相关的 slot（当前只支持告警列表）
+    抽取安防态势相关的 slot
 
-    event_type：固定为 alarm_list（告警列表）
+    event_type：
+      - alarm_list        告警列表（按时间区间查）
+      - alarm_detail      告警详情（无单独工具，用 AI 巡查事件列表兜底）
+      - patrol            巡查/巡逻任务统计
+      - device            安防设备状态/详情
+      - security_index    园区综合安全指数（无需时间）
+      - ai_alert          AI 告警态势统计
+      - inspection_trend  安全巡查趋势（当天分时段）
+      - ai_inspection     AI 巡查事件列表
     date：时间范围，由 parse_time_slot 解析
           取 date["start_time"] / date["end_time"]
           作为调 MCP 服务的参数 {startTime, endTime}
@@ -416,15 +475,71 @@ def extract_security_status_slots(query: str) -> dict:
       - 对未来时间会返回 time_type="future"，直接提示不可查
 
     :param query: 用户输入
-    :return: {"event_type": "alarm_list", "date": {"start_time": ..., "end_time": ..., "raw": ...}}
+    :return: {"event_type": "...", "date": {...}, "alarm_id": "..."}
     """
+    q = query
     slots = {
-        # 目前只做告警列表，后续扩展子类型时在此加正则判断
         "event_type": "alarm_list",
-        # 时间范围：date["start_time"] / date["end_time"]
-        # 对应 MCP 工具参数 {startTime, endTime}
         "date": parse_time_slot(query),
+        "alarm_id": extract_alarm_id(query),
     }
+
+    # 1. 园区安全指数：无需时间范围，优先判断
+    if re.search(
+        r"安全指数|安全状况|安全.*得分|园区.*安全.*分|安全评分|安全系数|"
+        r"安全水平|安全.*怎么样|园区安全吗",
+        q,
+    ):
+        slots["event_type"] = "security_index"
+
+    # 2. AI 告警态势：类别数量/占比统计
+    elif re.search(
+        r"AI告警|智能告警|告警分布|告警占比|告警统计|各类告警|"
+        r"告警.*分类|告警.*数量|告警.*情况",
+        q,
+    ):
+        slots["event_type"] = "ai_alert"
+
+    # 3. 巡查趋势：分时段巡查情况
+    elif re.search(
+        r"巡查趋势|巡检趋势|巡查情况|巡查异常|巡检情况|巡查统计|"
+        r"巡查.*时段|巡查.*高峰",
+        q,
+    ):
+        slots["event_type"] = "inspection_trend"
+
+    # 4. AI 巡查事件：智能巡检发现的异常
+    elif re.search(
+        r"AI巡查|智能巡检|智能巡查|巡检告警|巡查.*发现|巡检.*发现|"
+        r"智能.*发现.*异常",
+        q,
+    ):
+        slots["event_type"] = "ai_inspection"
+
+    # 5. 告警详情：最具体，优先判断
+    elif re.search(
+        r"告警详情|这条告警|这个告警|那条告警|那个告警|告警详情是什么|"
+        r"告警具体是什么|告警原因|告警信息|告警内容|详情是什么",
+        q,
+    ):
+        slots["event_type"] = "alarm_detail"
+
+    # 6. 巡查/巡逻任务
+    elif re.search(
+        r"巡查|巡逻|巡更|巡检|保安|巡逻任务|巡查任务|巡更记录|巡检点|"
+        r"这周的?巡查任务|这周的?巡逻任务|本周巡查|本周巡逻|近期巡查|近期巡逻",
+        q,
+    ):
+        slots["event_type"] = "patrol"
+
+    # 7. 安防设备状态/详情
+    elif re.search(
+        r"设备状态|设备在线率|摄像头离线|门禁设备|报警主机|设备故障|"
+        r"安防设备|设备健康|设备在线|设备离线|摄像头状态|门禁状态|"
+        r"设备运行情况|设备运行状态|摄像头|监控设备|设备详情",
+        q,
+    ):
+        slots["event_type"] = "device"
 
     print(f"[security slots] query={query} => {slots}")
     return slots
@@ -438,9 +553,13 @@ def extract_security_status_slots(query: str) -> dict:
 #   parking_structure    -> 停车结构
 #   official_vehicle     -> 公车统计
 #   parking_duration_rank-> 停车时长排名
-#   parking_monitor      -> 停车场监控
-#   vehicle_access_record-> 车辆通行记录
 #   count                -> 一般车辆统计（兜底）
+#
+# 注意：
+#   - Java MCP 后端目前只实现了上述 5 个工具，没有单独的
+#     "停车场监控" / "车辆通行记录" 工具；
+#   - 用户问"停车场监控"时落到 parking_space，由停车位统计回答；
+#   - 用户问"通行记录 / 进出记录"时落到 traffic_flow，由车流量统计回答。
 # ============================================================
 
 def extract_vehicle_status_slots(query: str) -> dict:
@@ -455,16 +574,18 @@ def extract_vehicle_status_slots(query: str) -> dict:
 
     q = query
 
-    # 1. 停车位统计
+    # 1. 停车位统计（含停车场监控类问题兜底）
     if re.search(
-        r"停车位|剩余车位|空车位|车位余量|车位统计|车位.*多少|剩余多少.*车位|还有.*车位|车位情况",
+        r"停车位|剩余车位|空车位|车位余量|车位统计|车位.*多少|剩余多少.*车位|还有.*车位|车位情况|"
+        r"停车场监控|停车.*监控|车库监控|车位监控|监控.*停车场|监控.*车库|看.*停车场",
         q,
     ):
         slots["query_type"] = "parking_space"
 
-    # 2. 车流量统计
+    # 2. 车流量统计（含通行记录类问题兜底）
     elif re.search(
-        r"车流量|车辆.*流量|进出车辆|通行车辆|车辆.*多少|进出.*统计|今天.*多少.*车",
+        r"车流量|车辆.*流量|进出车辆|通行车辆|车辆.*多少|进出.*统计|今天.*多少.*车|"
+        r"通行记录|车辆.*记录|进出记录|过车记录|出入记录|车辆.*通行|通行.*查询|通行.*统计",
         q,
     ):
         slots["query_type"] = "traffic_flow"
@@ -490,21 +611,7 @@ def extract_vehicle_status_slots(query: str) -> dict:
     ):
         slots["query_type"] = "parking_duration_rank"
 
-    # 6. 停车场监控
-    elif re.search(
-        r"停车场监控|停车.*监控|车库监控|车位监控|监控.*停车场|监控.*车库|看.*停车场",
-        q,
-    ):
-        slots["query_type"] = "parking_monitor"
-
-    # 7. 车辆通行记录
-    elif re.search(
-        r"通行记录|车辆.*记录|进出记录|过车记录|出入记录|车辆.*通行|通行.*查询|通行.*统计",
-        q,
-    ):
-        slots["query_type"] = "vehicle_access_record"
-
-    # 8. 兜底：一般车辆统计
+    # 6. 兜底：一般车辆统计
     # 默认 count，无需再判断
 
     print(f"[vehicle slots] query={q} => {slots}")
@@ -582,4 +689,409 @@ def extract_canteen_status_slots(query: str) -> dict:
         slots["event_type"] = "week_menu"
 
     print(f"[canteen slots] query={q} => {slots}")
+    return slots
+
+
+# ============================================================
+# 信息发布 slot 抽取
+# 目前支持子类型（event_type）：
+#   info_view        -> 信息发布一览（发布设备统计、类型占比、设备列表）
+#   broadcast_view   -> 广播一览（广播设备在线/离线/占用统计）
+#   task_trend       -> 任务执行趋势
+#   program_count    -> 节目数量趋势
+#   info_equip       -> 信息发布设备明细
+#   broadcast_equip  -> 广播设备明细
+#
+# 可选 slot：device_type（设备类型，用于区分信息发布/广播设备）
+# ============================================================
+
+# 设备类型别名词典：把用户各种说法统一映射到标准类型
+def extract_information_status_slots(query: str) -> dict:
+    """
+    抽取信息发布相关的 slot
+
+    返回结构：
+      {
+        "event_type": "info_view",        # 子类型
+        "date": parse_time_slot(query),   # 时间范围 -> MCP 的 {startTime, endTime}
+      }
+
+    注意：
+      - event_type 用正则按"设备明细 -> 趋势/数量 -> 一览/统计"顺序判定
+      - 信息发布和广播在文档里是两个并列子模块，这里统一归为信息发布意图下
+      - 正则匹配不到时默认 info_view（信息发布一览），保证流程不断
+    """
+    q = query
+    slots = {
+        "event_type": "info_view",
+        "date": parse_time_slot(query),
+    }
+
+    # ============================================================
+    # event_type 判定：按特异性从高到低
+    # ============================================================
+
+    # 1. 广播设备明细
+    if re.search(
+        r"广播设备(明细|列表|详情|信息|状态)|广播终端|查看广播设备|广播设备.*怎么",
+        q,
+    ):
+        slots["event_type"] = "broadcast_equip"
+
+    # 2. 信息发布设备明细
+    elif re.search(
+        r"信息发布设备(明细|列表|详情|信息|状态)|信息发布终端|信息屏|发布屏|"
+        r"查看信息发布设备|信息发布设备.*怎么|信息发布屏",
+        q,
+    ):
+        slots["event_type"] = "info_equip"
+
+    # 3. 任务执行趋势
+    elif re.search(
+        r"任务.*趋势|任务执行.*趋势|发布任务.*趋势|任务量.*趋势|任务执行量|任务趋势",
+        q,
+    ):
+        slots["event_type"] = "task_trend"
+
+    # 4. 节目数量趋势
+    elif re.search(
+        r"节目.*数量|节目数.*趋势|节目.*趋势|发布节目|节目数量|节目数",
+        q,
+    ):
+        slots["event_type"] = "program_count"
+
+    # 5. 广播一览
+    elif re.search(
+        r"广播.*一览|广播.*统计|广播.*状态|广播设备.*统计|广播概况|广播.*占比|广播在线",
+        q,
+    ):
+        slots["event_type"] = "broadcast_view"
+
+    # 6. 信息发布一览（兜底）
+    # 关键词：信息发布、发布统计、发布设备、类型占比、发布一览
+    elif re.search(
+        r"信息发布|发布.*统计|发布.*一览|发布设备|类型占比|信息发布.*状态|发布.*概览",
+        q,
+    ):
+        slots["event_type"] = "info_view"
+
+    print(f"[information slots] query={q} => {slots}")
+    return slots
+
+# ============================================================
+# 能源态势 slot 抽取
+# 目前支持子类型（query_type）：
+#   overall_energy      -> 总体能耗（电/水年度累计 + 今日用量）
+#   metering_equipment  -> 表具设备（电表/水表数量）
+#   electricity_rank    -> 用电排名
+#   water_rank          -> 用水排名
+#   device_status       -> 能耗设备在线/离线状态
+#   realtime_electricity-> 实时用电（今日 vs 昨日曲线）
+#   realtime_water      -> 实时用水（今日 vs 昨日曲线）
+#   count               -> 一般能源统计（兜底）
+# ============================================================
+
+def extract_energy_status_slots(query: str) -> dict:
+    """
+    统一抽取能源态势相关的所有 slot
+    """
+    slots = {
+        "query_type": "count",
+        "date": parse_time_slot(query),
+    }
+
+    q = query
+
+    # 1. 表具设备
+    if re.search(
+        r"表具|电表|水表|计量.*设备|计量表|智能表|表计",
+        q,
+    ):
+        slots["query_type"] = "metering_equipment"
+
+    # 2. 设备状态（在线/离线）
+    elif re.search(
+        r"能耗.*设备.*状态|能耗.*在线|能耗.*离线|能源.*设备|设备.*状态",
+        q,
+    ):
+        slots["query_type"] = "device_status"
+
+    # 3. 实时用电
+    elif re.search(
+        r"实时用电|用电趋势|用电曲线|今日用电|今天用电|现在用电|用电.*走势|"
+        r"电.*趋势|电.*曲线",
+        q,
+    ):
+        slots["query_type"] = "realtime_electricity"
+
+    # 4. 实时用水
+    elif re.search(
+        r"实时用水|用水趋势|用水曲线|今日用水|今天用水|现在用水|用水.*走势|"
+        r"水.*趋势|水.*曲线",
+        q,
+    ):
+        slots["query_type"] = "realtime_water"
+
+    # 5. 用电排名
+    elif re.search(
+        r"用电排名|耗电排名|用电.*排行|哪个.*用电最多|哪个.*耗电最多|耗电.*排行|"
+        r"用电量.*排名|用电.*榜单",
+        q,
+    ):
+        slots["query_type"] = "electricity_rank"
+
+    # 6. 用水排名
+    elif re.search(
+        r"用水排名|耗水排名|用水.*排行|哪个.*用水最多|哪个.*耗水最多|耗水.*排行|"
+        r"用水量.*排名|用水.*榜单",
+        q,
+    ):
+        slots["query_type"] = "water_rank"
+
+    # 7. 总体能耗（兜底中的高优先级）
+    elif re.search(
+        r"总体能耗|总能耗|能耗统计|用电.*统计|用水.*统计|年度.*能耗|今日.*能耗|"
+        r"电.*统计|水.*统计|能源.*统计|能源.*概览|能耗.*概览|用电.*总量|用水.*总量|"
+        r"今天用.*电|今天用.*水|用电情况|用水情况",
+        q,
+    ):
+        slots["query_type"] = "overall_energy"
+
+    # 8. 兜底：一般能源统计
+    # 默认 count，无需再判断
+
+    print(f"[energy slots] query={q} => {slots}")
+    return slots
+
+
+# ============================================================
+# 设备态势 slot 抽取
+# 目前支持子类型（query_type）：
+#   equip_class       -> 设备分类数量占比
+#   category_health   -> 各类别健康度（评分/在线率/维保率/寿命）
+#   month_maintenance -> 月度维修趋势（可选 yyyy-MM）
+#   month_repair      -> 月度报修趋势（可选 yyyy-MM）
+#   statis_region     -> 分区域设备统计
+#   anfang_online     -> 安防设备在线率
+#   gb_online         -> 广播设备在线率
+#   mj_online         -> 门禁设备在线率
+#   count             -> 一般设备统计（兜底）
+# ============================================================
+
+def extract_device_status_slots(query: str) -> dict:
+    """
+    统一抽取设备态势相关的所有 slot
+    """
+    slots = {
+        "query_type": "count",
+        "date": parse_time_slot(query),
+    }
+
+    q = query
+
+    # 1. 门禁在线率（优先于安防，避免"门禁"被"安防监控"泛化命中）
+    if re.search(
+        r"门禁.*在线|门禁.*离线|门禁.*率|门禁",
+        q,
+    ):
+        slots["query_type"] = "mj_online"
+
+    # 2. 广播在线率
+    elif re.search(
+        r"广播.*在线|广播.*离线|广播.*率|广播设备",
+        q,
+    ):
+        slots["query_type"] = "gb_online"
+
+    # 3. 安防在线率
+    elif re.search(
+        r"安防.*在线|安防.*离线|安防.*率|安防设备|监控.*在线|监控.*离线|监控.*率|"
+        r"摄像头.*在线|摄像头.*离线",
+        q,
+    ):
+        slots["query_type"] = "anfang_online"
+
+    # 4. 月度报修趋势
+    elif re.search(
+        r"报修.*趋势|报修.*统计|报修量|报修数|月度.*报修|每月.*报修|本月.*报修|上月.*报修|"
+        r"报修.*走势|报修.*曲线|报修.*情况",
+        q,
+    ):
+        slots["query_type"] = "month_repair"
+
+    # 5. 月度维修/维保趋势
+    elif re.search(
+        r"维修.*趋势|维修.*统计|维修量|维修数|维保.*趋势|维保.*统计|维保率|月度.*维修|"
+        r"每月.*维修|本月.*维修|上月.*维修|维修.*走势|维修.*曲线|维修.*情况|保养.*趋势",
+        q,
+    ):
+        slots["query_type"] = "month_maintenance"
+
+    # 6. 类别健康度
+    elif re.search(
+        r"健康度|健康.*评分|设备.*健康|类别.*健康|在线率.*维保|寿命|"
+        r"消防.*健康|空调.*健康|能耗.*健康",
+        q,
+    ):
+        slots["query_type"] = "category_health"
+
+    # 7. 分区域设备统计
+    elif re.search(
+        r"分区域|区域.*设备|各区.*设备|区域.*统计|楼栋.*设备|楼层.*设备|"
+        r"区域.*数量|分布",
+        q,
+    ):
+        slots["query_type"] = "statis_region"
+
+    # 8. 设备分类占比
+    elif re.search(
+        r"设备.*分类|分类.*占比|设备.*占比|类别.*占比|设备.*数量|各类.*设备|"
+        r"设备类型|设备种类|占比.*统计",
+        q,
+    ):
+        slots["query_type"] = "equip_class"
+
+    # 9. 兜底：一般设备统计
+    # 默认 count，无需再判断
+
+    print(f"[device slots] query={q} => {slots}")
+    return slots
+
+
+# ============================================================
+# 消防态势 slot 抽取
+# 目前支持子类型（query_type）：
+#   fire_assets     -> 消防设备台账（状态/压力液位/电量/倾角）
+#   fire_alarm_num  -> 设备告警统计（火警/故障/隐患/漏报/离人）
+#   fire_alarm_list -> 实时消防告警列表
+#   month_repair    -> 月度报修趋势（支持本月/上月/X月）
+#   count           -> 一般消防统计（兜底）
+# ============================================================
+
+def extract_emergency_fire_slots(query: str) -> dict:
+    """
+    统一抽取消防态势相关的所有 slot
+    """
+    slots = {
+        "query_type": "count",
+        "date": parse_time_slot(query),
+    }
+
+    q = query
+
+    # 1. 月度报修（报修/维修，优先级最高，避免被"告警"等词误抢）
+    if re.search(
+        r"报修|维修|检修|维保",
+        q,
+    ):
+        slots["query_type"] = "month_repair"
+
+    # 2. 实时告警
+    elif re.search(
+        r"实时告警|告警列表|实时消防告警|当前告警|最新告警|报警列表|"
+        r"消防告警列表|消防报警记录|最近的火警|现在有什么告警|告警信息|"
+        r"实时报警|报警记录",
+        q,
+    ):
+        slots["query_type"] = "fire_alarm_list"
+
+    # 3. 设备告警统计
+    elif re.search(
+        r"告警统计|火警数|火警数量|故障数|设备故障|隐患数|火灾隐患|误报数|"
+        r"漏报数|离人告警|离人数|报警统计|消防报警统计|告警分类|告警.*统计|"
+        r"有多少.*火警|有多少.*故障|有多少.*隐患",
+        q,
+    ):
+        slots["query_type"] = "fire_alarm_num"
+
+    # 4. 消防设备台账
+    elif re.search(
+        r"灭火器|消防栓|烟感|水压|液位|电量|倾角|消防设备|消防.*台账|"
+        r"设备台账|设备明细|设备状态|消防.*设备|台账",
+        q,
+    ):
+        slots["query_type"] = "fire_assets"
+
+    # 5. 兜底：一般消防统计
+    # 默认 count，无需再判断
+
+    print(f"[fire slots] query={q} => {slots}")
+    return slots
+
+
+# ============================================================
+# 会议管理 slot 抽取
+# 目前支持子类型（event_type）：
+#   meeting_statistics      -> 会议统计（预约数/平均时长/环比）
+#   high_freq_meeting_rooms -> 高频会议室 TOP5
+#   meeting_room_overview   -> 会议室一览
+#   number_of_meetings      -> 会议数量趋势
+#   meeting_room_status     -> 会议室使用/空闲状态
+#   room_meet_list_by_day   -> 当日会议安排
+#   count                   -> 一般会议统计（兜底）
+# ============================================================
+
+def extract_meeting_status_slots(query: str) -> dict:
+    """
+    统一抽取会议管理相关的所有 slot
+    """
+    slots = {
+        "event_type": "count",
+        "date": parse_time_slot(query),
+    }
+
+    q = query
+
+    # 1. 当日会议安排
+    if re.search(
+        r"当日.*会议|今天.*会议|今日.*会议|会议.*安排|会议.*列表|有什么会|"
+        r"今天.*会|今日.*会|会议.*日程|会议.*计划",
+        q,
+    ):
+        slots["event_type"] = "room_meet_list_by_day"
+
+    # 2. 高频会议室
+    elif re.search(
+        r"高频会议室|会议室.*排行|会议室.*排名|哪个会议室.*最多|"
+        r"最热门.*会议室|会议室使用.*排行",
+        q,
+    ):
+        slots["event_type"] = "high_freq_meeting_rooms"
+
+    # 3. 会议室状态
+    elif re.search(
+        r"会议室.*状态|会议室.*空闲|会议室.*占用|哪些会议室.*可用|"
+        r"会议室.*使用|空闲.*会议室",
+        q,
+    ):
+        slots["event_type"] = "meeting_room_status"
+
+    # 4. 会议室一览
+    elif re.search(
+        r"会议室.*一览|会议室.*情况|会议室.*概览|会议室.*分布|"
+        r"会议室.*统计",
+        q,
+    ):
+        slots["event_type"] = "meeting_room_overview"
+
+    # 5. 会议数量
+    elif re.search(
+        r"会议.*数量|多少.*会议|会议.*趋势|会议.*统计|会议量|"
+        r"会议.*走势|会议.*情况",
+        q,
+    ):
+        slots["event_type"] = "number_of_meetings"
+
+    # 6. 会议统计
+    elif re.search(
+        r"会议统计|预约.*会议|会议.*预约|平均.*会议.*时长|会议.*时长|"
+        r"会议.*概览|会议.*总览",
+        q,
+    ):
+        slots["event_type"] = "meeting_statistics"
+
+    # 7. 兜底：一般会议统计
+    # 默认 count，无需再判断
+
+    print(f"[meeting slots] query={q} => {slots}")
     return slots

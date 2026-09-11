@@ -19,7 +19,8 @@ DECLINE_KEYWORDS = [
 
 # ============================================================
 # 安防态势意图处理器
-# 目前只支持告警列表（alarm_list），MCP 调用传 {startTime, endTime}
+# 当前支持：alarm_list / alarm_detail / patrol / device /
+#           security_index / ai_alert / inspection_trend / ai_inspection
 # 负责：参数抽取、追问相关性判断、处理追问回复
 # ============================================================
 class SecurityStatusHandler(IntentHandler):
@@ -29,9 +30,9 @@ class SecurityStatusHandler(IntentHandler):
         """
         抽取安防态势参数
 
-        目前只支持告警列表，event_type 固定为 alarm_list，直接正则抽取。
-        后续扩展其他子类型（入侵/巡逻/视频等）时，
-        再在这里加 embedding 分类器兜底（对称于人员态势）
+        当前支持 alarm_list（告警列表）、alarm_detail（告警详情）、
+        patrol（巡查/巡逻任务）、device（安防设备状态）。
+        后续扩展其他子类型时，再在这里加 embedding 分类器兜底。
         """
         slots = extract_security_status_slots(query)
         return slots
@@ -51,19 +52,27 @@ class SecurityStatusHandler(IntentHandler):
 
         missing = state.missing_params
 
-        # 2. 如果缺时间，用户回复了时间词，判定为相关
+        # 2. 如果缺告警 ID，用户回复了序号或数字，判定为相关
+        if "alarm_id" in missing:
+            if re.search(r"第\s*\d+\s*条|告警\s*\d+|告警ID\s*\d+|id\s*\d+|\d+", query):
+                return True
+
+        # 3. 如果缺时间，用户回复了时间词，判定为相关
         if "date" in missing:
             if any(k in query for k in ["今天", "昨天", "明天", "本周", "本月", "上周", "上月", "近", "天"]):
                 return True
 
-        # 3. 如果用户回复了安防相关关键词，也判定为相关
+        # 4. 如果用户回复了安防相关关键词，也判定为相关
         security_keywords = [
-            "告警", "报警", "安防", "未处理", "查看", "展示", "拉一下"
+            "告警", "报警", "安防", "未处理", "查看", "展示", "拉一下",
+            "巡查", "巡逻", "巡更", "巡检", "设备", "摄像头", "门禁", "离线",
+            "安全指数", "安全状况", "AI告警", "智能告警", "告警分布",
+            "巡查趋势", "智能巡检", "AI巡查"
         ]
         if any(k in query for k in security_keywords):
             return True
 
-        # 4. 如果用户只回复了简短内容，且当前还缺参数，大概率是补充
+        # 5. 如果用户只回复了简短内容，且当前还缺参数，大概率是补充
         if len(query) <= 4 and missing:
             return True
 
@@ -183,9 +192,17 @@ class SecurityStatusHandler(IntentHandler):
     def _get_missing_params(self, slots: dict) -> list:
         """
         根据当前 slots 判断还缺哪些必填参数
-        告警列表必须有时间范围（MCP 传 {startTime, endTime}）
+        - alarm_list / patrol / device 必须有时间范围（MCP 传 {startTime, endTime}）
+        - alarm_detail 必须有 alarm_id
         """
         missing = []
-        if not slots.get("date"):
-            missing.append("date")
+        event_type = slots.get("event_type", "alarm_list")
+
+        if event_type == "alarm_detail":
+            if not slots.get("alarm_id"):
+                missing.append("alarm_id")
+        else:
+            if not slots.get("date"):
+                missing.append("date")
+
         return missing

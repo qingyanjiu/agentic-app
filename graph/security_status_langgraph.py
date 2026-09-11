@@ -12,11 +12,27 @@ logger = logging.getLogger(__name__)
 
 # ============================================================
 # Python event_type 到 Java MCP 工具名的映射
-# 目前只实现告警列表一个工具
-# 工具名与 Java 侧实际注册名一致：security:getSecurityAlarmList
+# 与 Java 侧 PlatformSecurityStatusMcp 实际注册的工具名一致：
+#   security:getSecurityAlarmList    -> 告警列表（无参）
+#   security:getSecurityIndex        -> 园区综合安全指数（无参）
+#   security:getAiAlertSituation     -> AI 告警态势统计（startTime/endTime 可选）
+#   security:getPatrolMission        -> 巡查任务统计（无参）
+#   security:getInspectionTrend      -> 安全巡查趋势（date 可选）
+#   security:getAiInspectionEvents   -> AI 巡查事件列表（startTime/endTime 可选）
+#   security:getDeviceDetail         -> 摄像头/安防设备详情（channelCodeList 可选）
+# 说明：
+#   - Java 端无单独的"告警详情"工具，alarm_detail 用 getAiInspectionEvents 兜底
+#   - 原 intrusion/video/access/fire/abnormal 子类型平台后端无对应接口，不予实现
 # ============================================================
 _JAVA_TOOL_MAP = {
     "alarm_list": "security:getSecurityAlarmList",
+    "alarm_detail": "security:getAiInspectionEvents",
+    "patrol": "security:getPatrolMission",
+    "device": "security:getDeviceDetail",
+    "security_index": "security:getSecurityIndex",
+    "ai_alert": "security:getAiAlertSituation",
+    "inspection_trend": "security:getInspectionTrend",
+    "ai_inspection": "security:getAiInspectionEvents",
 }
 
 
@@ -42,6 +58,13 @@ def _query_type_label(event_type: str) -> str:
     """根据 event_type 返回中文名称，用于生成确认问题"""
     return {
         "alarm_list": "告警列表",
+        "alarm_detail": "告警详情",
+        "patrol": "巡查/巡逻任务",
+        "device": "安防设备状态",
+        "security_index": "园区安全指数",
+        "ai_alert": "AI 告警态势",
+        "inspection_trend": "巡查趋势",
+        "ai_inspection": "AI 巡查事件",
     }.get(event_type, "数据")
 
 
@@ -61,17 +84,29 @@ async def _llm_format_security_result(
         label = _query_type_label(event_type)
         original_query = state.get("original_query") or event_type
 
+        # 每种子类型给不同的整理要求
+        requirement = {
+            "alarm_list": "如果有多条告警，逐条列出来，包含告警名称、发生位置、发生时间、状态；",
+            "alarm_detail": "从事件中找出与用户问题相关的告警，说明其类型、等级、时间、位置、处理状态；",
+            "patrol": "按任务状态（待处理/已处理/异常）列出各类巡查任务的数量；",
+            "device": "列出设备名称、在线状态等关键信息；",
+            "security_index": "给出综合安全指数分数，并列出各分项指标；",
+            "ai_alert": "按告警类别列出数量和占比；",
+            "inspection_trend": "按时间段说明正常/异常巡查数量情况；",
+            "ai_inspection": "逐条列出 AI 巡查发现的事件，包含类型、等级、时间、位置、处理状态；",
+        }.get(event_type, "把返回数据整理清楚；")
+
         prompt = (
             "你是园区安防态势助手。下面是一次 MCP 工具查询的原始返回，"
-            "请用中文自然、简洁地把告警列表整理给用户。\n\n"
+            "请用中文自然、简洁地整理给用户。\n\n"
             f"用户查询类型：{event_type}（{label}）\n"
             f"用户原话：{original_query}\n"
             "MCP 工具返回的原始数据：\n"
             f"{raw_text}\n\n"
             "要求：\n"
-            "1. 如果有多条告警，逐条列出来，包含告警名称、发生位置、发生时间、状态；\n"
-            "2. 回答必须基于返回数据，不要编造告警；\n"
-            "3. 如果返回数据为空，如实说明今天没有告警；\n"
+            f"1. {requirement}\n"
+            "2. 回答必须基于返回数据，不要编造；\n"
+            "3. 如果返回数据为空，如实说明没有查到数据；\n"
             "4. 回答要简短、口语化。"
         )
 
@@ -167,12 +202,12 @@ def init_state(state: SecurityStatusGraphState) -> dict:
 def check_missing_params(state: SecurityStatusGraphState) -> dict:
     """
     检查缺失参数
-    告警列表查询必须有时间范围（MCP 传 {startTime, endTime}）
+    除 security_index（园区实时安全指数）外，其余查询需要时间范围
     """
     slots = state["slots"]
     missing = []
 
-    if not slots.get("date"):
+    if slots.get("event_type") != "security_index" and not slots.get("date"):
         missing.append("date")
 
     return {"missing_params": missing}
@@ -341,12 +376,20 @@ def make_call_tool_node(tools: dict, llm=None):
                 }],
             }
 
-        # 按 Java 工具签名组装参数 {startTime, endTime}
+        # 按 Java 工具签名组装参数
         date_slots = state["slots"].get("date", {})
-        tool_args = {
-            "startTime": date_slots.get("start_time"),
-            "endTime": date_slots.get("end_time"),
-        }
+        if event_type in ("alarm_list", "patrol", "device", "security_index"):
+            # 无参工具：getSecurityAlarmList / getPatrolMission / getDeviceDetail / getSecurityIndex
+            tool_args = {}
+        elif event_type == "inspection_trend":
+            # getInspectionTrend 只接受 date（yyyy-MM-dd）
+            tool_args = {"date": (date_slots.get("start_time") or "")[:10]}
+        else:
+            # alarm_detail / ai_alert / ai_inspection：getAiInspectionEvents / getAiAlertSituation
+            tool_args = {
+                "startTime": date_slots.get("start_time"),
+                "endTime": date_slots.get("end_time"),
+            }
 
         print(f"[MCP CALL] tool={java_tool_name}, args={tool_args}")
 

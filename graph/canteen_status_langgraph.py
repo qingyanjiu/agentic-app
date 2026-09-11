@@ -14,9 +14,9 @@ logger = logging.getLogger(__name__)
 # ============================================================
 # Python event_type 到 Java MCP 工具名的映射
 # 与 Java 侧核对（DiningHallMcpServerConfig / PlatformDiningHallMcp）：
-#   week_menu    -> canteen:getWeekMenu     ✅ Java 已实现（无入参，直接返回本周食谱）
-#   dish_rank    -> canteen:getDishHotRank   ⏳ Java 尚未实现（占位，实现了再启用）
-#   dining_count -> canteen:getDiningCount   ⏳ Java 尚未实现（占位，实现了再启用）
+#   week_menu    -> canteen:getWeekMenu      ✅ Java 已实现（无入参，直接返回本周食谱）
+#   dish_rank    -> canteen:getDishPopularity ✅ Java 已实现（支持 startTime/endTime）
+#   dining_count -> canteen:getDiningCount    ✅ Java 已实现（支持 startTime/endTime/meal）
 # ============================================================
 _JAVA_TOOL_MAP = {
     "dish_rank": "canteen:getDishPopularity",

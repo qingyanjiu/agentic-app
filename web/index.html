@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>园区智能助手</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+
+<body>
+    <!-- ==================== 顶部导航（毛玻璃） ==================== -->
+    <nav class="nav">
+        <div class="nav-content">
+            <a class="nav-logo" href="#top">
+                <svg class="nav-logo-mark" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <rect x="1.5" y="1.5" width="21" height="21" rx="6" fill="url(#logoGrad)" />
+                    <path d="M8 15.5c1-1.6 2.4-2.4 4-2.4s3 .8 4 2.4" stroke="#fff" stroke-width="1.7"
+                        stroke-linecap="round" />
+                    <circle cx="12" cy="9.5" r="2.2" fill="#fff" />
+                    <defs>
+                        <linearGradient id="logoGrad" x1="0" y1="0" x2="24" y2="24">
+                            <stop stop-color="#0090f7" />
+                            <stop offset="1" stop-color="#6a5af9" />
+                        </linearGradient>
+                    </defs>
+                </svg>
+                <span>园区智能助手</span>
+            </a>
+            <div class="nav-right">
+                <span class="conn-dot" id="connDot" title="连接状态"></span>
+                <span class="conn-text" id="connText">未连接</span>
+                <a class="nav-link" href="#" id="newChatBtn">新对话</a>
+            </div>
+        </div>
+    </nav>
+
+    <!-- ==================== Hero 区（苹果式大标题） ==================== -->
+    <header class="hero" id="top">
+        <p class="hero-eyebrow">智慧园区 · AI 智能体</p>
+        <h1 class="hero-title">
+            你好。<br>
+            我是<span class="grad-text">园区智能助手</span>。
+        </h1>
+        <p class="hero-sub">
+            人员、安防、食堂、车辆、信息、能源、会议。<br>
+            一句话，掌握园区全局态势。
+        </p>
+        <div class="hero-cta">
+            <a class="btn-primary" href="#chat">开始提问</a>
+            <a class="btn-plain" href="#capabilities">了解它能做什么 ›</a>
+        </div>
+    </header>
+
+    <!-- ==================== 能力场景（灰底卡片） ==================== -->
+    <section class="capabilities" id="capabilities">
+        <h2 class="section-title">七大场景，<span class="grad-text">一问即达</span>。</h2>
+        <div class="cap-grid">
+            <div class="cap-card" data-query="现在园区有多少人？">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"
+                    stroke-linejoin="round">
+                    <circle cx="12" cy="8" r="3.4" />
+                    <path d="M5 19.5c1.4-3 4-4.5 7-4.5s5.6 1.5 7 4.5" />
+                </svg>
+                <h3>人员态势</h3>
+                <p>实时在园人数、区域分布与人员轨迹</p>
+            </div>
+            <div class="cap-card" data-query="今天园区安防事件有哪些？">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"
+                    stroke-linejoin="round">
+                    <path d="M12 3l7.5 3v5.2c0 4.6-3.1 8-7.5 9.8-4.4-1.8-7.5-5.2-7.5-9.8V6L12 3z" />
+                    <path d="M9 12l2.2 2.2L15.5 10" />
+                </svg>
+                <h3>安防态势</h3>
+                <p>安防事件查询、告警统计与趋势分析</p>
+            </div>
+            <div class="cap-card" data-query="今天食堂就餐人数是多少？">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"
+                    stroke-linejoin="round">
+                    <circle cx="12" cy="13" r="7.5" />
+                    <circle cx="12" cy="13" r="4" />
+                </svg>
+                <h3>食堂管理</h3>
+                <p>就餐人数、菜品排名与窗口运营情况</p>
+            </div>
+            <div class="cap-card" data-query="今天入园车辆有多少？">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"
+                    stroke-linejoin="round">
+                    <path d="M4 14l1.7-4.6A2 2 0 0 1 7.6 8h8.8a2 2 0 0 1 1.9 1.4L20 14" />
+                    <path d="M3.5 14h17a1 1 0 0 1 1 1v2.5a1 1 0 0 1-1 1h-1" />
+                    <path d="M3.5 14a1 1 0 0 0-1 1v2.5a1 1 0 0 0 1 1h1" />
+                    <circle cx="7.5" cy="18" r="1.6" />
+                    <circle cx="16.5" cy="18" r="1.6" />
+                </svg>
+                <h3>车辆态势</h3>
+                <p>出入车流量、车位占用与通行记录</p>
+            </div>
+            <div class="cap-card" data-query="最近发布了哪些信息？">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"
+                    stroke-linejoin="round">
+                    <path d="M4 10.5v3a1 1 0 0 0 1 1h2.5L13 19V5L7.5 9.5H5a1 1 0 0 0-1 1z" />
+                    <path d="M16.5 9c1 .8 1.5 1.8 1.5 3s-.5 2.2-1.5 3" />
+                    <path d="M18.8 6.6c1.6 1.4 2.4 3.2 2.4 5.4s-.8 4-2.4 5.4" />
+                </svg>
+                <h3>信息发布</h3>
+                <p>公告通知的发布记录与内容检索</p>
+            </div>
+            <div class="cap-card" data-query="今天园区能耗情况怎么样？">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"
+                    stroke-linejoin="round">
+                    <path d="M13 2.5L5 13.5h5.5L10 21.5l8-11h-5.5L13 2.5z" />
+                </svg>
+                <h3>能源态势</h3>
+                <p>水电能耗、分区用量与同比变化</p>
+            </div>
+            <div class="cap-card" data-query="今天有哪些会议？">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"
+                    stroke-linejoin="round">
+                    <rect x="3.5" y="5" width="17" height="15.5" rx="2.5" />
+                    <path d="M3.5 9.5h17" />
+                    <path d="M8 2.8V6.5M16 2.8V6.5" />
+                    <path d="M7.5 13.5h4M7.5 17h6" />
+                </svg>
+                <h3>会议管理</h3>
+                <p>会议室预订、会议安排与使用统计</p>
+            </div>
+            <div class="cap-card" data-query="现在园区有多少设备？">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"
+                    stroke-linejoin="round">
+                    <rect x="7" y="7" width="10" height="10" rx="2" />
+                    <path d="M10 2.5v2M14 2.5v2M10 19.5v2M14 19.5v2M2.5 10h2M2.5 14h2M19.5 10h2M19.5 14h2" />
+                </svg>
+                <h3>设备状态</h3>
+                <p>设备统计、健康度、在线率与维保趋势</p>
+            </div>
+            <div class="cap-card" data-query="消防告警">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"
+                    stroke-linejoin="round">
+                    <path
+                        d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z" />
+                </svg>
+                <h3>消防态势</h3>
+                <p>消防告警统计、设备台账与报修趋势</p>
+            </div>
+        </div>
+    </section>
+
+    <!-- ==================== 对话区 ==================== -->
+    <main class="chat-section" id="chat">
+        <div class="chat-container">
+            <div class="messages" id="messages">
+                <div class="greeting">
+                    你好，我是园区智能助手。<br>点击下方场景快速体验，或直接输入你的问题。
+                </div>
+            </div>
+
+            <!-- 状态提示（意图识别 / 工具调用） -->
+            <div class="status-bar" id="statusBar">
+                <span class="status-spinner"></span>
+                <span id="statusText">正在思考…</span>
+            </div>
+
+            <!-- 场景快捷 chips -->
+            <div class="chips" id="chips">
+                <button class="chip" data-query="现在园区有多少人？">人员态势</button>
+                <button class="chip" data-query="今天园区安防事件有哪些？">安防态势</button>
+                <button class="chip" data-query="今天食堂的菜谱是多少？">食堂管理</button>
+                <button class="chip" data-query="今天入园车辆有多少？">车辆态势</button>
+                <button class="chip" data-query="最近发布了哪些信息？">信息发布</button>
+                <button class="chip" data-query="今天园区能耗情况怎么样？">能源态势</button>
+                <button class="chip" data-query="今天有哪些会议？">会议管理</button>
+                <button class="chip" data-query="现在园区有多少设备？">设备状态</button>
+                <button class="chip" data-query="消防告警">消防态势</button>
+            </div>
+
+            <!-- 输入区（毛玻璃悬浮） -->
+            <div class="composer">
+                <div class="composer-pill">
+                    <textarea id="input" rows="1" placeholder="输入你的问题，回车发送"
+                        autocomplete="off"></textarea>
+                    <button class="send-btn" id="sendBtn" aria-label="发送" disabled>
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
+                            stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M12 19V5" />
+                            <path d="M5.5 11.5L12 5l6.5 6.5" />
+                        </svg>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <footer class="footer">
+        <p>园区智能助手 · 基于 LangGraph 与 MCP 构建</p>
+    </footer>
+
+    <script src="js/app.js"></script>
+</body>
+
+</html>
