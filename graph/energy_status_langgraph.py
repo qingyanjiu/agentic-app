@@ -1,12 +1,10 @@
 import asyncio
 import logging
 import traceback
-from datetime import date, datetime
 from typing import Annotated, Any, Optional, TypedDict
 
 from langgraph.graph import StateGraph, END
 
-from agent.intent.handlers.vehicle_status_handler import VehicleStatusHandler
 from mcp_client.mcp_loader import get_mcp_tools
 
 logger = logging.getLogger(__name__)
@@ -14,40 +12,24 @@ logger = logging.getLogger(__name__)
 
 # ============================================================
 # Python query_type 到 Java MCP 工具名的映射
-#
-# Java 侧 PlatformVehicleStatusMcp 当前实现工具：
-#   vehicle_status:getParkingSpace     -> 停车位统计
-#   vehicle_status:getTrafficVolume    -> 车流量统计
-#   vehicle_status:getParkingStructure -> 停车结构
-#   vehicle_status:getCarStatistic     -> 公车统计
-#   vehicle_status:getParkingRank      -> 停车时长排名
-#
-# Python 侧按 Java 工具名对齐；不存在的工具不要映射到这里。
+# 与 Java 侧 EnergyMcpServerConfig / PlatformEnergyMcp 对齐：
+#   overall_energy      -> energy:getOverallEnergyConsu
+#   metering_equipment  -> energy:getMeteringEquipment
+#   electricity_rank    -> energy:getElectricityUsageRanking
+#   water_rank          -> energy:getWaterUsageRanking
+#   device_status       -> energy:getDeviceStatus
+#   realtime_electricity-> energy:getRealtimeElectricityUsage
+#   realtime_water      -> energy:getRealtimeWaterUsage
 # ============================================================
 _JAVA_TOOL_MAP = {
-    "parking_space": "vehicle_status:getParkingSpace",
-    "traffic_flow": "vehicle_status:getTrafficVolume",
-    "parking_structure": "vehicle_status:getParkingStructure",
-    "official_vehicle": "vehicle_status:getCarStatistic",
-    "parking_duration_rank": "vehicle_status:getParkingRank",
+    "overall_energy": "energy:getOverallEnergyConsu",
+    "metering_equipment": "energy:getMeteringEquipment",
+    "electricity_rank": "energy:getElectricityUsageRanking",
+    "water_rank": "energy:getWaterUsageRanking",
+    "device_status": "energy:getDeviceStatus",
+    "realtime_electricity": "energy:getRealtimeElectricityUsage",
+    "realtime_water": "energy:getRealtimeWaterUsage",
 }
-
-
-def _is_today(date_slots: dict) -> bool:
-    """
-    判断用户查询的时间范围是否为今天
-    车辆态势后端目前只支持查询今日数据
-    """
-    start_time = date_slots.get("start_time")
-    if not start_time:
-        return True
-
-    try:
-        start_dt = datetime.fromisoformat(start_time)
-        return start_dt.date() == date.today()
-    except Exception:
-        # 解析失败时默认按今天处理，避免误拦截
-        return True
 
 
 def _extract_text(result: Any) -> str:
@@ -56,9 +38,15 @@ def _extract_text(result: Any) -> str:
     兼容：
       - 普通字符串
       - LangChain 的 [{type: 'text', text: '...'}] 列表
+      - {'content': [{type: 'text', text: '...'}], 'id': '...'} 字典包装
     """
     if isinstance(result, str):
         return result
+
+    if isinstance(result, dict):
+        content = result.get("content")
+        if isinstance(content, list):
+            result = content
 
     if isinstance(result, list) and result:
         first = result[0]
@@ -69,24 +57,26 @@ def _extract_text(result: Any) -> str:
 
 
 def _query_type_label(query_type: str) -> str:
-    """根据 query_type 返回中文名称，用于生成确认问题"""
+    """根据 query_type 返回中文名称，用于生成 LLM 提示语"""
     return {
-        "parking_space": "停车位统计",
-        "traffic_flow": "车流量统计",
-        "parking_structure": "停车结构",
-        "official_vehicle": "公车统计",
-        "parking_duration_rank": "停车时长排名",
-    }.get(query_type, "数据")
+        "overall_energy": "总体能耗",
+        "metering_equipment": "表具设备",
+        "electricity_rank": "用电排名",
+        "water_rank": "用水排名",
+        "device_status": "能耗设备状态",
+        "realtime_electricity": "实时用电",
+        "realtime_water": "实时用水",
+    }.get(query_type, "能源数据")
 
 
-async def _llm_format_vehicle_status_result(
+async def _llm_format_energy_result(
     llm: Any, query_type: str, state: dict, raw_text: str
 ) -> str:
     """
     根据 query_type 让 LLM 分析 MCP 工具返回，生成对应的中文回答。
 
-    与人员态势保持一致：把"用户原话 + 原始返回"交给 LLM，由它提取相关项并组织自然语言。
-    任何异常都降级为原样返回，保证流程不断。
+    任何异常（LLM 未配置 / 调用失败 / 返回为空）都降级为原样返回，
+    保证流程不断。
     """
     if llm is None:
         return raw_text
@@ -95,15 +85,25 @@ async def _llm_format_vehicle_status_result(
         label = _query_type_label(query_type)
         original_query = state.get("original_query") or query_type
 
+        requirement = {
+            "overall_energy": "列出电/水的年度累计和今日用量；",
+            "metering_equipment": "列出电表和水表的数量；",
+            "electricity_rank": "按用电量从高到低列出单位/区域排名；",
+            "water_rank": "按用水量从高到低列出单位/区域排名；",
+            "device_status": "列出能耗设备在线/离线数量；",
+            "realtime_electricity": "按时间列出今日和昨日用电曲线；",
+            "realtime_water": "按时间列出今日和昨日用水曲线；",
+        }.get(query_type, "把返回数据整理清楚；")
+
         prompt = (
-            "你是园区车辆态势助手。下面是一次 MCP 工具查询的原始返回，"
+            "你是智慧园区能源态势助手。下面是一次 MCP 工具查询的原始返回，"
             "请根据用户的查询类型，只提取对应的内容，用中文自然、简洁地回答用户。\n\n"
             f"用户查询类型：{query_type}（{label}）\n"
             f"用户原话：{original_query}\n"
             "MCP 工具返回的原始数据：\n"
             f"{raw_text}\n\n"
             "要求：\n"
-            "1. 只回答用户问的那一项，不要把所有字段都列出来；\n"
+            f"1. {requirement}\n"
             "2. 回答必须基于返回数据，不要编造数字；\n"
             "3. 如果返回数据里没有用户要查的信息，只如实说明即可，不要建议查询其他时间段或其他内容；\n"
             "4. 不要向用户提出任何追问、提议或反问，只回答本次查询的结果；\n"
@@ -125,7 +125,7 @@ async def _llm_format_vehicle_status_result(
         if text:
             return text
     except Exception as e:
-        logger.warning(f"LLM 格式化车辆态势结果失败，降级为原样返回: {e}")
+        logger.warning(f"LLM 格式化能源态势结果失败，降级为原样返回: {e}")
 
     return raw_text
 
@@ -151,7 +151,7 @@ def _merge_lists(x: list, y: list) -> list:
     return list(x) + list(y)
 
 
-class VehicleStatusGraphState(TypedDict):
+class EnergyStatusGraphState(TypedDict):
     # 从当前意图状态中提取的参数
     slots: Annotated[dict, _merge_dicts]
 
@@ -186,7 +186,7 @@ class VehicleStatusGraphState(TypedDict):
 # ============================================================
 # 图节点函数
 # ============================================================
-def init_state(state: VehicleStatusGraphState) -> dict:
+def init_state(state: EnergyStatusGraphState) -> dict:
     """
     初始化节点：确保 slots 中日期结构存在
     """
@@ -196,18 +196,17 @@ def init_state(state: VehicleStatusGraphState) -> dict:
     return {"slots": slots}
 
 
-def check_missing_params(state: VehicleStatusGraphState) -> dict:
+def check_missing_params(state: EnergyStatusGraphState) -> dict:
     """
     检查缺失参数
-    车辆态势目前不需要额外必填参数
+    能源态势目前不强制需要额外参数
     """
     slots = state["slots"]
     missing = []
-    # 后续如需按区域/停车场细分，可在此扩展
     return {"missing_params": missing}
 
 
-def route_missing_params(state: VehicleStatusGraphState) -> str:
+def route_missing_params(state: EnergyStatusGraphState) -> str:
     """
     条件路由：根据是否缺失参数决定下一步
     """
@@ -218,16 +217,14 @@ def route_missing_params(state: VehicleStatusGraphState) -> str:
     return "check_date"
 
 
-def ask_param(state: VehicleStatusGraphState) -> dict:
+def ask_param(state: EnergyStatusGraphState) -> dict:
     """
     参数缺失时生成追问问题
     """
     missing = state["missing_params"]
 
-    if "area" in missing:
-        question = "请问您想查询哪个停车场或区域？"
-    elif "date" in missing:
-        question = "请问您想查询哪一天？"
+    if "date" in missing:
+        question = "请问您想查询哪一天的能源数据？"
     else:
         question = "请问您还需要补充什么信息？"
 
@@ -248,7 +245,7 @@ def ask_param(state: VehicleStatusGraphState) -> dict:
     }
 
 
-def give_up(state: VehicleStatusGraphState) -> dict:
+def give_up(state: EnergyStatusGraphState) -> dict:
     """
     追问次数超限，放弃当前任务
     """
@@ -267,16 +264,17 @@ def give_up(state: VehicleStatusGraphState) -> dict:
     }
 
 
-def check_date(state: VehicleStatusGraphState) -> dict:
+def check_date(state: EnergyStatusGraphState) -> dict:
     """
     日期检查占位节点，实际路由由条件边处理
     """
     return {}
 
 
-def route_date_type(state: VehicleStatusGraphState) -> str:
+def route_date_type(state: EnergyStatusGraphState) -> str:
     """
     根据日期类型路由
+    能源态势均基于今日/实时数据，未来日期直接拒绝
     """
     date_slots = state["slots"].get("date", {})
     time_type = date_slots.get("time_type")
@@ -285,10 +283,10 @@ def route_date_type(state: VehicleStatusGraphState) -> str:
         return "future_date"
     if time_type == "vague":
         return "vague_date"
-    return "check_confirm"
+    return "call_tool"
 
 
-def future_date(state: VehicleStatusGraphState) -> dict:
+def future_date(state: EnergyStatusGraphState) -> dict:
     """
     未来时间直接提醒，不查询
     """
@@ -299,7 +297,7 @@ def future_date(state: VehicleStatusGraphState) -> dict:
                 "event": "custom",
                 "data": {
                     "type": "answer",
-                    "content": "明天还没到呢，目前只能查询今天及历史的车辆态势数据哦。",
+                    "content": "能源数据目前只能查询今天及历史的统计，未来的数据暂时无法预测哦。",
                 },
             },
             {"event": "custom", "data": {"type": "done"}},
@@ -307,7 +305,7 @@ def future_date(state: VehicleStatusGraphState) -> dict:
     }
 
 
-def vague_date(state: VehicleStatusGraphState) -> dict:
+def vague_date(state: EnergyStatusGraphState) -> dict:
     """
     模糊时间先让用户确认具体范围
     """
@@ -320,58 +318,8 @@ def vague_date(state: VehicleStatusGraphState) -> dict:
 
     options_str = "、".join(options)
     question = (
-        f"您想查询近几天？可以直接回复具体天数，例如“近两天”、“近四天”，"
+        f"您想查询近几天的能源数据？可以直接回复具体天数，例如“近两天”、“近四天”，"
         f"或选择：{options_str}"
-    )
-
-    return {
-        "slots": slots,
-        "last_question": question,
-        "events": [{
-            "event": "custom",
-            "data": {
-                "type": "ask",
-                "question": question,
-                "missing_params": [],
-                "ask_count": state["ask_count"],
-            },
-        }],
-    }
-
-
-def check_confirm(state: VehicleStatusGraphState) -> dict:
-    """
-    确认节点占位，实际路由由条件边处理
-    """
-    return {}
-
-
-def route_confirm(state: VehicleStatusGraphState) -> str:
-    """
-    非今天查询时，先询问用户是否查看今日数据
-    """
-    query_type = state["slots"].get("query_type")
-    date_slots = state["slots"].get("date", {})
-
-    # 车辆态势后端目前仅支持查询今日数据
-    if query_type in _JAVA_TOOL_MAP:
-        if not _is_today(date_slots) and not state["slots"].get("_confirm_proceed"):
-            return "confirm_today"
-
-    return "call_tool"
-
-
-def confirm_today(state: VehicleStatusGraphState) -> dict:
-    """
-    非今天查询时，询问用户是否改为查看今日数据
-    """
-    query_type = state["slots"].get("query_type")
-    slots = state["slots"]
-    slots["_pending_confirm"] = True
-
-    question = (
-        "当前平台后端仅支持查询今日数据，"
-        f"是否为您展示今日{_query_type_label(query_type)}？"
     )
 
     return {
@@ -393,7 +341,7 @@ def make_call_tool_node(tools: dict, llm=None):
     """
     构造调用 MCP 工具的节点
     """
-    async def call_tool(state: VehicleStatusGraphState) -> dict:
+    async def call_tool(state: EnergyStatusGraphState) -> dict:
         query_type = state["slots"].get("query_type") or "count"
         java_tool_name = _JAVA_TOOL_MAP.get(query_type)
 
@@ -420,8 +368,7 @@ def make_call_tool_node(tools: dict, llm=None):
                 }],
             }
 
-        # 按 Java 工具签名组装参数
-        # 当前 Java 侧车辆态势工具均为无参 GET 接口，直接空参调用
+        # 当前 Java 侧能源态势工具均为无参 GET 接口，直接空参调用
         tool_args = {}
 
         print(f"[MCP CALL] tool={java_tool_name}, args={tool_args}")
@@ -431,7 +378,7 @@ def make_call_tool_node(tools: dict, llm=None):
             print(f"[MCP RAW RESULT] query_type={query_type}, result={result}")
 
             raw_text = _extract_text(result)
-            answer_text = await _llm_format_vehicle_status_result(
+            answer_text = await _llm_format_energy_result(
                 llm, query_type, state, raw_text
             )
 
@@ -444,7 +391,7 @@ def make_call_tool_node(tools: dict, llm=None):
             }
         except Exception as e:
             tb = traceback.format_exc()
-            logger.error(f"调用车辆态势工具失败: {e}\n{tb}")
+            logger.error(f"调用能源态势工具失败: {e}\n{tb}")
             return {
                 "error": f"查询失败: {str(e)}\n{tb}",
                 "events": [{
@@ -456,7 +403,7 @@ def make_call_tool_node(tools: dict, llm=None):
     return call_tool
 
 
-def finalize(state: VehicleStatusGraphState) -> dict:
+def finalize(state: EnergyStatusGraphState) -> dict:
     """
     标记流程完成
     """
@@ -469,9 +416,9 @@ def finalize(state: VehicleStatusGraphState) -> dict:
 # ============================================================
 # 图构建
 # ============================================================
-def build_vehicle_status_graph(tools: dict, llm=None) -> StateGraph:
+def build_energy_status_graph(tools: dict, llm=None) -> StateGraph:
     """
-    构建车辆态势 LangGraph 状态图
+    构建能源态势 LangGraph 状态图
 
     流程：
         init -> check_missing_params
@@ -480,14 +427,12 @@ def build_vehicle_status_graph(tools: dict, llm=None) -> StateGraph:
             -> check_date
                 -> future_date (未来时间) -> END
                 -> vague_date (模糊时间) -> END
-                -> check_confirm
-                    -> confirm_today (非今天查询确认) -> END
-                    -> call_tool (调用 MCP，LLM 根据 query_type 组织回答) -> finalize -> END
+                -> call_tool (调用 MCP，LLM 组织回答) -> finalize -> END
 
     :param tools: MCP 工具字典（工具名 -> 工具）
-    :param llm: 可选的 LLM，用于根据 query_type 分析 MCP 返回生成回答；不传则降级为原样返回
+    :param llm: 可选的 LLM，用于根据 query_type 分析 MCP 返回生成回答；不传则原样返回
     """
-    workflow = StateGraph(VehicleStatusGraphState)
+    workflow = StateGraph(EnergyStatusGraphState)
 
     # 注册节点
     workflow.add_node("init", init_state)
@@ -497,8 +442,6 @@ def build_vehicle_status_graph(tools: dict, llm=None) -> StateGraph:
     workflow.add_node("check_date", check_date)
     workflow.add_node("future_date", future_date)
     workflow.add_node("vague_date", vague_date)
-    workflow.add_node("check_confirm", check_confirm)
-    workflow.add_node("confirm_today", confirm_today)
     workflow.add_node("call_tool", make_call_tool_node(tools, llm))
     workflow.add_node("finalize", finalize)
 
@@ -524,16 +467,6 @@ def build_vehicle_status_graph(tools: dict, llm=None) -> StateGraph:
         {
             "future_date": "future_date",
             "vague_date": "vague_date",
-            "check_confirm": "check_confirm",
-        },
-    )
-
-    # 非今天确认分支
-    workflow.add_conditional_edges(
-        "check_confirm",
-        route_confirm,
-        {
-            "confirm_today": "confirm_today",
             "call_tool": "call_tool",
         },
     )
@@ -543,7 +476,6 @@ def build_vehicle_status_graph(tools: dict, llm=None) -> StateGraph:
     workflow.add_edge("give_up", END)
     workflow.add_edge("future_date", END)
     workflow.add_edge("vague_date", END)
-    workflow.add_edge("confirm_today", END)
     workflow.add_edge("call_tool", "finalize")
     workflow.add_edge("finalize", END)
 
@@ -553,9 +485,9 @@ def build_vehicle_status_graph(tools: dict, llm=None) -> StateGraph:
 # ============================================================
 # 辅助：加载 MCP 工具
 # ============================================================
-async def load_vehicle_status_tools() -> dict:
+async def load_energy_status_tools() -> dict:
     """
-    从 MCP 配置加载车辆态势工具，并以工具名为 key 返回
+    从 MCP 配置加载能源态势工具，并以工具名为 key 返回
     类级缓存由调用方维护
     """
     java_tool_names = set(_JAVA_TOOL_MAP.values())
@@ -566,14 +498,14 @@ async def load_vehicle_status_tools() -> dict:
             timeout=15.0,
         )
     except asyncio.TimeoutError:
-        logger.error("加载 MCP 车辆态势工具超时")
+        logger.error("加载 MCP 能源态势工具超时")
         return {}
     except Exception as e:
-        logger.error(f"加载 MCP 车辆态势工具失败: {e}", exc_info=True)
+        logger.error(f"加载 MCP 能源态势工具失败: {e}", exc_info=True)
         return {}
 
     filtered = [t for t in tools if t.name in java_tool_names]
     if not filtered:
-        logger.warning(f"未找到任何车辆态势 MCP 工具，期望 {java_tool_names}")
+        logger.warning(f"未找到任何能源态势 MCP 工具，期望 {java_tool_names}")
 
     return {t.name: t for t in filtered}

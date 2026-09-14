@@ -35,6 +35,58 @@ mcp_servers:
     transport: streamable_http
     url: http://host.docker.internal:2222/mcp/vehicleStatus
 
+  # Java MCP Sidecar - 信息发布模块
+  # 端点路径是 /mcp/information（与 Java 侧 InfoPublishMcpServerConfig 一致）
+  # 部署方式与人员态势一致：
+  # - Java 跑在宿主机：url: http://host.docker.internal:2222/mcp/information
+  # - Java 跑在 Docker 且与 Python 同网络：url: http://mcp-sidecar:2222/mcp/information
+  information:
+    transport: streamable_http
+    url: http://host.docker.internal:2222/mcp/information
+
+  # Java MCP Sidecar - 能源态势模块
+  # 端点路径是 /mcp/energyStatus（与 Java 侧 EnergyMcpServerConfig 一致）
+  # 部署方式与人员态势一致：
+  # - Java 跑在宿主机：url: http://host.docker.internal:2222/mcp/energyStatus
+  # - Java 跑在 Docker 且与 Python 同网络：url: http://mcp-sidecar:2222/mcp/energyStatus
+  energy:
+    transport: streamable_http
+    url: http://host.docker.internal:2222/mcp/energyStatus
+
+  # Java MCP Sidecar - 会议管理模块
+  # 端点路径是 /mcp/meetingStatus（与 Java 侧 MeetingMcpServerConfig 一致）
+  # 部署方式与人员态势一致：
+  # - Java 跑在宿主机：url: http://host.docker.internal:2222/mcp/meetingStatus
+  # - Java 跑在 Docker 且与 Python 同网络：url: http://mcp-sidecar:2222/mcp/meetingStatus
+  meeting:
+    transport: streamable_http
+    url: http://host.docker.internal:2222/mcp/meetingStatus
+
+  # Java MCP Sidecar - 消防态势模块（/mcp/fire，与 Java 侧 FireMcpServerConfig 一致）
+  # 部署方式与人员态势一致：
+  # - Java 跑在宿主机：url: http://host.docker.internal:2222/mcp/fire
+  # - Java 跑在 Docker 且与 Python 同网络：url: http://mcp-sidecar:2222/mcp/fire
+  fire:
+    transport: streamable_http
+    url: http://host.docker.internal:2222/mcp/fire
+
+  # Java MCP Sidecar - 设备态势模块（/mcp/device，与 Java 侧 DeviceMcpServerConfig 一致）
+  # 部署方式与人员态势一致：
+  # - Java 跑在宿主机：url: http://host.docker.internal:2222/mcp/device
+  # - Java 跑在 Docker 且与 Python 同网络：url: http://mcp-sidecar:2222/mcp/device
+  device:
+    transport: streamable_http
+    url: http://host.docker.internal:2222/mcp/device
+
+  # 本地 Python 实现的消防态势 mock MCP 服务（fire_server.py）
+  # 当前已配置 Java MCP Sidecar（fire），先注释掉；
+  # Java 侧未就绪时可临时启用 fire-local 并注释上面的 fire 做自测
+  # fire-local:
+  #   transport: stdio
+  #   command: python
+  #   args:
+  #     - ./mcp_servers/fire_server.py
+
   # 本地 Python 实现的 person_status MCP 服务
   # 当前已改用 Java MCP Sidecar，先注释掉，避免与 Java 侧车的工具冲突
   # person_status:

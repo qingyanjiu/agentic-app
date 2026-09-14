@@ -14,9 +14,9 @@ logger = logging.getLogger(__name__)
 # ============================================================
 # Python event_type 到 Java MCP 工具名的映射
 # 与 Java 侧核对（DiningHallMcpServerConfig / PlatformDiningHallMcp）：
-#   week_menu    -> canteen:getWeekMenu     ✅ Java 已实现（无入参，直接返回本周食谱）
-#   dish_rank    -> canteen:getDishHotRank   ⏳ Java 尚未实现（占位，实现了再启用）
-#   dining_count -> canteen:getDiningCount   ⏳ Java 尚未实现（占位，实现了再启用）
+#   week_menu    -> canteen:getWeekMenu      ✅ Java 已实现（无入参，直接返回本周食谱）
+#   dish_rank    -> canteen:getDishPopularity ✅ Java 已实现（支持 startTime/endTime）
+#   dining_count -> canteen:getDiningCount    ✅ Java 已实现（支持 startTime/endTime/meal）
 # ============================================================
 _JAVA_TOOL_MAP = {
     "dish_rank": "canteen:getDishPopularity",
@@ -99,8 +99,9 @@ async def _llm_format_canteen_result(
             "要求：\n"
             f"1. {requirement}\n"
             "2. 回答必须基于返回数据，不要编造；\n"
-            "3. 如果返回数据为空，如实说明没有查到数据；\n"
-            "4. 回答要简短、口语化。"
+            "3. 如果返回数据为空，只如实说明没有查到数据，不要建议查询其他时间段或其他内容；\n"
+            "4. 不要向用户提出任何追问、提议或反问，只回答本次查询的结果；\n"
+            "5. 回答要简短、口语化。"
         )
 
         resp = await llm.ainvoke(prompt)

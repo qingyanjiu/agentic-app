@@ -1,12 +1,12 @@
 import asyncio
+import json
 import logging
 import traceback
-from datetime import date, datetime
+from datetime import datetime
 from typing import Annotated, Any, Optional, TypedDict
 
 from langgraph.graph import StateGraph, END
 
-from agent.intent.handlers.vehicle_status_handler import VehicleStatusHandler
 from mcp_client.mcp_loader import get_mcp_tools
 
 logger = logging.getLogger(__name__)
@@ -14,40 +14,22 @@ logger = logging.getLogger(__name__)
 
 # ============================================================
 # Python query_type 到 Java MCP 工具名的映射
-#
-# Java 侧 PlatformVehicleStatusMcp 当前实现工具：
-#   vehicle_status:getParkingSpace     -> 停车位统计
-#   vehicle_status:getTrafficVolume    -> 车流量统计
-#   vehicle_status:getParkingStructure -> 停车结构
-#   vehicle_status:getCarStatistic     -> 公车统计
-#   vehicle_status:getParkingRank      -> 停车时长排名
-#
-# Python 侧按 Java 工具名对齐；不存在的工具不要映射到这里。
+# 与 Java 侧 FireMcpServerConfig / PlatformFireMcp 对齐：
+#   fire_assets     -> fire:getFireAssets
+#   fire_alarm_num  -> fire:getFireAlarmNum
+#   fire_alarm_list -> fire:getFireAlarmList
+#   month_repair    -> fire:getMonthRepair
 # ============================================================
 _JAVA_TOOL_MAP = {
-    "parking_space": "vehicle_status:getParkingSpace",
-    "traffic_flow": "vehicle_status:getTrafficVolume",
-    "parking_structure": "vehicle_status:getParkingStructure",
-    "official_vehicle": "vehicle_status:getCarStatistic",
-    "parking_duration_rank": "vehicle_status:getParkingRank",
+    "fire_assets": "fire:getFireAssets",
+    "fire_alarm_num": "fire:getFireAlarmNum",
+    "fire_alarm_list": "fire:getFireAlarmList",
+    "month_repair": "fire:getMonthRepair",
 }
 
-
-def _is_today(date_slots: dict) -> bool:
-    """
-    判断用户查询的时间范围是否为今天
-    车辆态势后端目前只支持查询今日数据
-    """
-    start_time = date_slots.get("start_time")
-    if not start_time:
-        return True
-
-    try:
-        start_dt = datetime.fromisoformat(start_time)
-        return start_dt.date() == date.today()
-    except Exception:
-        # 解析失败时默认按今天处理，避免误拦截
-        return True
+# 消防子类型反问的固定选项顺序（与 _JAVA_TOOL_MAP / 反问文案顺序一致），
+# 存入 slots._type_options 供追问轮解析「第N个」序数指代
+_TYPE_OPTIONS = ["fire_assets", "fire_alarm_num", "fire_alarm_list", "month_repair"]
 
 
 def _extract_text(result: Any) -> str:
@@ -56,9 +38,15 @@ def _extract_text(result: Any) -> str:
     兼容：
       - 普通字符串
       - LangChain 的 [{type: 'text', text: '...'}] 列表
+      - {'content': [{type: 'text', text: '...'}], 'id': '...'} 字典包装
     """
     if isinstance(result, str):
         return result
+
+    if isinstance(result, dict):
+        content = result.get("content")
+        if isinstance(content, list):
+            result = content
 
     if isinstance(result, list) and result:
         first = result[0]
@@ -69,24 +57,164 @@ def _extract_text(result: Any) -> str:
 
 
 def _query_type_label(query_type: str) -> str:
-    """根据 query_type 返回中文名称，用于生成确认问题"""
+    """根据 query_type 返回中文名称，用于生成 LLM 提示语"""
     return {
-        "parking_space": "停车位统计",
-        "traffic_flow": "车流量统计",
-        "parking_structure": "停车结构",
-        "official_vehicle": "公车统计",
-        "parking_duration_rank": "停车时长排名",
-    }.get(query_type, "数据")
+        "fire_assets": "消防设备台账",
+        "fire_alarm_num": "设备告警统计",
+        "fire_alarm_list": "实时告警",
+        "month_repair": "月度报修",
+    }.get(query_type, "消防数据")
 
 
-async def _llm_format_vehicle_status_result(
+# ============================================================
+# 消防台账 / 实时告警列表优化：紧凑化
+# 背景：平台 getAssetsList / getAlarmList 一次返回整个 rows 列表，
+#       每条还带多个字段，原始 JSON 很大，
+#       直接喂 LLM 又慢又费 token。
+# 这里在每次调用 MCP 后，把原始 rows 压成紧凑文本
+# （只保留关键字段、限制条数），再喂给 LLM，大幅减小 token、加快回复。
+# 解析失败时兜底返回原始文本，保证流程不断。
+# ============================================================
+
+# rows 列表最大保留条数
+_MAX_ROWS = 20
+
+# 台账单行保留字段（截断长字段）
+# 注意：压力/液位/电量/倾角不在行内平铺，而在 dataMap 数组里
+# （每项 {monitorName, monitorValue, unit}），由 _compact_fire_assets 单独展平
+_ASSET_KEEP_FIELDS = [
+    "assetsName", "offLineFlag", "faultFlag", "usageFlag",
+    "hiddenDangerFlag", "deviceCode",
+]
+
+
+def _compact_fire_rows(raw_text: str, keep_fields: list) -> str:
+    """
+    把 rows 列表的原始 JSON 压成紧凑文本，再喂给 LLM
+
+    原始数据结构（来自平台）：
+      { msg; total; code; rows: [...] }
+
+    这里只保留 keep_fields 中列出的关键字段（字段值过长时截断），
+    并限制最多 _MAX_ROWS 条，超过的在末尾注明总数，
+    大幅减小喂给 LLM 的 token，加快回复。
+
+    字段名以 Time 结尾且值为纯数字时，按毫秒时间戳格式化为 MM-dd HH:mm，
+    避免 LLM 自己换算出错。
+
+    解析失败时兜底返回原始文本，保证流程不断。
+    """
+    # 兼容字符串 JSON 和已解析的 dict/list
+    try:
+        data = json.loads(raw_text)
+    except Exception:
+        return raw_text
+
+    if not isinstance(data, dict):
+        return raw_text
+
+    rows = data.get("rows")
+    if not isinstance(rows, list):
+        return raw_text
+
+    total = data.get("total", len(rows))
+    lines = [f"共 {total} 条，以下展示前 {min(len(rows), _MAX_ROWS)} 条："]
+
+    for idx, row in enumerate(rows[:_MAX_ROWS], start=1):
+        if not isinstance(row, dict):
+            lines.append(f"{idx}. {row}")
+            continue
+        parts = []
+        for field in keep_fields:
+            value = row.get(field)
+            if value is None:
+                continue
+            value_str = str(value)
+            # 毫秒时间戳转可读时间，例如 nowAlarmTime=1725926400000 -> 10-10 08:00
+            if field.endswith("Time") and value_str.isdigit():
+                try:
+                    value_str = datetime.fromtimestamp(int(value_str) / 1000).strftime("%m-%d %H:%M")
+                except Exception:
+                    pass
+            # 单字段值过长时截断，避免异常长文本撑爆 prompt
+            if len(value_str) > 50:
+                value_str = value_str[:50] + "..."
+            parts.append(f"{field}={value_str}")
+        if parts:
+            lines.append(f"{idx}. " + "，".join(parts))
+        else:
+            lines.append(f"{idx}. {str(row)[:100]}")
+
+    if len(rows) > _MAX_ROWS:
+        lines.append(f"... 其余 {len(rows) - _MAX_ROWS} 条已省略")
+
+    return "\n".join(lines)
+
+
+def _compact_fire_assets(raw_text: str) -> str:
+    """
+    压缩消防设备台账 rows
+
+    台账行内字段（assetsName/offLineFlag/faultFlag/usageFlag/hiddenDangerFlag/
+    deviceCode 等）之外，压力/液位/电量/倾角在 dataMap 数组里
+    （每项 {monitorName, monitorValue, unit}），这里展平成
+    “monitorName=monitorValueunit” 的形式，例如 压力=0.45MPa。
+    """
+    # 兼容字符串 JSON 和已解析的 dict/list
+    try:
+        data = json.loads(raw_text)
+    except Exception:
+        return raw_text
+
+    if not isinstance(data, dict):
+        return raw_text
+
+    rows = data.get("rows")
+    if not isinstance(rows, list):
+        return raw_text
+
+    total = data.get("total", len(rows))
+    lines = [f"共 {total} 条，以下展示前 {min(len(rows), _MAX_ROWS)} 条："]
+
+    for idx, row in enumerate(rows[:_MAX_ROWS], start=1):
+        if not isinstance(row, dict):
+            lines.append(f"{idx}. {row}")
+            continue
+        parts = [
+            f"{f}={row[f]}"
+            for f in _ASSET_KEEP_FIELDS
+            if row.get(f) not in (None, "")
+        ]
+        # 展平 dataMap：压力=0.45MPa，液位=1.2m，电量=85%，倾角=1.2°
+        for m in row.get("dataMap") or []:
+            if isinstance(m, dict) and m.get("monitorName"):
+                parts.append(
+                    f"{m['monitorName']}={m.get('monitorValue', '')}{m.get('unit') or ''}"
+                )
+        lines.append(f"{idx}. " + ("，".join(parts) if parts else str(row)[:100]))
+
+    if len(rows) > _MAX_ROWS:
+        lines.append(f"... 其余 {len(rows) - _MAX_ROWS} 条已省略")
+
+    return "\n".join(lines)
+
+
+def _compact_fire_alarm_list(raw_text: str) -> str:
+    """压缩实时消防告警 rows（仿 canteen 的 _compact_week_menu 思路）"""
+    return _compact_fire_rows(raw_text, [
+        "title", "alarmTypeName", "assetsName", "areaName",
+        "alarmLevel", "handleStatus", "nowAlarmTime", "alarmReason",
+    ])
+
+
+async def _llm_format_fire_result(
     llm: Any, query_type: str, state: dict, raw_text: str
 ) -> str:
     """
     根据 query_type 让 LLM 分析 MCP 工具返回，生成对应的中文回答。
 
-    与人员态势保持一致：把"用户原话 + 原始返回"交给 LLM，由它提取相关项并组织自然语言。
-    任何异常都降级为原样返回，保证流程不断。
+    任何异常（LLM 未配置 / 调用失败 / 返回为空）都降级为原样返回，
+    保证流程不断。
     """
     if llm is None:
         return raw_text
@@ -95,15 +223,22 @@ async def _llm_format_vehicle_status_result(
         label = _query_type_label(query_type)
         original_query = state.get("original_query") or query_type
 
+        requirement = {
+            "fire_assets": "列出消防设备的状态、压力液位、电量、倾角等关键信息；",
+            "fire_alarm_num": "列出火警数、故障数、隐患数、误报数、离人数、设备状态告警数等各类告警统计；",
+            "fire_alarm_list": "按时间列出最近的消防告警（类型/等级/位置/时间）；",
+            "month_repair": "按月份列出报修数量趋势；",
+        }.get(query_type, "把返回数据整理清楚；")
+
         prompt = (
-            "你是园区车辆态势助手。下面是一次 MCP 工具查询的原始返回，"
+            "你是智慧园区消防态势助手。下面是一次 MCP 工具查询的原始返回，"
             "请根据用户的查询类型，只提取对应的内容，用中文自然、简洁地回答用户。\n\n"
             f"用户查询类型：{query_type}（{label}）\n"
             f"用户原话：{original_query}\n"
             "MCP 工具返回的原始数据：\n"
             f"{raw_text}\n\n"
             "要求：\n"
-            "1. 只回答用户问的那一项，不要把所有字段都列出来；\n"
+            f"1. {requirement}\n"
             "2. 回答必须基于返回数据，不要编造数字；\n"
             "3. 如果返回数据里没有用户要查的信息，只如实说明即可，不要建议查询其他时间段或其他内容；\n"
             "4. 不要向用户提出任何追问、提议或反问，只回答本次查询的结果；\n"
@@ -125,7 +260,7 @@ async def _llm_format_vehicle_status_result(
         if text:
             return text
     except Exception as e:
-        logger.warning(f"LLM 格式化车辆态势结果失败，降级为原样返回: {e}")
+        logger.warning(f"LLM 格式化消防态势结果失败，降级为原样返回: {e}")
 
     return raw_text
 
@@ -151,7 +286,7 @@ def _merge_lists(x: list, y: list) -> list:
     return list(x) + list(y)
 
 
-class VehicleStatusGraphState(TypedDict):
+class EmergencyFireGraphState(TypedDict):
     # 从当前意图状态中提取的参数
     slots: Annotated[dict, _merge_dicts]
 
@@ -186,7 +321,7 @@ class VehicleStatusGraphState(TypedDict):
 # ============================================================
 # 图节点函数
 # ============================================================
-def init_state(state: VehicleStatusGraphState) -> dict:
+def init_state(state: EmergencyFireGraphState) -> dict:
     """
     初始化节点：确保 slots 中日期结构存在
     """
@@ -196,18 +331,23 @@ def init_state(state: VehicleStatusGraphState) -> dict:
     return {"slots": slots}
 
 
-def check_missing_params(state: VehicleStatusGraphState) -> dict:
+def check_missing_params(state: EmergencyFireGraphState) -> dict:
     """
     检查缺失参数
-    车辆态势目前不需要额外必填参数
+    消防后端只支持 4 类查询，query_type 落到 count 兜底
+    （正则/embedding 分类器都没识别出子类型）时视为缺失，走追问
     """
     slots = state["slots"]
     missing = []
-    # 后续如需按区域/停车场细分，可在此扩展
+
+    query_type = slots.get("query_type")
+    if not query_type or query_type == "count":
+        missing.append("query_type")
+
     return {"missing_params": missing}
 
 
-def route_missing_params(state: VehicleStatusGraphState) -> str:
+def route_missing_params(state: EmergencyFireGraphState) -> str:
     """
     条件路由：根据是否缺失参数决定下一步
     """
@@ -218,22 +358,32 @@ def route_missing_params(state: VehicleStatusGraphState) -> str:
     return "check_date"
 
 
-def ask_param(state: VehicleStatusGraphState) -> dict:
+def ask_param(state: EmergencyFireGraphState) -> dict:
     """
     参数缺失时生成追问问题
     """
     missing = state["missing_params"]
 
-    if "area" in missing:
-        question = "请问您想查询哪个停车场或区域？"
+    updates = {}
+
+    if "query_type" in missing:
+        # 选项措辞与 slots.py 正则关键词对齐，
+        # 用户直接回复选项词即可被识别
+        question = "请问您想查询哪类消防数据？设备台账、告警统计、实时告警，还是月度报修？"
+        # 存下选项清单与等待标记，供追问轮解析「第N个」这类序数指代
+        # （仿 vague_date 的 _pending_date_clarify / _date_options 模式）
+        slots = state["slots"]
+        slots["_pending_type_clarify"] = True
+        slots["_type_options"] = list(_TYPE_OPTIONS)
+        updates["slots"] = slots
     elif "date" in missing:
-        question = "请问您想查询哪一天？"
+        question = "请问您想查询哪一天的消防数据？"
     else:
         question = "请问您还需要补充什么信息？"
 
     ask_count = state["ask_count"] + 1
 
-    return {
+    updates.update({
         "last_question": question,
         "ask_count": ask_count,
         "events": [{
@@ -245,10 +395,11 @@ def ask_param(state: VehicleStatusGraphState) -> dict:
                 "ask_count": ask_count,
             },
         }],
-    }
+    })
+    return updates
 
 
-def give_up(state: VehicleStatusGraphState) -> dict:
+def give_up(state: EmergencyFireGraphState) -> dict:
     """
     追问次数超限，放弃当前任务
     """
@@ -267,16 +418,17 @@ def give_up(state: VehicleStatusGraphState) -> dict:
     }
 
 
-def check_date(state: VehicleStatusGraphState) -> dict:
+def check_date(state: EmergencyFireGraphState) -> dict:
     """
     日期检查占位节点，实际路由由条件边处理
     """
     return {}
 
 
-def route_date_type(state: VehicleStatusGraphState) -> str:
+def route_date_type(state: EmergencyFireGraphState) -> str:
     """
     根据日期类型路由
+    消防态势未来日期直接拒绝
     """
     date_slots = state["slots"].get("date", {})
     time_type = date_slots.get("time_type")
@@ -285,10 +437,10 @@ def route_date_type(state: VehicleStatusGraphState) -> str:
         return "future_date"
     if time_type == "vague":
         return "vague_date"
-    return "check_confirm"
+    return "call_tool"
 
 
-def future_date(state: VehicleStatusGraphState) -> dict:
+def future_date(state: EmergencyFireGraphState) -> dict:
     """
     未来时间直接提醒，不查询
     """
@@ -299,7 +451,7 @@ def future_date(state: VehicleStatusGraphState) -> dict:
                 "event": "custom",
                 "data": {
                     "type": "answer",
-                    "content": "明天还没到呢，目前只能查询今天及历史的车辆态势数据哦。",
+                    "content": "消防数据目前只能查询今天及历史的统计，未来的数据暂时无法预测哦。",
                 },
             },
             {"event": "custom", "data": {"type": "done"}},
@@ -307,7 +459,7 @@ def future_date(state: VehicleStatusGraphState) -> dict:
     }
 
 
-def vague_date(state: VehicleStatusGraphState) -> dict:
+def vague_date(state: EmergencyFireGraphState) -> dict:
     """
     模糊时间先让用户确认具体范围
     """
@@ -320,58 +472,8 @@ def vague_date(state: VehicleStatusGraphState) -> dict:
 
     options_str = "、".join(options)
     question = (
-        f"您想查询近几天？可以直接回复具体天数，例如“近两天”、“近四天”，"
+        f"您想查询近几天的消防数据？可以直接回复具体天数，例如“近两天”、“近四天”，"
         f"或选择：{options_str}"
-    )
-
-    return {
-        "slots": slots,
-        "last_question": question,
-        "events": [{
-            "event": "custom",
-            "data": {
-                "type": "ask",
-                "question": question,
-                "missing_params": [],
-                "ask_count": state["ask_count"],
-            },
-        }],
-    }
-
-
-def check_confirm(state: VehicleStatusGraphState) -> dict:
-    """
-    确认节点占位，实际路由由条件边处理
-    """
-    return {}
-
-
-def route_confirm(state: VehicleStatusGraphState) -> str:
-    """
-    非今天查询时，先询问用户是否查看今日数据
-    """
-    query_type = state["slots"].get("query_type")
-    date_slots = state["slots"].get("date", {})
-
-    # 车辆态势后端目前仅支持查询今日数据
-    if query_type in _JAVA_TOOL_MAP:
-        if not _is_today(date_slots) and not state["slots"].get("_confirm_proceed"):
-            return "confirm_today"
-
-    return "call_tool"
-
-
-def confirm_today(state: VehicleStatusGraphState) -> dict:
-    """
-    非今天查询时，询问用户是否改为查看今日数据
-    """
-    query_type = state["slots"].get("query_type")
-    slots = state["slots"]
-    slots["_pending_confirm"] = True
-
-    question = (
-        "当前平台后端仅支持查询今日数据，"
-        f"是否为您展示今日{_query_type_label(query_type)}？"
     )
 
     return {
@@ -393,7 +495,7 @@ def make_call_tool_node(tools: dict, llm=None):
     """
     构造调用 MCP 工具的节点
     """
-    async def call_tool(state: VehicleStatusGraphState) -> dict:
+    async def call_tool(state: EmergencyFireGraphState) -> dict:
         query_type = state["slots"].get("query_type") or "count"
         java_tool_name = _JAVA_TOOL_MAP.get(query_type)
 
@@ -420,8 +522,7 @@ def make_call_tool_node(tools: dict, llm=None):
                 }],
             }
 
-        # 按 Java 工具签名组装参数
-        # 当前 Java 侧车辆态势工具均为无参 GET 接口，直接空参调用
+        # 当前 Java 侧消防态势工具均为无参接口，直接空参调用
         tool_args = {}
 
         print(f"[MCP CALL] tool={java_tool_name}, args={tool_args}")
@@ -431,7 +532,16 @@ def make_call_tool_node(tools: dict, llm=None):
             print(f"[MCP RAW RESULT] query_type={query_type}, result={result}")
 
             raw_text = _extract_text(result)
-            answer_text = await _llm_format_vehicle_status_result(
+
+            # 台账 / 实时告警的 rows 列表原始 JSON 很大，
+            # 先压成紧凑文本（只保留关键字段、限制条数）再喂 LLM，
+            # 大幅减少 token、加快回复
+            if query_type == "fire_assets":
+                raw_text = _compact_fire_assets(raw_text)
+            elif query_type == "fire_alarm_list":
+                raw_text = _compact_fire_alarm_list(raw_text)
+
+            answer_text = await _llm_format_fire_result(
                 llm, query_type, state, raw_text
             )
 
@@ -444,7 +554,7 @@ def make_call_tool_node(tools: dict, llm=None):
             }
         except Exception as e:
             tb = traceback.format_exc()
-            logger.error(f"调用车辆态势工具失败: {e}\n{tb}")
+            logger.error(f"调用消防态势工具失败: {e}\n{tb}")
             return {
                 "error": f"查询失败: {str(e)}\n{tb}",
                 "events": [{
@@ -456,7 +566,7 @@ def make_call_tool_node(tools: dict, llm=None):
     return call_tool
 
 
-def finalize(state: VehicleStatusGraphState) -> dict:
+def finalize(state: EmergencyFireGraphState) -> dict:
     """
     标记流程完成
     """
@@ -469,9 +579,9 @@ def finalize(state: VehicleStatusGraphState) -> dict:
 # ============================================================
 # 图构建
 # ============================================================
-def build_vehicle_status_graph(tools: dict, llm=None) -> StateGraph:
+def build_emergency_fire_graph(tools: dict, llm=None) -> StateGraph:
     """
-    构建车辆态势 LangGraph 状态图
+    构建消防态势 LangGraph 状态图
 
     流程：
         init -> check_missing_params
@@ -480,14 +590,12 @@ def build_vehicle_status_graph(tools: dict, llm=None) -> StateGraph:
             -> check_date
                 -> future_date (未来时间) -> END
                 -> vague_date (模糊时间) -> END
-                -> check_confirm
-                    -> confirm_today (非今天查询确认) -> END
-                    -> call_tool (调用 MCP，LLM 根据 query_type 组织回答) -> finalize -> END
+                -> call_tool (调用 MCP，LLM 组织回答) -> finalize -> END
 
     :param tools: MCP 工具字典（工具名 -> 工具）
-    :param llm: 可选的 LLM，用于根据 query_type 分析 MCP 返回生成回答；不传则降级为原样返回
+    :param llm: 可选的 LLM，用于根据 query_type 分析 MCP 返回生成回答；不传则原样返回
     """
-    workflow = StateGraph(VehicleStatusGraphState)
+    workflow = StateGraph(EmergencyFireGraphState)
 
     # 注册节点
     workflow.add_node("init", init_state)
@@ -497,8 +605,6 @@ def build_vehicle_status_graph(tools: dict, llm=None) -> StateGraph:
     workflow.add_node("check_date", check_date)
     workflow.add_node("future_date", future_date)
     workflow.add_node("vague_date", vague_date)
-    workflow.add_node("check_confirm", check_confirm)
-    workflow.add_node("confirm_today", confirm_today)
     workflow.add_node("call_tool", make_call_tool_node(tools, llm))
     workflow.add_node("finalize", finalize)
 
@@ -524,16 +630,6 @@ def build_vehicle_status_graph(tools: dict, llm=None) -> StateGraph:
         {
             "future_date": "future_date",
             "vague_date": "vague_date",
-            "check_confirm": "check_confirm",
-        },
-    )
-
-    # 非今天确认分支
-    workflow.add_conditional_edges(
-        "check_confirm",
-        route_confirm,
-        {
-            "confirm_today": "confirm_today",
             "call_tool": "call_tool",
         },
     )
@@ -543,7 +639,6 @@ def build_vehicle_status_graph(tools: dict, llm=None) -> StateGraph:
     workflow.add_edge("give_up", END)
     workflow.add_edge("future_date", END)
     workflow.add_edge("vague_date", END)
-    workflow.add_edge("confirm_today", END)
     workflow.add_edge("call_tool", "finalize")
     workflow.add_edge("finalize", END)
 
@@ -553,9 +648,9 @@ def build_vehicle_status_graph(tools: dict, llm=None) -> StateGraph:
 # ============================================================
 # 辅助：加载 MCP 工具
 # ============================================================
-async def load_vehicle_status_tools() -> dict:
+async def load_emergency_fire_tools() -> dict:
     """
-    从 MCP 配置加载车辆态势工具，并以工具名为 key 返回
+    从 MCP 配置加载消防态势工具，并以工具名为 key 返回
     类级缓存由调用方维护
     """
     java_tool_names = set(_JAVA_TOOL_MAP.values())
@@ -566,14 +661,14 @@ async def load_vehicle_status_tools() -> dict:
             timeout=15.0,
         )
     except asyncio.TimeoutError:
-        logger.error("加载 MCP 车辆态势工具超时")
+        logger.error("加载 MCP 消防态势工具超时")
         return {}
     except Exception as e:
-        logger.error(f"加载 MCP 车辆态势工具失败: {e}", exc_info=True)
+        logger.error(f"加载 MCP 消防态势工具失败: {e}", exc_info=True)
         return {}
 
     filtered = [t for t in tools if t.name in java_tool_names]
     if not filtered:
-        logger.warning(f"未找到任何车辆态势 MCP 工具，期望 {java_tool_names}")
+        logger.warning(f"未找到任何消防态势 MCP 工具，期望 {java_tool_names}")
 
     return {t.name: t for t in filtered}
