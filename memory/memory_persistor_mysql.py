@@ -13,7 +13,7 @@ mysql持久化
 # 建表语句    
 SQL_CREATE_TABLE = '''
 -- aiagent_chat_session 对话会话表
-CREATE TABLE IF NOT EXISTS aiagenaiagent_chat_session (
+CREATE TABLE IF NOT EXISTS aiagent_chat_session (
     id INTEGER PRIMARY KEY auto_increment comment '自增主键',
     title varchar(100) NOT NULL DEFAULT '新对话' comment '消息标题',
     user_id VARCHAR(36) NOT NULL comment '用户ID，区分用户',
@@ -23,12 +23,12 @@ CREATE TABLE IF NOT EXISTS aiagenaiagent_chat_session (
 );
 -- 索引
 CREATE INDEX idx_user_id_start_time
-    ON aiagenaiagent_chat_session(user_id, start_time);
+    ON aiagent_chat_session(user_id, start_time);
 CREATE INDEX idx_ts
-    ON aiagenaiagent_chat_session(start_time);
+    ON aiagent_chat_session(start_time);
 
 -- aiagent_chat_content 对话内容表
-CREATE TABLE IF NOT EXISTS aiagenaiagent_chat_content (
+CREATE TABLE IF NOT EXISTS aiagent_chat_content (
     id INTEGER PRIMARY KEY auto_increment comment '自增主键',
     chat_session_id VARCHAR(36) NOT NULL comment '关联的会话表id',
     role TEXT NOT NULL comment 'ai 角色 - user / assistant / system / tool',
@@ -37,7 +37,7 @@ CREATE TABLE IF NOT EXISTS aiagenaiagent_chat_content (
 );
 -- 索引
 CREATE INDEX idx_chat_session_id
-    ON aiagenaiagent_chat_content(chat_session_id);
+    ON aiagent_chat_content(chat_session_id);
 '''
 
 # 查询某个用户的所有session
