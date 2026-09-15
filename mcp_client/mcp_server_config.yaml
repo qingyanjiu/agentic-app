@@ -78,6 +78,15 @@ mcp_servers:
     transport: streamable_http
     url: http://host.docker.internal:2222/mcp/device
 
+  # Java MCP Sidecar - 综合态势总览模块（/mcp/overview，与 Java 侧 OverviewMcpServerConfig 一致）
+  # 工具：overview:getBasicInfo / overview:getDeviceHealth（接口文档 §2.1）
+  # 部署方式与人员态势一致：
+  # - Java 跑在宿主机：url: http://host.docker.internal:2222/mcp/overview
+  # - Java 跑在 Docker 且与 Python 同网络：url: http://mcp-sidecar:2222/mcp/overview
+  overview:
+    transport: streamable_http
+    url: http://host.docker.internal:2222/mcp/overview
+
   # 本地 Python 实现的消防态势 mock MCP 服务（fire_server.py）
   # 当前已配置 Java MCP Sidecar（fire），先注释掉；
   # Java 侧未就绪时可临时启用 fire-local 并注释上面的 fire 做自测

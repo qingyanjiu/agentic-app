@@ -9,5 +9,6 @@ from .energy_status_handler import EnergyStatusHandler
 from .meeting_status_handler import MeetingStatusHandler
 from .emergency_fire_handler import EmergencyFireHandler
 from .device_status_handler import DeviceStatusHandler
+from .compositive_overview_handler import CompositiveOverviewHandler
 
-__all__ = ["PersonStatusHandler", "SecurityStatusHandler", "CanteenStatusHandler", "VehicleStatusHandler", "InformationStatusHandler", "EnergyStatusHandler", "MeetingStatusHandler", "EmergencyFireHandler", "DeviceStatusHandler"]
+__all__ = ["PersonStatusHandler", "SecurityStatusHandler", "CanteenStatusHandler", "VehicleStatusHandler", "InformationStatusHandler", "EnergyStatusHandler", "MeetingStatusHandler", "EmergencyFireHandler", "DeviceStatusHandler", "CompositiveOverviewHandler"]

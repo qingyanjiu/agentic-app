@@ -24,6 +24,7 @@ from agent.intent.handlers.energy_status_handler import EnergyStatusHandler
 from agent.intent.handlers.meeting_status_handler import MeetingStatusHandler
 from agent.intent.handlers.emergency_fire_handler import EmergencyFireHandler
 from agent.intent.handlers.device_status_handler import DeviceStatusHandler
+from agent.intent.handlers.compositive_overview_handler import CompositiveOverviewHandler
 
 
 def handler_of(module_key: str):
@@ -37,6 +38,7 @@ def handler_of(module_key: str):
         "meeting_status": MeetingStatusHandler,
         "emergency_fire": EmergencyFireHandler,
         "device_status": DeviceStatusHandler,
+        "compositive_overview": CompositiveOverviewHandler,
     }[module_key]()
 
 
@@ -72,6 +74,11 @@ class TestMissingParams:
         h = handler_of("security_status")
         assert h._get_missing_params({"event_type": "alarm_list"}) == ["date"]
         assert h._get_missing_params({"event_type": "alarm_list", "date": {"time_type": "span"}}) == []
+        # ai_overview（AI 告警总览）为无参实时查询，与 security_index 一致无需时间
+        assert h._get_missing_params({"event_type": "ai_overview"}) == []
+        # ai_trend / ai_alarm_list 按时间区间查询，仍需要时间范围
+        assert h._get_missing_params({"event_type": "ai_trend"}) == ["date"]
+        assert h._get_missing_params({"event_type": "ai_alarm_list"}) == ["date"]
 
     def test_security_alarm_detail_needs_id(self):
         h = handler_of("security_status")
@@ -84,7 +91,7 @@ class TestMissingParams:
         assert h._get_missing_params({"event_type": "x"}) == ["date"]
         assert h._get_missing_params({"event_type": "x", "date": {"time_type": "span"}}) == []
 
-    @pytest.mark.parametrize("module_key", ["vehicle_status", "energy_status", "meeting_status", "device_status"])
+    @pytest.mark.parametrize("module_key", ["vehicle_status", "energy_status", "meeting_status", "device_status", "compositive_overview"])
     def test_vehicle_energy_meeting_need_nothing(self, module_key):
         h = handler_of(module_key)
         assert h._get_missing_params({}) == []

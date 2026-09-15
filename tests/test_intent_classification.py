@@ -25,6 +25,7 @@ from agent.intent import (
     classify_meeting_sub_type,
     classify_fire_sub_type,
     classify_device_sub_type,
+    classify_compositive_overview_sub_type,
 )
 
 
@@ -77,6 +78,9 @@ class TestTopLevelIntent:
             # 设备态势
             ("设备分类占比", "device_status"),
             ("门禁设备在线率", "device_status"),
+            # 综合态势总览
+            ("园区面积多大", "compositive_overview"),
+            ("设备健康度总览", "compositive_overview"),
         ],
     )
     def test_domain_query_classified(self, query, expected_intent):
@@ -103,6 +107,17 @@ class TestSubTypes:
     def test_security_sub_type(self):
         sub, score = run(classify_security_sub_type("园区安全指数是多少"))
         assert sub == "security_index"
+
+    def test_security_new_sub_types(self):
+        """emergency_aialert 并入的三个新子类型（开发计划 §2.4）"""
+        cases = [
+            ("AI告警总览帮我看一下", "ai_overview"),
+            ("近30天的告警数量变化趋势", "ai_trend"),
+            ("管理预警的明细列表有哪些", "ai_alarm_list"),
+        ]
+        for query, expected in cases:
+            sub, score = run(classify_security_sub_type(query))
+            assert sub == expected, f"query={query!r} 安防子类型判为 {sub}（score={score:.4f}）"
 
     def test_canteen_sub_type(self):
         sub, score = run(classify_canteen_sub_type("今天食堂就餐多少人"))
@@ -149,6 +164,17 @@ class TestSubTypes:
         for query, expected in cases:
             sub, score = run(classify_device_sub_type(query))
             assert sub == expected, f"query={query!r} 设备子类型判为 {sub}（score={score:.4f}）"
+
+    def test_overview_sub_types(self):
+        cases = [
+            ("园区面积多大", "basic_info"),
+            ("IoT设备总数多少", "basic_info"),
+            ("设备健康度总览", "device_health"),
+            ("设备健康分是多少", "device_health"),
+        ]
+        for query, expected in cases:
+            sub, score = run(classify_compositive_overview_sub_type(query))
+            assert sub == expected, f"query={query!r} 总览子类型判为 {sub}（score={score:.4f}）"
 
 
 # ============================================================

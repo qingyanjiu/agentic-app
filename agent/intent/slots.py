@@ -464,6 +464,9 @@ def extract_security_status_slots(query: str) -> dict:
       - ai_alert          AI 告警态势统计
       - inspection_trend  安全巡查趋势（当天分时段）
       - ai_inspection     AI 巡查事件列表
+      - ai_overview       AI 告警总览（今日告警数/累计告警/算法类型数/识别准确率，无需时间）
+      - ai_trend          AI 告警趋势（近 7 天 / 近 30 天，按时间区间查）
+      - ai_alarm_list     分类告警明细列表（安防/管理/环境预警，按时间区间查）
     date：时间范围，由 parse_time_slot 解析
           取 date["start_time"] / date["end_time"]
           作为调 MCP 服务的参数 {startTime, endTime}
@@ -492,7 +495,31 @@ def extract_security_status_slots(query: str) -> dict:
     ):
         slots["event_type"] = "security_index"
 
-    # 2. AI 告警态势：类别数量/占比统计
+    # 2. AI 告警总览：今日告警数、累计告警、算法类型数、识别准确率（无需时间）
+    elif re.search(
+        r"告警总览|AI告警概览|智能告警概览|今日告警数|今日告警.*多少|"
+        r"累计告警|算法类型|识别准确率",
+        q,
+    ):
+        slots["event_type"] = "ai_overview"
+
+    # 3. AI 告警趋势：近 7 天 / 近 30 天告警走势
+    elif re.search(
+        r"告警趋势|预警趋势|AI告警走势|智能告警走势|告警.*走势|"
+        r"近\s*[17７]\s*天.*告警|近\s*30\s*天.*告警",
+        q,
+    ):
+        slots["event_type"] = "ai_trend"
+
+    # 4. 分类告警明细：安防/管理/环境预警分类列表
+    elif re.search(
+        r"管理预警|环境预警|安防预警|分类告警|告警明细|预警明细|"
+        r"预警.*分类.*列表|分类.*预警",
+        q,
+    ):
+        slots["event_type"] = "ai_alarm_list"
+
+    # 5. AI 告警态势：类别数量/占比统计
     elif re.search(
         r"AI告警|智能告警|告警分布|告警占比|告警统计|各类告警|"
         r"告警.*分类|告警.*数量|告警.*情况",
@@ -500,7 +527,7 @@ def extract_security_status_slots(query: str) -> dict:
     ):
         slots["event_type"] = "ai_alert"
 
-    # 3. 巡查趋势：分时段巡查情况
+    # 6. 巡查趋势：分时段巡查情况
     elif re.search(
         r"巡查趋势|巡检趋势|巡查情况|巡查异常|巡检情况|巡查统计|"
         r"巡查.*时段|巡查.*高峰",
@@ -508,7 +535,7 @@ def extract_security_status_slots(query: str) -> dict:
     ):
         slots["event_type"] = "inspection_trend"
 
-    # 4. AI 巡查事件：智能巡检发现的异常
+    # 7. AI 巡查事件：智能巡检发现的异常
     elif re.search(
         r"AI巡查|智能巡检|智能巡查|巡检告警|巡查.*发现|巡检.*发现|"
         r"智能.*发现.*异常",
@@ -516,7 +543,7 @@ def extract_security_status_slots(query: str) -> dict:
     ):
         slots["event_type"] = "ai_inspection"
 
-    # 5. 告警详情：最具体，优先判断
+    # 7. 告警详情：最具体，优先判断
     elif re.search(
         r"告警详情|这条告警|这个告警|那条告警|那个告警|告警详情是什么|"
         r"告警具体是什么|告警原因|告警信息|告警内容|详情是什么",
@@ -524,7 +551,7 @@ def extract_security_status_slots(query: str) -> dict:
     ):
         slots["event_type"] = "alarm_detail"
 
-    # 6. 巡查/巡逻任务
+    # 8. 巡查/巡逻任务
     elif re.search(
         r"巡查|巡逻|巡更|巡检|保安|巡逻任务|巡查任务|巡更记录|巡检点|"
         r"这周的?巡查任务|这周的?巡逻任务|本周巡查|本周巡逻|近期巡查|近期巡逻",
@@ -532,7 +559,7 @@ def extract_security_status_slots(query: str) -> dict:
     ):
         slots["event_type"] = "patrol"
 
-    # 7. 安防设备状态/详情
+    # 9. 安防设备状态/详情
     elif re.search(
         r"设备状态|设备在线率|摄像头离线|门禁设备|报警主机|设备故障|"
         r"安防设备|设备健康|设备在线|设备离线|摄像头状态|门禁状态|"
@@ -955,6 +982,44 @@ def extract_device_status_slots(query: str) -> dict:
     # 默认 count，无需再判断
 
     print(f"[device slots] query={q} => {slots}")
+    return slots
+
+
+# ============================================================
+# 综合态势总览 slot 抽取
+# 目前支持子类型（query_type）：
+#   basic_info    -> 园区基本信息（面积 / IoT设备总数 / 园区概况）
+#   device_health -> 设备健康度总览（健康分/在线率/维修率/寿命率）
+#
+# 约定（docs/开发计划.md §2.3）：
+#   总览只保留这两个独占子类型，走 /overview/* 自己的接口；
+#   人车/能耗/会议/安全指数问法由 person/vehicle/energy/meeting/security 承接
+# ============================================================
+
+def extract_compositive_overview_slots(query: str) -> dict:
+    """
+    统一抽取综合态势总览相关的所有 slot
+    """
+    slots = {
+        "query_type": "basic_info",
+        "date": parse_time_slot(query),
+    }
+
+    q = query
+
+    # 1. 设备健康度总览
+    #    只收"健康度/健康分"总览口径；类别健康度问法
+    #    （如"消防设备健康度"）在顶层意图就被分到 device_status，到不了这里
+    if re.search(
+        r"健康度|健康分|健康.*情况|健康.*状况|健康.*评分",
+        q,
+    ):
+        slots["query_type"] = "device_health"
+
+    # 2. 兜底：园区基本信息（面积 / IoT设备总数 / 园区概况）
+    #    默认 basic_info，无需再判断
+
+    print(f"[compositive overview slots] query={q} => {slots}")
     return slots
 
 

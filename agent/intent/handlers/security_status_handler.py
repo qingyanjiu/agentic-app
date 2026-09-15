@@ -20,7 +20,8 @@ DECLINE_KEYWORDS = [
 # ============================================================
 # 安防态势意图处理器
 # 当前支持：alarm_list / alarm_detail / patrol / device /
-#           security_index / ai_alert / inspection_trend / ai_inspection
+#           security_index / ai_alert / inspection_trend / ai_inspection /
+#           ai_overview / ai_trend / ai_alarm_list（emergency_aialert 并入，见开发计划 §2.4）
 # 负责：参数抽取、追问相关性判断、处理追问回复
 # ============================================================
 class SecurityStatusHandler(IntentHandler):
@@ -67,7 +68,11 @@ class SecurityStatusHandler(IntentHandler):
             "告警", "报警", "安防", "未处理", "查看", "展示", "拉一下",
             "巡查", "巡逻", "巡更", "巡检", "设备", "摄像头", "门禁", "离线",
             "安全指数", "安全状况", "AI告警", "智能告警", "告警分布",
-            "巡查趋势", "智能巡检", "AI巡查"
+            "巡查趋势", "智能巡检", "AI巡查",
+            # emergency_aialert 并入的新子类型
+            "告警总览", "告警概览", "告警趋势", "告警走势", "累计告警",
+            "识别准确率", "算法类型", "预警明细", "管理预警", "环境预警",
+            "分类告警", "分类预警"
         ]
         if any(k in query for k in security_keywords):
             return True
@@ -194,6 +199,7 @@ class SecurityStatusHandler(IntentHandler):
         根据当前 slots 判断还缺哪些必填参数
         - alarm_list / patrol / device 必须有时间范围（MCP 传 {startTime, endTime}）
         - alarm_detail 必须有 alarm_id
+        - security_index / ai_overview 为无参实时查询，无需时间
         """
         missing = []
         event_type = slots.get("event_type", "alarm_list")
@@ -201,7 +207,7 @@ class SecurityStatusHandler(IntentHandler):
         if event_type == "alarm_detail":
             if not slots.get("alarm_id"):
                 missing.append("alarm_id")
-        else:
+        elif event_type not in ("security_index", "ai_overview"):
             if not slots.get("date"):
                 missing.append("date")
 

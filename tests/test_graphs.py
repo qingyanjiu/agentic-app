@@ -32,13 +32,16 @@ def run(coro):
 
 
 # ============================================================
-# 1. 正常查询路径：8 个域（安防 2 条：免时间的指数 + 带时间的告警列表）
+# 1. 正常查询路径：8 个域（安防 5 条：免时间的指数/总览 + 带时间的列表/趋势/明细）
 # ============================================================
 HAPPY_PATH_CASES = [
     ("person_status", {"query_type": "realtime"}),
     ("person_status", {"query_type": "structure"}),
     ("security_status", {"event_type": "security_index"}),
+    ("security_status", {"event_type": "ai_overview"}),
     ("security_status", {"event_type": "alarm_list", "date": SPAN_DATE}),
+    ("security_status", {"event_type": "ai_trend", "date": SPAN_DATE}),
+    ("security_status", {"event_type": "ai_alarm_list", "date": SPAN_DATE}),
     ("canteen_status", {"event_type": "dining_count", "date": SPAN_DATE}),
     ("canteen_status", {"event_type": "week_menu", "date": SPAN_DATE}),
     ("vehicle_status", {"query_type": "parking_space"}),
@@ -61,6 +64,8 @@ HAPPY_PATH_CASES = [
     ("device_status", {"query_type": "anfang_online"}),
     ("device_status", {"query_type": "gb_online"}),
     ("device_status", {"query_type": "mj_online"}),
+    ("compositive_overview", {"query_type": "basic_info"}),
+    ("compositive_overview", {"query_type": "device_health"}),
 ]
 
 
@@ -168,6 +173,7 @@ GUARD_CASES = [
     # 这里用「非法枚举值」验证守卫分支本身存在
     ("emergency_fire", {"query_type": "no_such_type"}),
     ("device_status", {"query_type": "no_such_type"}),
+    ("compositive_overview", {"query_type": "no_such_type"}),
 ]
 
 

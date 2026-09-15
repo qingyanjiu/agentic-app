@@ -36,6 +36,7 @@ ENERGY_STATUS_THRESHOLD = 0.65
 MEETING_STATUS_THRESHOLD = 0.65
 EMERGENCY_FIRE_STATUS_THRESHOLD = 0.65
 DEVICE_STATUS_THRESHOLD = 0.65
+COMPOSITIVE_OVERVIEW_STATUS_THRESHOLD = 0.65
 
 
 # ============================================================
@@ -576,6 +577,63 @@ SECURITY_STATUS_EXAMPLES = {
         "AI巡查抓拍的照片能看吗",
         "AI巡查事件多久更新一次",
         "已处理的AI巡查事件在哪里查",
+    ],
+
+    # AI 告警总览（ai_overview）：今日告警数/累计告警/算法类型数/识别准确率，无需时间
+    "ai_overview": [
+        "AI告警总览帮我看一下",
+        "今天的AI告警总览数据是多少",
+        "智能告警的整体概况怎么样",
+        "园区累计告警一共有多少条",
+        "今日告警数现在是多少",
+        "告警算法类型一共有几类",
+        "平台现在接入多少种告警算法",
+        "系统识别准确率大概是多少",
+        "AI告警概览的统计数据给我看下",
+        "智能告警总览里都有什么内容",
+        "今日告警和累计告警分别是多少",
+        "园区安防告警的整体情况如何",
+        "AI告警的整体数据能看下吗",
+        "智能预警的总体概况在哪里看",
+        "告警总览页面显示哪些指标",
+    ],
+
+    # AI 告警趋势（ai_trend）：近 7 天 / 近 30 天告警走势
+    "ai_trend": [
+        "最近一周的告警趋势怎么样",
+        "近七天的AI告警走势如何",
+        "近30天的告警数量变化趋势",
+        "近三十天的智能告警趋势帮我看看",
+        "这个月告警走势是上升还是下降",
+        "最近一个月的预警趋势如何",
+        "过去一周的告警走势给我分析下",
+        "近一周每天的告警数量变化大吗",
+        "最近一个月告警变化的趋势怎么样",
+        "AI告警趋势图能帮我调出来吗",
+        "近7天和近30天的告警趋势对比",
+        "最近告警是越来越多还是越来越少",
+        "上周和这周的告警趋势变化",
+        "近一个月告警数据的走势情况",
+        "智能告警最近趋势平稳吗",
+    ],
+
+    # 分类告警明细（ai_alarm_list）：安防/管理/环境预警分类列表
+    "ai_alarm_list": [
+        "管理预警的明细列表有哪些",
+        "环境预警最近有哪些记录",
+        "安防预警列表帮我看一下",
+        "分类告警明细都包含哪些内容",
+        "最近的预警分类明细能看吗",
+        "环境类预警都有哪些",
+        "管理类预警一共有多少条",
+        "把各类预警的明细列给我看看",
+        "安防类预警都有哪些记录",
+        "三类预警的明细分别是什么",
+        "预警明细列表在哪里能查",
+        "最近的分类预警情况怎么样",
+        "环境预警的明细数据能导出吗",
+        "管理预警和环境预警各有多少条",
+        "各类预警的详细列表给我看下",
     ],
 }
 
@@ -1419,6 +1477,69 @@ DEVICE_STATUS_EXAMPLES = {
 }
 
 # ============================================================
+# 综合态势总览模块的示例语料库（按子类型分组）
+# 每个 key 对应 extract_compositive_overview_slots 里的 query_type：
+#   basic_info    -> 园区基本信息（面积 / IoT设备总数 / 园区概况）
+#   device_health -> 设备健康度总览（健康分总览口径）
+#
+# 语料红线（docs/开发计划.md §2.3）：
+#   1. 严禁收录"多少人/车位/能耗/会议/安全指数"类问法，
+#      避免与 person/vehicle/energy/meeting/security 中心向量互相竞争；
+#   2. device_health 只写"设备健康度/健康分"总览问法，
+#      类别健康度（消防/空调/安防/广播/门禁 + 健康）仍归 device_status.category_health；
+#   3. 语料尽量带"总览/概况/整体"等总览限定词，拉开与设备态势的距离
+# ============================================================
+COMPOSITIVE_OVERVIEW_EXAMPLES = {
+    # 园区基本信息（basic_info）
+    "basic_info": [
+        "园区面积多大",
+        "园区占地面积",
+        "园区占地多少平方米",
+        "园区面积是多少",
+        "园区有多大",
+        "园区基本信息",
+        "园区概况",
+        "园区总体概况",
+        "综合态势概况",
+        "综合态势的基本信息",
+        "园区概况看一下",
+        "园区基本信息统计",
+        "园区基本数据",
+        "园区面积和设备总数",
+        "IoT设备总数",
+        "IoT设备总数多少",
+        "园区IoT设备有多少",
+        "iot设备总数",
+        "园区设备接入总数",
+        "园区设备总数",
+    ],
+
+    # 设备健康度总览（device_health）
+    "device_health": [
+        "设备健康度总览",
+        "设备健康度怎么样",
+        "设备健康分是多少",
+        "设备健康分多少",
+        "设备整体健康情况",
+        "设备整体健康状况",
+        "设备健康度概况",
+        "设备健康度概况看一下",
+        "综合态势的设备健康度",
+        "综合态势的设备健康情况",
+        "园区设备健康度",
+        "园区设备健康情况",
+        "设备健康总览",
+        "设备健康度数据",
+        "设备健康评分总览",
+        "设备整体健康度",
+        "设备健康情况如何",
+        "设备总体健康水平",
+        "设备健康度如何",
+        "设备健康情况怎么样",
+    ],
+}
+
+# ============================================================
 # 消防态势模块的示例语料库（按子类型分组）
 # 每个 key 对应 extract_emergency_fire_slots 里的 query_type：
 #   fire_assets     -> 消防设备台账（状态/压力液位/电量/倾角）
@@ -1624,9 +1745,29 @@ MEETING_STATUS_EXAMPLES = {
         "今天会议日程",
         "今天开会",
         "今天有什么会议",
-        "今日有哪些会",
+        # 会议室今日安排
         "会议室今日安排",
+        "今日安排有哪些呀",
+        "今天会议室安排啥",
+        "今日安排能看吗",
+        "会议室今天有会吗",
+        "今日都有哪些安排",
+        "看下今日安排呗",
+        "会议室今天忙吗",
+        "今天哪间有会呀",
+        "查下今天安排呗",
+
+        # 今日会议列表
         "今日会议列表",
+        "今日列表有吗",
+        "今日会议列表在哪",
+        "今日列表能看吗",
+        "今日都列了哪些会",
+        "看下今日会议列表",
+        "今日会议列表咋样",
+        "列表里今天有啥会",
+        "今日会议列表查下",
+        "有没有今日列表",
     ],
 
     # 一般会议统计（count）：兜底
@@ -2246,6 +2387,23 @@ class PersonStatusClassifier:
             center = np.mean(all_device, axis=0)
             self.device_center = center / np.linalg.norm(center)
 
+        # 11. 综合态势总览整体中心向量 + 子类型中心向量
+        self.overview_center = None
+        self.overview_sub_centers = {}
+        overview_vectors = []
+        for sub_type, examples in COMPOSITIVE_OVERVIEW_EXAMPLES.items():
+            vecs = self.model.encode(
+                examples, convert_to_numpy=True, normalize_embeddings=True
+            )
+            overview_vectors.append(vecs)
+            center = np.mean(vecs, axis=0)
+            self.overview_sub_centers[sub_type] = center / np.linalg.norm(center)
+
+        if overview_vectors:
+            all_overview = np.concatenate(overview_vectors, axis=0)
+            center = np.mean(all_overview, axis=0)
+            self.overview_center = center / np.linalg.norm(center)
+
         logger.info("[classifier] 意图识别模型加载完成")
 
     def _encode(self, query: str) -> np.ndarray:
@@ -2338,6 +2496,15 @@ class PersonStatusClassifier:
         logger.info(f"[classifier] query={query}, device_score={score:.4f}")
         return score >= threshold, score
 
+    def is_compositive_overview(self, query: str, threshold: float = COMPOSITIVE_OVERVIEW_STATUS_THRESHOLD) -> tuple:
+        """判断用户输入是否属于综合态势总览意图"""
+        if self.overview_center is None:
+            return False, 0.0
+        query_vec = self._encode(query)
+        score = float(np.dot(query_vec, self.overview_center))
+        logger.info(f"[classifier] query={query}, overview_score={score:.4f}")
+        return score >= threshold, score
+
     def classify_top_intent(self, query: str) -> tuple:
         """
         多意图判定：一次编码，分别算两个意图中心相似度，
@@ -2362,6 +2529,8 @@ class PersonStatusClassifier:
             if self.fire_center is not None else -1.0,
             "device_status": float(np.dot(query_vec, self.device_center))
             if self.device_center is not None else -1.0,
+            "compositive_overview": float(np.dot(query_vec, self.overview_center))
+            if self.overview_center is not None else -1.0,
         }
         best = max(scores, key=scores.get)
         best_score = scores[best]
@@ -2375,6 +2544,7 @@ class PersonStatusClassifier:
             "meeting_status": MEETING_STATUS_THRESHOLD,
             "emergency_fire": EMERGENCY_FIRE_STATUS_THRESHOLD,
             "device_status": DEVICE_STATUS_THRESHOLD,
+            "compositive_overview": COMPOSITIVE_OVERVIEW_STATUS_THRESHOLD,
         }.get(best, PERSON_STATUS_THRESHOLD)
         if best_score >= threshold:
             return best, best_score
@@ -2468,6 +2638,17 @@ class PersonStatusClassifier:
             if score > best_score:
                 best_type, best_score = sub_type, score
         logger.info(f"[classifier] query={query}, device_sub_type={best_type}, score={best_score:.4f}")
+        return best_type, best_score
+
+    def classify_compositive_overview_sub_type(self, query: str) -> tuple:
+        """综合态势总览子类型判定（basic_info / device_health）"""
+        query_vec = self._encode(query)
+        best_type, best_score = None, -1.0
+        for sub_type, center in self.overview_sub_centers.items():
+            score = float(np.dot(query_vec, center))
+            if score > best_score:
+                best_type, best_score = sub_type, score
+        logger.info(f"[classifier] query={query}, overview_sub_type={best_type}, score={best_score:.4f}")
         return best_type, best_score
 
 
@@ -2697,5 +2878,22 @@ async def classify_device_sub_type(query: str) -> tuple:
     return await loop.run_in_executor(
         None,
         classifier.classify_device_sub_type,
+        query
+    )
+
+
+async def classify_compositive_overview_sub_type(query: str) -> tuple:
+    """
+    异步判断综合态势总览的子类型（query_type）
+
+    :param query: 用户输入
+    :return: (query_type, 相似度分数)，例如 ("basic_info", 0.72)
+    """
+    classifier = await get_classifier()
+
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        None,
+        classifier.classify_compositive_overview_sub_type,
         query
     )

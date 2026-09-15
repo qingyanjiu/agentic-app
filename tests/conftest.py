@@ -40,6 +40,7 @@ GRAPH_MODULES = {
     "meeting_status": "graph.meeting_status_langgraph",
     "emergency_fire": "graph.emergency_fire_langgraph",
     "device_status": "graph.device_status_langgraph",
+    "compositive_overview": "graph.compositive_overview_langgraph",
 }
 
 
@@ -92,6 +93,10 @@ DOMAIN_TOOL_RESULTS = {
         "security:getSecurityIndex": '{"code":200,"rows":[{"index":92.5}]}',
         "security:getSecurityAlarmList": '{"code":200,"total":1,"rows":[{"alarmName":"周界入侵","areaName":"大门口"}]}',
         "security:getPatrolMission": '{"code":200,"total":2,"rows":[{"missionName":"上午巡查"}]}',
+        # emergency_aialert 并入的新工具（开发计划 §2.4）
+        "security:getAlarmView": '{"code":200,"todayAlarmCount":5,"totalAlarmCount":320,"algorithmTypeCount":8,"accuracy":95.2}',
+        "security:getAlertSituation": '{"code":200,"rows":[{"date":"2026-09-14","count":6},{"date":"2026-09-15","count":3}]}',
+        "security:getAlarmListWithType": '{"code":200,"rows":[{"type":"管理预警","count":4},{"type":"环境预警","count":2}]}',
     },
     "canteen_status": {
         "canteen:getDiningCount": '{"code":200,"total":1,"rows":[{"date":"2026-09-10","count":321}]}',
@@ -147,6 +152,15 @@ DOMAIN_TOOL_RESULTS = {
             '{"code":200,"online":45,"total":50}',
         "device:getMjOnlinePercentage":
             '{"code":200,"online":70,"total":72}',
+    },
+    "compositive_overview": {
+        "overview:getBasicInfo":
+            '{"code":200,"centerArea":320,"iotDeviceCount":1200}',
+        "overview:getDeviceHealth":
+            '{"code":200,"rows":[{"name":"消防设备","score":92,'
+            '"onlineRate":{"current":98,"total":100,"percent":98},'
+            '"maintenanceRate":{"percent":90},'
+            '"lifeRate":{"current":85,"total":100,"percent":85}}]}',
     },
 }
 

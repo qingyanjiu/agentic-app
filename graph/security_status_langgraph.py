@@ -20,6 +20,9 @@ logger = logging.getLogger(__name__)
 #   security:getInspectionTrend      -> 安全巡查趋势（date 可选）
 #   security:getAiInspectionEvents   -> AI 巡查事件列表（startTime/endTime 可选）
 #   security:getDeviceDetail         -> 摄像头/安防设备详情（channelCodeList 可选）
+#   security:getAlarmView            -> AI 告警总览：今日告警数/累计告警/算法类型数/识别准确率（无参）
+#   security:getAlertSituation       -> AI 告警趋势：近 7 天 / 近 30 天（startTime/endTime 可选）
+#   security:getAlarmListWithType    -> 分类告警明细列表：安防/管理/环境预警（startTime/endTime 可选）
 # 说明：
 #   - Java 端无单独的"告警详情"工具，alarm_detail 用 getAiInspectionEvents 兜底
 #   - 原 intrusion/video/access/fire/abnormal 子类型平台后端无对应接口，不予实现
@@ -33,6 +36,9 @@ _JAVA_TOOL_MAP = {
     "ai_alert": "security:getAiAlertSituation",
     "inspection_trend": "security:getInspectionTrend",
     "ai_inspection": "security:getAiInspectionEvents",
+    "ai_overview": "security:getAlarmView",
+    "ai_trend": "security:getAlertSituation",
+    "ai_alarm_list": "security:getAlarmListWithType",
 }
 
 
@@ -65,6 +71,9 @@ def _query_type_label(event_type: str) -> str:
         "ai_alert": "AI 告警态势",
         "inspection_trend": "巡查趋势",
         "ai_inspection": "AI 巡查事件",
+        "ai_overview": "AI 告警总览",
+        "ai_trend": "AI 告警趋势",
+        "ai_alarm_list": "分类告警明细",
     }.get(event_type, "数据")
 
 
@@ -94,6 +103,9 @@ async def _llm_format_security_result(
             "ai_alert": "按告警类别列出数量和占比；",
             "inspection_trend": "按时间段说明正常/异常巡查数量情况；",
             "ai_inspection": "逐条列出 AI 巡查发现的事件，包含类型、等级、时间、位置、处理状态；",
+            "ai_overview": "给出今日告警数、累计告警数、算法类型数、识别准确率等关键数字；",
+            "ai_trend": "按日期说明告警数量的变化趋势，指出上升/下降；",
+            "ai_alarm_list": "按分类（安防/管理/环境预警）汇总或逐条列出告警，包含名称、时间、位置、处理状态；",
         }.get(event_type, "把返回数据整理清楚；")
 
         prompt = (
@@ -203,12 +215,12 @@ def init_state(state: SecurityStatusGraphState) -> dict:
 def check_missing_params(state: SecurityStatusGraphState) -> dict:
     """
     检查缺失参数
-    除 security_index（园区实时安全指数）外，其余查询需要时间范围
+    除 security_index / ai_overview（无参实时查询）外，其余查询需要时间范围
     """
     slots = state["slots"]
     missing = []
 
-    if slots.get("event_type") != "security_index" and not slots.get("date"):
+    if slots.get("event_type") not in ("security_index", "ai_overview") and not slots.get("date"):
         missing.append("date")
 
     return {"missing_params": missing}
@@ -379,14 +391,16 @@ def make_call_tool_node(tools: dict, llm=None):
 
         # 按 Java 工具签名组装参数
         date_slots = state["slots"].get("date", {})
-        if event_type in ("alarm_list", "patrol", "device", "security_index"):
-            # 无参工具：getSecurityAlarmList / getPatrolMission / getDeviceDetail / getSecurityIndex
+        if event_type in ("alarm_list", "patrol", "device", "security_index", "ai_overview"):
+            # 无参工具：getSecurityAlarmList / getPatrolMission / getDeviceDetail /
+            #           getSecurityIndex / getAlarmView
             tool_args = {}
         elif event_type == "inspection_trend":
             # getInspectionTrend 只接受 date（yyyy-MM-dd）
             tool_args = {"date": (date_slots.get("start_time") or "")[:10]}
         else:
-            # alarm_detail / ai_alert / ai_inspection：getAiInspectionEvents / getAiAlertSituation
+            # alarm_detail / ai_alert / ai_inspection / ai_trend / ai_alarm_list：
+            # getAiInspectionEvents / getAiAlertSituation / getAlertSituation / getAlarmListWithType
             tool_args = {
                 "startTime": date_slots.get("start_time"),
                 "endTime": date_slots.get("end_time"),

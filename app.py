@@ -21,7 +21,7 @@ import asyncio
 
 # 新增：人员态势/安防态势/食堂管理/车辆态势/信息发布/能源态势/会议管理意图识别相关导入
 # classify_security_sub_type：安防态势子类型（event_type）判定，供安防 handler 追问/兜底使用
-from agent.intent import classify_intent, classify_security_sub_type, PersonStatusHandler, SecurityStatusHandler, CanteenStatusHandler, VehicleStatusHandler, InformationStatusHandler, EnergyStatusHandler, MeetingStatusHandler, EmergencyFireHandler, DeviceStatusHandler
+from agent.intent import classify_intent, classify_security_sub_type, PersonStatusHandler, SecurityStatusHandler, CanteenStatusHandler, VehicleStatusHandler, InformationStatusHandler, EnergyStatusHandler, MeetingStatusHandler, EmergencyFireHandler, DeviceStatusHandler, CompositiveOverviewHandler
 from graph.person_status_langgraph import build_person_status_graph, load_person_status_tools
 from graph.security_status_langgraph import build_security_status_graph, load_security_tools
 from graph.canteen_status_langgraph import build_canteen_status_graph, load_canteen_tools
@@ -31,6 +31,7 @@ from graph.energy_status_langgraph import build_energy_status_graph, load_energy
 from graph.meeting_status_langgraph import build_meeting_status_graph, load_meeting_status_tools
 from graph.emergency_fire_langgraph import build_emergency_fire_graph, load_emergency_fire_tools
 from graph.device_status_langgraph import build_device_status_graph, load_device_status_tools
+from graph.compositive_overview_langgraph import build_compositive_overview_graph, load_compositive_overview_tools
 from memory.session_state import session_state, IntentState
 # from asr.voice_asr import get_recognizer, VoiceRecognizer
 # from asr.text_corrector import get_corrector, TextCorrector
@@ -146,7 +147,7 @@ async def run_person_status_graph(websocket, state, user_id, session_id):
       1. 把 IntentState(dataclass) 转成图需要的 PersonStatusGraphState(TypedDict)
       2. ainvoke 跑图（call_tool 是异步节点，必须用 ainvoke）
       3. 把图更新后的 slots/ask_count/last_question 回写到会话状态
-      4. 发送 events；有 ask 事件则保留状态等下一轮，否则清空
+      4. 发送 events；有 ask 事件则保留状态等下一轮，否则标记 done 保留（供省略式追问继承）
     """
     graph = await get_person_status_graph()
 
@@ -188,7 +189,12 @@ async def run_person_status_graph(websocket, state, user_id, session_id):
     if keep_state:
         session_state.set(user_id, session_id, state)
     else:
-        session_state.clear(user_id, session_id)
+        # 查询已结束（已出答案或报错）：不清空状态，标记 done 留在会话中，
+        # 供下一轮「昨天呢 / 那上周呢」类省略式追问拼接上下文重新分类（情况 1.5）；
+        # 靠 SessionStateManager 的 300 秒超时自动过期
+        state.done = True
+        state.missing_params = []
+        session_state.set(user_id, session_id, state)
 
 
 # ============================================================
@@ -213,7 +219,7 @@ async def run_security_status_graph(websocket, state, user_id, session_id):
       1. 把 IntentState(dataclass) 转成图需要的 SecurityStatusGraphState(TypedDict)
       2. ainvoke 跑图（call_tool 是异步节点，必须用 ainvoke）
       3. 把图更新后的 slots/ask_count/last_question 回写到会话状态
-      4. 发送 events；有 ask 事件则保留状态等下一轮，否则清空
+      4. 发送 events；有 ask 事件则保留状态等下一轮，否则标记 done 保留（供省略式追问继承）
     """
     graph = await get_security_status_graph()
 
@@ -255,7 +261,12 @@ async def run_security_status_graph(websocket, state, user_id, session_id):
     if keep_state:
         session_state.set(user_id, session_id, state)
     else:
-        session_state.clear(user_id, session_id)
+        # 查询已结束（已出答案或报错）：不清空状态，标记 done 留在会话中，
+        # 供下一轮「昨天呢 / 那上周呢」类省略式追问拼接上下文重新分类（情况 1.5）；
+        # 靠 SessionStateManager 的 300 秒超时自动过期
+        state.done = True
+        state.missing_params = []
+        session_state.set(user_id, session_id, state)
 
 
 # ============================================================
@@ -280,7 +291,7 @@ async def run_canteen_status_graph(websocket, state, user_id, session_id):
       1. 把 IntentState(dataclass) 转成图需要的 CanteenStatusGraphState(TypedDict)
       2. ainvoke 跑图（call_tool 是异步节点，必须用 ainvoke）
       3. 把图更新后的 slots/ask_count/last_question 回写到会话状态
-      4. 发送 events；有 ask 事件则保留状态等下一轮，否则清空
+      4. 发送 events；有 ask 事件则保留状态等下一轮，否则标记 done 保留（供省略式追问继承）
     """
     graph = await get_canteen_status_graph()
 
@@ -322,7 +333,12 @@ async def run_canteen_status_graph(websocket, state, user_id, session_id):
     if keep_state:
         session_state.set(user_id, session_id, state)
     else:
-        session_state.clear(user_id, session_id)
+        # 查询已结束（已出答案或报错）：不清空状态，标记 done 留在会话中，
+        # 供下一轮「昨天呢 / 那上周呢」类省略式追问拼接上下文重新分类（情况 1.5）；
+        # 靠 SessionStateManager 的 300 秒超时自动过期
+        state.done = True
+        state.missing_params = []
+        session_state.set(user_id, session_id, state)
 
 # ============================================================
 # 车辆态势 LangGraph 执行助手
@@ -346,7 +362,7 @@ async def run_vehicle_status_graph(websocket, state, user_id, session_id):
       1. 把 IntentState(dataclass) 转成图需要的 VehicleStatusGraphState(TypedDict)
       2. ainvoke 跑图
       3. 把图更新后的 slots/ask_count/last_question 回写到会话状态
-      4. 发送 events；有 ask 事件则保留状态等下一轮，否则清空
+      4. 发送 events；有 ask 事件则保留状态等下一轮，否则标记 done 保留（供省略式追问继承）
     """
     graph = await get_vehicle_status_graph()
 
@@ -388,7 +404,12 @@ async def run_vehicle_status_graph(websocket, state, user_id, session_id):
     if keep_state:
         session_state.set(user_id, session_id, state)
     else:
-        session_state.clear(user_id, session_id)
+        # 查询已结束（已出答案或报错）：不清空状态，标记 done 留在会话中，
+        # 供下一轮「昨天呢 / 那上周呢」类省略式追问拼接上下文重新分类（情况 1.5）；
+        # 靠 SessionStateManager 的 300 秒超时自动过期
+        state.done = True
+        state.missing_params = []
+        session_state.set(user_id, session_id, state)
 
 
 # ============================================================
@@ -413,7 +434,7 @@ async def run_information_status_graph(websocket, state, user_id, session_id):
       1. 把 IntentState(dataclass) 转成图需要的 InformationStatusGraphState(TypedDict)
       2. ainvoke 跑图
       3. 把图更新后的 slots/ask_count/last_question 回写到会话状态
-      4. 发送 events；有 ask 事件则保留状态等下一轮，否则清空
+      4. 发送 events；有 ask 事件则保留状态等下一轮，否则标记 done 保留（供省略式追问继承）
     """
     graph = await get_information_status_graph()
 
@@ -455,7 +476,12 @@ async def run_information_status_graph(websocket, state, user_id, session_id):
     if keep_state:
         session_state.set(user_id, session_id, state)
     else:
-        session_state.clear(user_id, session_id)
+        # 查询已结束（已出答案或报错）：不清空状态，标记 done 留在会话中，
+        # 供下一轮「昨天呢 / 那上周呢」类省略式追问拼接上下文重新分类（情况 1.5）；
+        # 靠 SessionStateManager 的 300 秒超时自动过期
+        state.done = True
+        state.missing_params = []
+        session_state.set(user_id, session_id, state)
 
 
 # ============================================================
@@ -480,7 +506,7 @@ async def run_energy_status_graph(websocket, state, user_id, session_id):
       1. 把 IntentState(dataclass) 转成图需要的 EnergyStatusGraphState(TypedDict)
       2. ainvoke 跑图
       3. 把图更新后的 slots/ask_count/last_question 回写到会话状态
-      4. 发送 events；有 ask 事件则保留状态等下一轮，否则清空
+      4. 发送 events；有 ask 事件则保留状态等下一轮，否则标记 done 保留（供省略式追问继承）
     """
     graph = await get_energy_status_graph()
 
@@ -522,7 +548,12 @@ async def run_energy_status_graph(websocket, state, user_id, session_id):
     if keep_state:
         session_state.set(user_id, session_id, state)
     else:
-        session_state.clear(user_id, session_id)
+        # 查询已结束（已出答案或报错）：不清空状态，标记 done 留在会话中，
+        # 供下一轮「昨天呢 / 那上周呢」类省略式追问拼接上下文重新分类（情况 1.5）；
+        # 靠 SessionStateManager 的 300 秒超时自动过期
+        state.done = True
+        state.missing_params = []
+        session_state.set(user_id, session_id, state)
 
 
 # ============================================================
@@ -547,7 +578,7 @@ async def run_meeting_status_graph(websocket, state, user_id, session_id):
       1. 把 IntentState(dataclass) 转成图需要的 MeetingStatusGraphState(TypedDict)
       2. ainvoke 跑图
       3. 把图更新后的 slots/ask_count/last_question 回写到会话状态
-      4. 发送 events；有 ask 事件则保留状态等下一轮，否则清空
+      4. 发送 events；有 ask 事件则保留状态等下一轮，否则标记 done 保留（供省略式追问继承）
     """
     graph = await get_meeting_status_graph()
 
@@ -589,7 +620,12 @@ async def run_meeting_status_graph(websocket, state, user_id, session_id):
     if keep_state:
         session_state.set(user_id, session_id, state)
     else:
-        session_state.clear(user_id, session_id)
+        # 查询已结束（已出答案或报错）：不清空状态，标记 done 留在会话中，
+        # 供下一轮「昨天呢 / 那上周呢」类省略式追问拼接上下文重新分类（情况 1.5）；
+        # 靠 SessionStateManager 的 300 秒超时自动过期
+        state.done = True
+        state.missing_params = []
+        session_state.set(user_id, session_id, state)
 
 
 # ============================================================
@@ -614,7 +650,7 @@ async def run_emergency_fire_graph(websocket, state, user_id, session_id):
       1. 把 IntentState(dataclass) 转成图需要的 EmergencyFireGraphState(TypedDict)
       2. ainvoke 跑图
       3. 把图更新后的 slots/ask_count/last_question 回写到会话状态
-      4. 发送 events；有 ask 事件则保留状态等下一轮，否则清空
+      4. 发送 events；有 ask 事件则保留状态等下一轮，否则标记 done 保留（供省略式追问继承）
     """
     graph = await get_emergency_fire_graph()
 
@@ -656,7 +692,12 @@ async def run_emergency_fire_graph(websocket, state, user_id, session_id):
     if keep_state:
         session_state.set(user_id, session_id, state)
     else:
-        session_state.clear(user_id, session_id)
+        # 查询已结束（已出答案或报错）：不清空状态，标记 done 留在会话中，
+        # 供下一轮「昨天呢 / 那上周呢」类省略式追问拼接上下文重新分类（情况 1.5）；
+        # 靠 SessionStateManager 的 300 秒超时自动过期
+        state.done = True
+        state.missing_params = []
+        session_state.set(user_id, session_id, state)
 
 
 # ============================================================
@@ -681,7 +722,7 @@ async def run_device_status_graph(websocket, state, user_id, session_id):
       1. 把 IntentState(dataclass) 转成图需要的 DeviceStatusGraphState(TypedDict)
       2. ainvoke 跑图
       3. 把图更新后的 slots/ask_count/last_question 回写到会话状态
-      4. 发送 events；有 ask 事件则保留状态等下一轮，否则清空
+      4. 发送 events；有 ask 事件则保留状态等下一轮，否则标记 done 保留（供省略式追问继承）
     """
     graph = await get_device_status_graph()
 
@@ -723,7 +764,85 @@ async def run_device_status_graph(websocket, state, user_id, session_id):
     if keep_state:
         session_state.set(user_id, session_id, state)
     else:
-        session_state.clear(user_id, session_id)
+        # 查询已结束（已出答案或报错）：不清空状态，标记 done 留在会话中，
+        # 供下一轮「昨天呢 / 那上周呢」类省略式追问拼接上下文重新分类（情况 1.5）；
+        # 靠 SessionStateManager 的 300 秒超时自动过期
+        state.done = True
+        state.missing_params = []
+        session_state.set(user_id, session_id, state)
+
+
+# ============================================================
+# 综合态势总览 LangGraph 执行助手
+# 与人员/安防/食堂/车辆/信息发布/能源态势/会议管理/消防态势/设备态势对称：
+# 懒加载图，用图执行综合态势总览流程
+# ============================================================
+_compositive_overview_graph = None
+
+async def get_compositive_overview_graph():
+    """懒加载：首次调用时从 MCP 加载综合态势总览工具并编译图，之后复用"""
+    global _compositive_overview_graph
+    if _compositive_overview_graph is None:
+        tools = await load_compositive_overview_tools()
+        # 传入 llm，让 call_tool 节点用 LLM 组织 MCP 返回生成回答
+        _compositive_overview_graph = build_compositive_overview_graph(tools, llm=llm)
+    return _compositive_overview_graph
+
+
+async def run_compositive_overview_graph(websocket, state, user_id, session_id):
+    """
+    用 LangGraph 图执行综合态势总览流程（与其它态势域对称）：
+      1. 把 IntentState(dataclass) 转成图需要的 CompositiveOverviewGraphState(TypedDict)
+      2. ainvoke 跑图
+      3. 把图更新后的 slots/ask_count/last_question 回写到会话状态
+      4. 发送 events；有 ask 事件则保留状态等下一轮，否则标记 done 保留（供省略式追问继承）
+    """
+    graph = await get_compositive_overview_graph()
+
+    # 组装喂给图的输入状态
+    graph_input = {
+        "slots": state.slots,
+        "missing_params": state.missing_params,
+        "ask_count": state.ask_count,
+        "unrelated_count": state.unrelated_count,
+        "last_question": state.last_question,
+        "original_query": state.original_query,
+        "answer": None,
+        "error": None,
+        "done": state.done,
+        "events": [],
+    }
+    print(f"[GRAPH INPUT] user={user_id}, session={session_id}")
+    print(json.dumps(graph_input, ensure_ascii=False, default=str))
+
+    final_state = await graph.ainvoke(graph_input)
+
+    print(f"[GRAPH OUTPUT] user={user_id}, session={session_id}")
+    print(json.dumps(final_state, ensure_ascii=False, default=str))
+
+    # 图内多轮追问会更新这些字段，回写供下一轮 handle_reply 使用
+    state.slots = final_state["slots"]
+    state.missing_params = final_state["missing_params"]
+    state.ask_count = final_state["ask_count"]
+    state.last_question = final_state["last_question"]
+
+    # 发送事件；存在 ask 事件说明进入追问，保留状态等待用户补充
+    keep_state = False
+    for chunk in final_state["events"]:
+        text = _safe_serialize(chunk)
+        await websocket.send_text(json.dumps(text, ensure_ascii=False))
+        if chunk.get("event") == "custom" and chunk.get("data", {}).get("type") == "ask":
+            keep_state = True
+
+    if keep_state:
+        session_state.set(user_id, session_id, state)
+    else:
+        # 查询已结束（已出答案或报错）：不清空状态，标记 done 留在会话中，
+        # 供下一轮「昨天呢 / 那上周呢」类省略式追问拼接上下文重新分类（情况 1.5）；
+        # 靠 SessionStateManager 的 300 秒超时自动过期
+        state.done = True
+        state.missing_params = []
+        session_state.set(user_id, session_id, state)
 
 
 async def safe_send_message(websocket: WebSocket, message: dict):
@@ -913,6 +1032,7 @@ MODULE_HANDLERS = {
     "emergency_fire": EmergencyFireHandler,
     "meeting_status": MeetingStatusHandler,
     "device_status": DeviceStatusHandler,
+    "compositive_overview": CompositiveOverviewHandler,
 }
 
 MODULE_RUNNERS = {
@@ -925,6 +1045,7 @@ MODULE_RUNNERS = {
     "emergency_fire": run_emergency_fire_graph,
     "meeting_status": run_meeting_status_graph,
     "device_status": run_device_status_graph,
+    "compositive_overview": run_compositive_overview_graph,
 }
 
 
@@ -933,7 +1054,7 @@ async def start_module_flow(websocket, query: str, module: str, user_id: str, se
     启动某业务域的全新查询流程（与情况 2 的新意图分支同构）：
       1. 用对应 handler 抽取初始 slots 与缺失参数
       2. 创建会话状态
-      3. 用对应 LangGraph 图执行（内部会回写/清理会话状态）
+      3. 用对应 LangGraph 图执行（内部会回写/保留会话状态）
     """
     handler = MODULE_HANDLERS[module]()
     slots = await handler.extract_slots(query)
@@ -1028,15 +1149,24 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
             # ============================================================
             active_state = session_state.get(user_id, session_id)
 
+            # 区分两种留状态的情况：
+            #   追问态   = 有状态且未完成（系统在等用户补充参数）→ 走情况 1 追问分支
+            #   已完成态 = 上一轮查询刚结束（done=True，见各 run_xxx_graph 尾部）
+            #              → 不进追问分支，仅在情况 1.5 里充当省略式追问的上下文
+            is_waiting = bool(
+                active_state and not active_state.done
+                and active_state.module in ("person_status", "security_status", "canteen_status", "vehicle_status", "information_status", "energy_status", "meeting_status", "emergency_fire", "device_status", "compositive_overview")
+            )
+
             # 预计算顶层意图（人员态势 / 安防态势 / 食堂管理 / 车辆态势 / 信息发布 / 能源态势 / 会议管理 / 消防态势 / other），只算一次
             # 有进行中任务时不调用模型，避免追问轮重复编码
-            if active_state and active_state.module in ("person_status", "security_status", "canteen_status", "vehicle_status", "information_status", "energy_status", "meeting_status", "emergency_fire", "device_status"):
+            if is_waiting:
                 top_intent = None
             else:
                 top_intent = (await classify_intent(query))["intent"]
 
             # 情况 1：当前有进行中的追问状态（人员态势 / 安防态势 / 食堂管理 / 车辆态势 / 信息发布 / 能源态势 / 会议管理 / 消防态势）
-            if active_state and active_state.module in ("person_status", "security_status", "canteen_status", "vehicle_status", "information_status", "energy_status", "meeting_status", "emergency_fire", "device_status"):
+            if is_waiting:
                 print("[DEBUG] 进入追问分支, module:", active_state.module)
 
                 # 按模块选择对应 handler（人员态势 / 安防态势 / 食堂管理 / 车辆态势 / 信息发布 / 能源态势 / 会议管理 / 消防态势）
@@ -1056,6 +1186,8 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
                     handler = EmergencyFireHandler()
                 elif active_state.module == "device_status":
                     handler = DeviceStatusHandler()
+                elif active_state.module == "compositive_overview":
+                    handler = CompositiveOverviewHandler()
                 else:
                     handler = MeetingStatusHandler()
                 
@@ -1118,33 +1250,50 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
                     session_state.set(user_id, session_id, result["state"])
                     
                     if active_state.module == "person_status":
-                        # 用 LangGraph 图执行人员态势流程（内部会回写/清理会话状态）
+                        # 用 LangGraph 图执行人员态势流程（内部会回写/保留会话状态）
                         await run_person_status_graph(websocket, result["state"], user_id, session_id)
                     elif active_state.module == "security_status":
-                        # 用 LangGraph 图执行安防态势流程（内部会回写/清理会话状态）
+                        # 用 LangGraph 图执行安防态势流程（内部会回写/保留会话状态）
                         await run_security_status_graph(websocket, result["state"], user_id, session_id)
                     elif active_state.module == "canteen_status":
-                        # 用 LangGraph 图执行食堂管理流程（内部会回写/清理会话状态）
+                        # 用 LangGraph 图执行食堂管理流程（内部会回写/保留会话状态）
                         await run_canteen_status_graph(websocket, result["state"], user_id, session_id)
                     elif active_state.module == "vehicle_status":
-                        # 用 LangGraph 图执行车辆态势流程（内部会回写/清理会话状态）
+                        # 用 LangGraph 图执行车辆态势流程（内部会回写/保留会话状态）
                         await run_vehicle_status_graph(websocket, result["state"], user_id, session_id)
                     elif active_state.module == "information_status":
-                        # 用 LangGraph 图执行信息发布流程（内部会回写/清理会话状态）
+                        # 用 LangGraph 图执行信息发布流程（内部会回写/保留会话状态）
                         await run_information_status_graph(websocket, result["state"], user_id, session_id)
                     elif active_state.module == "energy_status":
-                        # 用 LangGraph 图执行能源态势流程（内部会回写/清理会话状态）
+                        # 用 LangGraph 图执行能源态势流程（内部会回写/保留会话状态）
                         await run_energy_status_graph(websocket, result["state"], user_id, session_id)
                     elif active_state.module == "emergency_fire":
-                        # 用 LangGraph 图执行消防态势流程（内部会回写/清理会话状态）
+                        # 用 LangGraph 图执行消防态势流程（内部会回写/保留会话状态）
                         await run_emergency_fire_graph(websocket, result["state"], user_id, session_id)
                     elif active_state.module == "device_status":
-                        # 用 LangGraph 图执行设备态势流程（内部会回写/清理会话状态）
+                        # 用 LangGraph 图执行设备态势流程（内部会回写/保留会话状态）
                         await run_device_status_graph(websocket, result["state"], user_id, session_id)
+                    elif active_state.module == "compositive_overview":
+                        # 用 LangGraph 图执行综合态势总览流程（内部会回写/保留会话状态）
+                        await run_compositive_overview_graph(websocket, result["state"], user_id, session_id)
                     else:
-                        # 用 LangGraph 图执行会议管理流程（内部会回写/清理会话状态）
+                        # 用 LangGraph 图执行会议管理流程（内部会回写/保留会话状态）
                         await run_meeting_status_graph(websocket, result["state"], user_id, session_id)
 
+                    continue  # 跳过原有 pipeline
+
+            # 情况 1.5：上一轮查询已完成（done=True）且本轮识别不出业务意图（other）
+            # → 视为省略式追问（如「昨天呢」「那上周呢」）：
+            #   用上一轮原问题拼接本轮输入重新分类，命中业务域则按全新流程执行；
+            #   仍未命中则不 continue，掉到下方原有 pipeline
+            elif top_intent == "other" and active_state is not None and active_state.done:
+                merged_query = f"{active_state.original_query} {query}"
+                merged_intent = (await classify_intent(merged_query))["intent"]
+                if merged_intent in MODULE_HANDLERS:
+                    logging.info(
+                        f"[省略式追问] 拼接上轮问题({active_state.module})重新分类命中 {merged_intent}，本轮输入：{query}"
+                    )
+                    await start_module_flow(websocket, merged_query, merged_intent, user_id, session_id)
                     continue  # 跳过原有 pipeline
 
             # 情况 2：没有进行中状态，但新意图属于人员态势
@@ -1171,7 +1320,7 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
                 )
                 session_state.set(user_id, session_id, state)
                 
-                # 用 LangGraph 图执行人员态势流程（内部会回写/清理会话状态）
+                # 用 LangGraph 图执行人员态势流程（内部会回写/保留会话状态）
                 await run_person_status_graph(websocket, state, user_id, session_id)
 
                 continue  # 跳过原有 pipeline
@@ -1200,7 +1349,7 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
                 )
                 session_state.set(user_id, session_id, state)
 
-                # 用 LangGraph 图执行安防态势流程（内部会回写/清理会话状态）
+                # 用 LangGraph 图执行安防态势流程（内部会回写/保留会话状态）
                 await run_security_status_graph(websocket, state, user_id, session_id)
 
                 continue  # 跳过原有 pipeline
@@ -1229,7 +1378,7 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
                 )
                 session_state.set(user_id, session_id, state)
 
-                # 用 LangGraph 图执行食堂管理流程（内部会回写/清理会话状态）
+                # 用 LangGraph 图执行食堂管理流程（内部会回写/保留会话状态）
                 await run_canteen_status_graph(websocket, state, user_id, session_id)
 
                 continue  # 跳过原有 pipeline
@@ -1258,7 +1407,7 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
                 )
                 session_state.set(user_id, session_id, state)
 
-                # 用 LangGraph 图执行车辆态势流程（内部会回写/清理会话状态）
+                # 用 LangGraph 图执行车辆态势流程（内部会回写/保留会话状态）
                 await run_vehicle_status_graph(websocket, state, user_id, session_id)
 
                 continue  # 跳过原有 pipeline
@@ -1287,7 +1436,7 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
                 )
                 session_state.set(user_id, session_id, state)
 
-                # 用 LangGraph 图执行信息发布流程（内部会回写/清理会话状态）
+                # 用 LangGraph 图执行信息发布流程（内部会回写/保留会话状态）
                 await run_information_status_graph(websocket, state, user_id, session_id)
 
                 continue  # 跳过原有 pipeline
@@ -1316,7 +1465,7 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
                 )
                 session_state.set(user_id, session_id, state)
 
-                # 用 LangGraph 图执行能源态势流程（内部会回写/清理会话状态）
+                # 用 LangGraph 图执行能源态势流程（内部会回写/保留会话状态）
                 await run_energy_status_graph(websocket, state, user_id, session_id)
 
                 continue  # 跳过原有 pipeline
@@ -1345,7 +1494,7 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
                 )
                 session_state.set(user_id, session_id, state)
 
-                # 用 LangGraph 图执行会议管理流程（内部会回写/清理会话状态）
+                # 用 LangGraph 图执行会议管理流程（内部会回写/保留会话状态）
                 await run_meeting_status_graph(websocket, state, user_id, session_id)
 
                 continue  # 跳过原有 pipeline
@@ -1374,7 +1523,7 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
                 )
                 session_state.set(user_id, session_id, state)
 
-                # 用 LangGraph 图执行消防态势流程（内部会回写/清理会话状态）
+                # 用 LangGraph 图执行消防态势流程（内部会回写/保留会话状态）
                 await run_emergency_fire_graph(websocket, state, user_id, session_id)
 
                 continue  # 跳过原有 pipeline
@@ -1403,8 +1552,37 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
                 )
                 session_state.set(user_id, session_id, state)
 
-                # 用 LangGraph 图执行设备态势流程（内部会回写/清理会话状态）
+                # 用 LangGraph 图执行设备态势流程（内部会回写/保留会话状态）
                 await run_device_status_graph(websocket, state, user_id, session_id)
+
+                continue  # 跳过原有 pipeline
+
+            # 情况 2.9：没有进行中状态，但新意图属于综合态势总览
+            elif top_intent == "compositive_overview":
+                print("[DEBUG] 进入综合态势总览新意图分支, query:", query)
+
+                handler = CompositiveOverviewHandler()
+
+                # 从用户输入中抽取初始 slots
+                slots = await handler.extract_slots(query)
+
+                # 判断初始 slots 是否完整
+                missing = handler._get_missing_params(slots)
+
+                # 创建新的会话状态
+                state = IntentState(
+                    module="compositive_overview",
+                    slots=slots,
+                    missing_params=missing,
+                    ask_count=0,
+                    unrelated_count=0,
+                    original_query=query,
+                    done=False
+                )
+                session_state.set(user_id, session_id, state)
+
+                # 用 LangGraph 总览图执行综合态势总览流程（内部会回写/保留会话状态）
+                await run_compositive_overview_graph(websocket, state, user_id, session_id)
 
                 continue  # 跳过原有 pipeline
 

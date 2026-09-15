@@ -19,6 +19,7 @@ from agent.intent.slots import (
     extract_emergency_fire_slots,
     extract_meeting_status_slots,
     extract_device_status_slots,
+    extract_compositive_overview_slots,
 )
 
 
@@ -68,6 +69,14 @@ class TestSecuritySlots:
             ("这条告警的详情是什么", "alarm_detail"),
             ("摄像头设备状态怎么样", "device"),
             ("本周巡查趋势", "inspection_trend"),
+            # emergency_aialert 并入的新子类型（开发计划 §2.4）
+            ("AI告警总览帮我看一下", "ai_overview"),
+            ("园区累计告警有多少条", "ai_overview"),
+            ("系统识别准确率是多少", "ai_overview"),
+            ("近30天的告警数量变化趋势", "ai_trend"),
+            ("最近一周的告警走势如何", "ai_trend"),
+            ("管理预警的明细列表有哪些", "ai_alarm_list"),
+            ("环境预警最近有哪些记录", "ai_alarm_list"),
         ],
     )
     def test_event_type(self, query, expected):
@@ -256,6 +265,32 @@ class TestDeviceSlots:
             ("广播设备在线率", "gb_online"),
             ("门禁设备在线率", "mj_online"),
             ("门禁在线率", "mj_online"),
+        ],
+    )
+    def test_query_type(self, query, expected):
+        assert self.EXTRACT(query)["query_type"] == expected
+
+
+# ============================================================
+# 综合态势总览
+# 语料红线（docs/开发计划.md §2.3）：
+#   人车/能耗/会议/安全指数问法不进本模块，由既有域承接；
+#   device_health 只收"健康度/健康分"总览口径
+# ============================================================
+class TestCompositiveOverviewSlots:
+    EXTRACT = staticmethod(extract_compositive_overview_slots)
+
+    @pytest.mark.parametrize(
+        "query,expected",
+        [
+            ("园区面积多大", "basic_info"),
+            ("园区占地面积多少", "basic_info"),
+            ("园区概况", "basic_info"),
+            ("IoT设备总数多少", "basic_info"),
+            ("园区设备总数", "basic_info"),
+            ("设备健康度总览", "device_health"),
+            ("设备健康分是多少", "device_health"),
+            ("设备整体健康情况", "device_health"),
         ],
     )
     def test_query_type(self, query, expected):

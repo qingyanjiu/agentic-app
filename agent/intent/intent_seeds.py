@@ -69,13 +69,23 @@ COMPOSITIVE_EVENT_STATUS_EXAMPLES = {
 # ============================================================
 EMERGENCY_SECURITY_STATUS_EXAMPLES = {
     "_desc": "安防态势：综合安全指数、视频监控、AI告警态势、巡查任务、巡查趋势、AI巡查事件、设备详情",
+    # 以下子类型 key 与 classifier.SECURITY_STATUS_EXAMPLES 一一对应
+    "alarm_list": "查询某时间段/今日的安防告警列表",
+    "alarm_detail": "某条告警的详情：原因/位置/处理人/照片",
+    "intrusion": "入侵/周界翻越闯入事件与布防",
+    "patrol": "巡逻/巡更任务、路线与打卡记录",
+    "video": "监控视频宫格，点击/POI弹窗播放，录像回放",
+    "access": "门禁刷卡、通行记录查询",
+    "fire": "火警/消防设备相关问询",
+    "device": "安防设备在线率/离线/故障状态",
+    "abnormal": "人员聚集、行为异常等异常事件",
     "security_index": "综合安全指数分与各分项指标",
-    "video": "监控视频宫格，点击/POI弹窗播放",
-    "ai_alert_situation": "各AI告警类别数量与占比",
-    "patrol_mission": "近一周巡查任务：待处理/已处理/异常",
+    "ai_alert": "各AI智能告警类别的数量与占比",
     "inspection_trend": "巡查正常/异常趋势折线",
-    "ai_inspection_events": "AI巡查事件列表：类型/等级/图片/位置",
-    "device_detail": "摄像头/设备档案详情",
+    "ai_inspection": "AI巡查/智能巡检发现的异常事件列表",
+    "ai_overview": "今日/累计告警数、算法类型数、识别准确率总览",
+    "ai_trend": "近7天/近30天告警走势",
+    "ai_alarm_list": "安防/管理/环境预警分类告警明细",
 }
 
 EMERGENCY_FIRE_STATUS_EXAMPLES = {
