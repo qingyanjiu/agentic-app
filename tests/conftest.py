@@ -41,6 +41,7 @@ GRAPH_MODULES = {
     "emergency_fire": "graph.emergency_fire_langgraph",
     "device_status": "graph.device_status_langgraph",
     "compositive_overview": "graph.compositive_overview_langgraph",
+    "device_query": "graph.device_query_langgraph",
 }
 
 
@@ -152,6 +153,19 @@ DOMAIN_TOOL_RESULTS = {
             '{"code":200,"online":45,"total":50}',
         "device:getMjOnlinePercentage":
             '{"code":200,"online":70,"total":72}',
+    },
+    "device_query": {
+        # 设备列表：详情查询会先调它反查设备编码（keyword 匹配在本地做）
+        "device:getDeviceList":
+            '{"code":200,"total":2,"rows":['
+            '{"deviceCode":"MH-001","deviceName":"干粉灭火器","deviceType":"消防设备",'
+            '"area":"A栋3楼","status":"在线"},'
+            '{"deviceCode":"CAM-102","deviceName":"A栋枪机","deviceType":"安防设备",'
+            '"area":"A栋3楼","status":"离线"}]}',
+        "device:getDeviceDetail":
+            '{"code":200,"data":{"deviceCode":"MH-001","deviceName":"干粉灭火器",'
+            '"deviceType":"消防设备","area":"A栋3楼","status":"在线",'
+            '"pressure":"正常","battery":92}}',
     },
     "compositive_overview": {
         "overview:getBasicInfo":

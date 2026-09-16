@@ -66,6 +66,10 @@ HAPPY_PATH_CASES = [
     ("device_status", {"query_type": "mj_online"}),
     ("compositive_overview", {"query_type": "basic_info"}),
     ("compositive_overview", {"query_type": "device_health"}),
+    # 设备查询：列表无必填参数；详情带设备名称/编码（名称靠列表反查编码）
+    ("device_query", {"query_type": "device_list", "device_type": "消防设备", "area": "A栋3楼"}),
+    ("device_query", {"query_type": "device_detail", "device_keyword": "MH-001"}),
+    ("device_query", {"query_type": "device_detail", "device_keyword": "干粉灭火器"}),
 ]
 
 
@@ -99,6 +103,11 @@ ASK_CASES = [
      "请问您想查询哪类消防数据？设备台账、告警统计、实时告警，还是月度报修？"),
     ("emergency_fire", {},
      "请问您想查询哪类消防数据？设备台账、告警统计、实时告警，还是月度报修？"),
+    # 设备详情缺设备名称/编码 -> 反问哪台设备
+    ("device_query", {"query_type": "device_detail"},
+     "请问您想查看哪台设备的详情？"),
+    ("device_query", {"query_type": "device_detail", "device_type": "消防设备"},
+     "请问您想查看哪台设备的详情？"),
 ]
 
 
@@ -122,6 +131,7 @@ def test_missing_params_asks_back(domain_graphs, module_key, slots, expected_que
     [
         ("person_status", {"query_type": "location"}),
         ("emergency_fire", {"query_type": "count"}),
+        ("device_query", {"query_type": "device_detail"}),
     ],
 )
 def test_give_up_after_max_asks(domain_graphs, module_key, slots):
@@ -174,6 +184,7 @@ GUARD_CASES = [
     ("emergency_fire", {"query_type": "no_such_type"}),
     ("device_status", {"query_type": "no_such_type"}),
     ("compositive_overview", {"query_type": "no_such_type"}),
+    ("device_query", {"query_type": "no_such_type", "device_keyword": "MH-001"}),
 ]
 
 
@@ -235,12 +246,79 @@ def test_device_month_tool_without_date():
 
 
 # ============================================================
+# 8.1 设备查询：列表筛选参数透传 / 详情先反查设备编码
+# ============================================================
+def test_device_query_list_passes_filters():
+    """列表查询：设备类型 + 区域 应作为入参下发给 device:getDeviceList"""
+    from conftest import FakeTool
+
+    mod = get_graph_module("device_query")
+    tool = FakeTool("device:getDeviceList", '{"code":200,"rows":[]}')
+    node = mod.make_call_tool_node({"device:getDeviceList": tool})
+
+    out = run(node({
+        "slots": {"query_type": "device_list", "device_type": "消防设备", "area": "A栋3楼"},
+        "original_query": "A栋3楼有哪些消防设备",
+    }))
+
+    assert out.get("error") is None
+    assert tool.calls == [{"deviceType": "消防设备", "area": "A栋3楼"}], f"实际调用参数: {tool.calls}"
+
+
+def test_device_query_detail_resolves_code_by_name():
+    """详情查询：用户只报设备名称时，先用列表反查编码，再拿编码调详情"""
+    from conftest import FakeTool
+
+    mod = get_graph_module("device_query")
+    list_tool = FakeTool(
+        "device:getDeviceList",
+        '{"code":200,"rows":[{"deviceCode":"MH-001","deviceName":"干粉灭火器"},'
+        '{"deviceCode":"CAM-102","deviceName":"A栋枪机"}]}',
+    )
+    detail_tool = FakeTool("device:getDeviceDetail", '{"code":200,"deviceCode":"MH-001"}')
+    node = mod.make_call_tool_node({
+        "device:getDeviceList": list_tool,
+        "device:getDeviceDetail": detail_tool,
+    })
+
+    out = run(node({
+        "slots": {"query_type": "device_detail", "device_keyword": "干粉灭火器"},
+        "original_query": "干粉灭火器的详情",
+    }))
+
+    assert out.get("error") is None
+    assert detail_tool.calls == [{"deviceCode": "MH-001"}], f"实际调用参数: {detail_tool.calls}"
+
+
+def test_device_query_detail_uses_code_directly():
+    """详情查询：用户直接报编码时，编码原样作为 deviceCode 下发"""
+    from conftest import FakeTool
+
+    mod = get_graph_module("device_query")
+    list_tool = FakeTool("device:getDeviceList", '{"code":200,"rows":[]}')
+    detail_tool = FakeTool("device:getDeviceDetail", '{"code":200,"deviceCode":"CAM-102"}')
+    node = mod.make_call_tool_node({
+        "device:getDeviceList": list_tool,
+        "device:getDeviceDetail": detail_tool,
+    })
+
+    out = run(node({
+        "slots": {"query_type": "device_detail", "device_keyword": "CAM-102"},
+        "original_query": "CAM-102的详情",
+    }))
+
+    assert out.get("error") is None
+    assert detail_tool.calls == [{"deviceCode": "CAM-102"}], f"实际调用参数: {detail_tool.calls}"
+
+
+# ============================================================
 # 6. 案例1 回归：工具未加载 -> error 事件（不再是静默空列表）
 # ============================================================
 TOOL_MISSING_CASES = [
     ("person_status", {"query_type": "realtime"}),
     ("canteen_status", {"event_type": "dining_count", "date": SPAN_DATE}),
     ("emergency_fire", {"query_type": "fire_alarm_list"}),
+    ("device_query", {"query_type": "device_list"}),
 ]
 
 

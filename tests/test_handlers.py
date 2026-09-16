@@ -25,6 +25,7 @@ from agent.intent.handlers.meeting_status_handler import MeetingStatusHandler
 from agent.intent.handlers.emergency_fire_handler import EmergencyFireHandler
 from agent.intent.handlers.device_status_handler import DeviceStatusHandler
 from agent.intent.handlers.compositive_overview_handler import CompositiveOverviewHandler
+from agent.intent.handlers.device_query_handler import DeviceQueryHandler
 
 
 def handler_of(module_key: str):
@@ -39,6 +40,7 @@ def handler_of(module_key: str):
         "emergency_fire": EmergencyFireHandler,
         "device_status": DeviceStatusHandler,
         "compositive_overview": CompositiveOverviewHandler,
+        "device_query": DeviceQueryHandler,
     }[module_key]()
 
 
@@ -95,6 +97,14 @@ class TestMissingParams:
     def test_vehicle_energy_meeting_need_nothing(self, module_key):
         h = handler_of(module_key)
         assert h._get_missing_params({}) == []
+
+    def test_device_query_needs_keyword_only_for_detail(self):
+        """设备列表无必填参数；设备详情必须有设备名称/编码"""
+        h = handler_of("device_query")
+        assert h._get_missing_params({"query_type": "device_list"}) == []
+        assert h._get_missing_params({"query_type": "device_list", "device_type": "消防设备"}) == []
+        assert h._get_missing_params({"query_type": "device_detail"}) == ["device_keyword"]
+        assert h._get_missing_params({"query_type": "device_detail", "device_keyword": "MH-001"}) == []
 
     @pytest.mark.parametrize(
         "slots,expected",

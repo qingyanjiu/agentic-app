@@ -20,6 +20,7 @@ from agent.intent.slots import (
     extract_meeting_status_slots,
     extract_device_status_slots,
     extract_compositive_overview_slots,
+    extract_device_query_slots,
 )
 
 
@@ -269,6 +270,73 @@ class TestDeviceSlots:
     )
     def test_query_type(self, query, expected):
         assert self.EXTRACT(query)["query_type"] == expected
+
+
+# ============================================================
+# 设备查询（台账口径：设备列表 / 设备详情）
+# ============================================================
+class TestDeviceQuerySlots:
+    EXTRACT = staticmethod(extract_device_query_slots)
+
+    @pytest.mark.parametrize(
+        "query,expected",
+        [
+            ("设备列表", "device_list"),
+            ("园区有哪些设备", "device_list"),
+            ("查下消防设备列表", "device_list"),
+            ("A栋3楼有哪些设备", "device_list"),
+            ("看下设备清单", "device_list"),
+            ("设备详情", "device_detail"),
+            ("MH-001的详情", "device_detail"),
+            ("看下这台摄像头的具体信息", "device_detail"),
+            ("设备名称是烟感001的详情", "device_detail"),
+        ],
+    )
+    def test_query_type(self, query, expected):
+        assert self.EXTRACT(query)["query_type"] == expected
+
+    @pytest.mark.parametrize(
+        "query,expected_device_type",
+        [
+            ("查下消防设备列表", "消防设备"),
+            ("园区有哪些摄像头", "安防设备"),
+            ("B栋有哪些门禁设备", "门禁设备"),
+            ("广播设备清单", "广播设备"),
+            ("信息屏有哪些", "信息发布设备"),
+            ("查一下电表列表", "能耗设备"),
+            ("看下空调设备列表", "空调"),
+            ("设备列表", ""),
+        ],
+    )
+    def test_device_type(self, query, expected_device_type):
+        assert self.EXTRACT(query)["device_type"] == expected_device_type
+
+    @pytest.mark.parametrize(
+        "query,expected_area",
+        [
+            ("A栋3楼有哪些设备", "A栋3楼"),
+            ("三楼的设备列表", "3楼"),
+            ("食堂的设备有哪些", "食堂"),
+            ("B栋的消防设备有哪些", "B栋"),
+            ("设备列表", ""),
+        ],
+    )
+    def test_area(self, query, expected_area):
+        assert self.EXTRACT(query)["area"] == expected_area
+
+    @pytest.mark.parametrize(
+        "query,expected_keyword",
+        [
+            ("MH-001的详情", "MH-001"),
+            ("设备编码为DEV01的详情", "DEV01"),
+            ("设备名称是烟感001的详情", "烟感001"),
+            ("“干粉灭火器”的详情", "干粉灭火器"),
+            ("设备列表", ""),
+            ("设备详情", ""),
+        ],
+    )
+    def test_device_keyword(self, query, expected_keyword):
+        assert self.EXTRACT(query)["device_keyword"] == expected_keyword
 
 
 # ============================================================

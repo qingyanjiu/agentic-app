@@ -26,6 +26,7 @@ from agent.intent import (
     classify_fire_sub_type,
     classify_device_sub_type,
     classify_compositive_overview_sub_type,
+    classify_device_query_sub_type,
 )
 
 
@@ -81,6 +82,15 @@ class TestTopLevelIntent:
             # 综合态势总览
             ("园区面积多大", "compositive_overview"),
             ("设备健康度总览", "compositive_overview"),
+            # 设备查询（台账口径：设备列表 / 设备详情）
+            ("设备列表", "device_query"),
+            ("园区有哪些设备", "device_query"),
+            ("查下A栋的消防设备", "device_query"),
+            ("设备详情", "device_query"),
+            # 注意：只报编码、不带"设备"二字的短问法（如「MH-001的详情」）目前过不了
+            # 顶层阈值（实测 0.53）会落到 other，带上"设备/台"这类名词即可命中；
+            # 原因与取舍见 docs/开发计划.md §2.5
+            ("MH-001这台设备的详情", "device_query"),
         ],
     )
     def test_domain_query_classified(self, query, expected_intent):
@@ -175,6 +185,19 @@ class TestSubTypes:
         for query, expected in cases:
             sub, score = run(classify_compositive_overview_sub_type(query))
             assert sub == expected, f"query={query!r} 总览子类型判为 {sub}（score={score:.4f}）"
+
+    def test_device_query_sub_types(self):
+        cases = [
+            ("设备列表", "device_list"),
+            ("园区有哪些设备", "device_list"),
+            ("查下消防设备列表", "device_list"),
+            ("设备详情", "device_detail"),
+            ("MH-001的详情", "device_detail"),
+            ("看下这台设备的设备信息", "device_detail"),
+        ]
+        for query, expected in cases:
+            sub, score = run(classify_device_query_sub_type(query))
+            assert sub == expected, f"query={query!r} 设备查询子类型判为 {sub}（score={score:.4f}）"
 
 
 # ============================================================

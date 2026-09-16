@@ -71,6 +71,11 @@ mcp_servers:
     url: http://host.docker.internal:2222/mcp/fire
 
   # Java MCP Sidecar - 设备态势模块（/mcp/device，与 Java 侧 DeviceMcpServerConfig 一致）
+  # 工具：设备态势统计（device:getEquipClass / getCategoryHealth / getMonthMaintenance /
+  #      getMonthRepair / getStatisRegion / getAnfangDeviceOnlinePercentage /
+  #      getGbOnlinePercentage / getMjOnlinePercentage）
+  #      以及设备查询台账口径（device:getDeviceList / device:getDeviceDetail，
+  #      供 device_query 意图使用；Java 侧如未实现，Python 侧会提示"工具未加载"）
   # 部署方式与人员态势一致：
   # - Java 跑在宿主机：url: http://host.docker.internal:2222/mcp/device
   # - Java 跑在 Docker 且与 Python 同网络：url: http://mcp-sidecar:2222/mcp/device
