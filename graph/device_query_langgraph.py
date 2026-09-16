@@ -21,7 +21,9 @@ logger = logging.getLogger(__name__)
 # 注意：设备查询是"台账口径"，与设备态势的 device:getEquipClass /
 # device:getCategoryHealth 等统计口径工具不是一回事，不要混用。
 #
-# 入参名（deviceType / area / deviceCode）需与 Java 侧保持一致，
+# 入参名（deviceType / area / deviceCode）需与 Java 侧保持一致：
+#   deviceType 必填，取值 jk 监控 / mj 门禁 / dz 道闸 / gb 广播 / xxfb 信息发布
+#   area（区域/楼栋/楼层）为可选筛选；deviceCode 用于详情
 # Java 侧如未实现这两个工具，调用时会走"工具未加载"分支提示用户。
 # ============================================================
 _JAVA_TOOL_MAP = {
@@ -36,7 +38,15 @@ _RESOLVE_TOOL = "device:getDeviceList"
 
 # 设备编码在返回行里可能出现的字段名
 _CODE_FIELDS = (
-    "deviceCode", "assetsCode", "equipmentCode", "deviceNo", "code", "id"
+    # 各厂商返回结构里的"设备/通道编码"字段（顺序即优先级，见 _find_device_code）
+    #   jk   大华 channelCode / 海康 cameraIndexCode
+    #   gb   ITC EndpointID
+    #   mj   大华 deviceCode（道闸 dz 结构同 mj）
+    #   xxfb 和信 code
+    "channelCode", "cameraIndexCode",
+    "EndpointID", "EndpointId", "endpointId", "endpointID",
+    "deviceCode", "assetsCode", "equipmentCode", "deviceNo",
+    "code", "id",
 )
 
 
@@ -66,14 +76,22 @@ def _extract_text(result: Any) -> str:
 
 def _iter_rows(data: Any) -> list:
     """
-    从返回 JSON 里取出设备行列表
-    兼容 {rows:[...]} / {list:[...]} / {data:[...]} / {data:{rows:[...]}} / [...]
+    从返回 JSON 里取出设备行列表（各厂商结构不同，这里做兼容）
+
+      - jk   大华：data 直接是通道数组；海康：{total, list[]}
+      - mj   大华：{totalRows, pageData[]}（道闸 dz 结构相同）
+      - gb   ITC：{EndPointsArray:[...]}
+      - xxfb 和信：data 直接是设备数组
+      - 其它：{rows:[...]} / {records:[...]} / {data:{...}} 等常见包装
     """
     if isinstance(data, list):
         return [r for r in data if isinstance(r, dict)]
 
     if isinstance(data, dict):
-        for key in ("rows", "list", "records", "data", "content"):
+        for key in (
+            "pageData", "EndPointsArray", "endPointsArray",
+            "rows", "list", "records", "data", "content",
+        ):
             if key in data:
                 return _iter_rows(data[key])
 
@@ -81,12 +99,12 @@ def _iter_rows(data: Any) -> list:
 
 
 def _normalize_text(text: str) -> str:
-    """去掉分隔符并转小写，用于设备名称的模糊匹配（"3F-烟感-001" ≈ "3f烟感001"）"""
+    """去掉分隔符并转小写，用于设备名称的模糊匹配（"A栋-枪机" ≈ "a栋枪机"）"""
     return re.sub(r"[\s\-_/]", "", text).lower()
 
 
 def _looks_like_code(keyword: str) -> bool:
-    """关键字是不是"设备编码"形态（如 MH-001 / CAM102），是的话不用再反查列表"""
+    """关键字是不是"设备编码"形态（如 MJ-003 / CAM102），是的话不用再反查列表"""
     return bool(re.fullmatch(r"[A-Za-z]{1,8}[-_]?\d{1,6}", keyword or ""))
 
 
@@ -127,7 +145,8 @@ def _find_device_code(raw_text: str, keyword: str) -> str:
 
     # 2. 文本兜底：直接找编码字段（只有唯一一个时才敢用）
     codes = re.findall(
-        r'"(?:deviceCode|assetsCode|equipmentCode|deviceNo)"\s*:\s*"([^"]+)"',
+        r'"(?:channelCode|cameraIndexCode|EndpointID|deviceCode|assetsCode|'
+        r'equipmentCode|deviceNo|code)"\s*:\s*"([^"]+)"',
         raw_text,
     )
     if len(set(codes)) == 1:
@@ -172,6 +191,23 @@ def _query_type_label(query_type: str) -> str:
     }.get(query_type, "设备查询")
 
 
+# deviceType 码到中文名（仅用于拼 LLM 提示语，下发给 Java 的仍是码本身）
+_DEVICE_TYPE_LABELS = {
+    "jk": "监控设备",
+    "mj": "门禁设备",
+    "dz": "道闸设备",
+    "gb": "广播设备",
+    "xxfb": "信息发布设备",
+}
+
+
+def _device_type_label(device_type: str) -> str:
+    """deviceType 码转中文名，未知码原样返回"""
+    if not device_type:
+        return "不限"
+    return f"{_DEVICE_TYPE_LABELS.get(device_type, device_type)}（{device_type}）"
+
+
 async def _llm_format_device_query_result(
     llm: Any, query_type: str, state: dict, raw_text: str
 ) -> str:
@@ -195,6 +231,15 @@ async def _llm_format_device_query_result(
             "device_detail": "只回答这一台设备的详情（名称、编码、类型、所在区域、状态、参数等）；",
         }.get(query_type, "把返回数据整理清楚；")
 
+        # 各厂商返回里的枚举码含义（LLM 不认识这些数字，直接照抄会答错状态）
+        code_rule = {
+            "jk": "cameraType：1-枪机 2-球机 3-半球 5-本地采集；status：0-离线 1-在线",
+            "mj": "设备在线情况看返回里的在线字段，取不到就只说设备名称/编码/IP",
+            "dz": "同门禁：设备在线情况看返回里的在线字段",
+            "gb": "只有终端编号/名称/IP，没有在线状态就不要编造状态",
+            "xxfb": "online：0-离线 1-在线；status：0-未激活 1-占用 3-停用 4-异常",
+        }.get(slots.get("device_type") or "", "")
+
         # 用户约定：名称/编码模糊搜索在本地做，返回列表后再按关键字过滤
         keyword_rule = ""
         if query_type == "device_list" and keyword:
@@ -212,7 +257,7 @@ async def _llm_format_device_query_result(
             "请根据用户的查询类型，只提取对应的内容，用中文自然、简洁地回答用户。\n\n"
             f"用户查询类型：{query_type}（{label}）\n"
             f"用户原话：{original_query}\n"
-            f"设备筛选条件：设备类型={slots.get('device_type') or '不限'}，"
+            f"设备筛选条件：设备类型={_device_type_label(slots.get('device_type'))}，"
             f"区域={slots.get('area') or '不限'}\n"
             "MCP 工具返回的原始数据：\n"
             f"{raw_text}\n\n"
@@ -222,7 +267,8 @@ async def _llm_format_device_query_result(
             "3. 如果返回数据里没有用户要查的信息，只如实说明即可，不要建议查询其他内容；\n"
             f"{keyword_rule}"
             "5. 不要向用户提出任何追问、提议或反问，只回答本次查询的结果；\n"
-            "6. 回答要简短、口语化，设备多时可以用简短列表。"
+            "6. 回答要简短、口语化，设备多时可以用简短列表；\n"
+            + (f"7. 字段含义（照此翻译枚举值，不要直接念数字）：{code_rule}。" if code_rule else "")
         )
 
         resp = await llm.ainvoke(prompt)
@@ -316,11 +362,15 @@ def init_state(state: DeviceQueryGraphState) -> dict:
 
 def check_missing_params(state: DeviceQueryGraphState) -> dict:
     """
-    检查缺失参数
-    列表查询无必填参数；详情查询必须有设备名称/编码
+    检查缺失参数（与 DeviceQueryHandler._get_missing_params 保持一致）
+    deviceType 是后端必填参数，列表/详情都缺不得；
+    详情查询另外还必须有设备名称或编码
     """
     slots = state["slots"]
     missing = []
+
+    if not slots.get("device_type"):
+        missing.append("device_type")
 
     if slots.get("query_type") == "device_detail" and not slots.get("device_keyword"):
         missing.append("device_keyword")
@@ -341,11 +391,17 @@ def route_missing_params(state: DeviceQueryGraphState) -> str:
 
 def ask_param(state: DeviceQueryGraphState) -> dict:
     """
-    参数缺失时生成追问问题
+    参数缺失时生成追问问题（与 DeviceQueryHandler.generate_question 保持一致）
     """
     missing = state["missing_params"]
 
-    if "device_keyword" in missing:
+    # 按优先级生成问题：先定设备类型（后端必填），再定具体设备
+    if "device_type" in missing:
+        if state["slots"].get("query_type") == "device_detail":
+            question = "请问您想查看哪类设备的详情？监控、门禁、道闸、广播，还是信息发布设备？"
+        else:
+            question = "请问您想查询哪类设备？监控、门禁、道闸、广播，还是信息发布设备？"
+    elif "device_keyword" in missing:
         question = "请问您想查看哪台设备的详情？可以说设备名称或设备编码。"
     else:
         question = "请问您还需要补充什么信息？"
@@ -513,8 +569,10 @@ def build_device_query_graph(tools: dict, llm=None) -> StateGraph:
 
     流程：
         init -> check_missing_params ->┬-> call_tool (调用 MCP，LLM 组织回答) -> finalize -> END
-                                       ├-> ask_param (缺设备名称/编码，追问后等用户回复) -> END
+                                       ├-> ask_param (缺设备类型/编码，追问后等用户回复) -> END
                                        └-> give_up (追问超过 3 次) -> END
+
+    必填参数：deviceType（jk/mj/dz/gb/xxfb）；详情另需设备名称或编码
 
     :param tools: MCP 工具字典（工具名 -> 工具）
     :param llm: 可选的 LLM，用于按 query_type 分析 MCP 返回生成回答；不传则原样返回

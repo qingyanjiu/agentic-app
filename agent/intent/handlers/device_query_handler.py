@@ -13,6 +13,11 @@ MAX_UNRELATED = 3
 # 大于等于该分数时，以 embedding 分类器结果覆盖正则结果
 SUB_TYPE_THRESHOLD = 0.6
 
+# 明确的"列表口径"措辞：出现这些词说明用户要的是清单，
+# 此时正则为纲，不再让子类型分类器改判成详情
+# （"查下广播设备清单"这类问法在语料里与详例句式接近，实测会被判成 device_detail 0.75）
+LIST_WORDING = ("清单", "列表", "有哪些", "哪些", "列出", "所有", "全部", "都有", "台账")
+
 
 # ============================================================
 # 设备查询意图处理器
@@ -31,6 +36,8 @@ class DeviceQueryHandler(IntentHandler):
           1. 正则先抽所有字段：query_type 由正则关键词决定（默认 device_list）
           2. 正则落到默认 device_list 时，才用 embedding 分类器补判，
              分数达标且判为 device_detail 才覆盖
+          3. 用户明确说了"清单/列表/有哪些"等列表措辞时（LIST_WORDING），
+             不再让分类器改判——否则"查下广播设备清单"会被判成详情
 
         is_followup：追问轮置 True——只抽设备名称/编码等填空字段，
         不重判子类型（用户在详情追问里只回"MH-001"，短回复会被兜底口径冲掉）
@@ -40,7 +47,11 @@ class DeviceQueryHandler(IntentHandler):
 
         # 2. 正则落到默认 device_list 时交给分类器补判
         #    （追问轮短回复易被误判，且补调分类器的成本无谓）
-        if slots.get("query_type") != "device_detail" and not is_followup:
+        if (
+            slots.get("query_type") != "device_detail"
+            and not is_followup
+            and not any(k in query for k in LIST_WORDING)
+        ):
             try:
                 sub_type, score = await classify_device_query_sub_type(query)
                 logger.info(
@@ -70,16 +81,19 @@ class DeviceQueryHandler(IntentHandler):
         missing = state.missing_params
 
         # 2. 如果用户只回复了简短内容，且当前还缺参数，大概率是补充
-        #    例如追问"哪台设备"时回复"MH-001"、"3F烟感"
+        #    例如追问"哪类设备"时回复"监控"、追问"哪台设备"时回复"MJ-003"
         if len(query) <= 20 and missing:
             return True
 
         # 3. 如果用户回复了设备查询相关关键词，也判定为相关
+        #    设备类型只收后端可查的五类（jk 监控/mj 门禁/dz 道闸/gb 广播/xxfb 信息发布）；
+        #    用户直接回"jk"这类类型码属短回复，已由上面的长度分支覆盖
         device_keywords = [
             "设备", "列表", "清单", "台账", "详情", "详细", "档案", "信息",
             "编码", "名称", "编号", "型号", "参数", "规格",
-            "摄像头", "监控", "消防", "灭火器", "烟感", "门禁", "闸机",
-            "广播", "信息屏", "发布屏", "空调", "电表", "水表", "交换机",
+            "监控", "摄像头", "摄像机", "枪机", "球机", "半球",
+            "门禁", "闸机", "道闸", "车闸",
+            "广播", "音箱", "喇叭", "信息屏", "信息发布", "发布屏", "显示屏",
             "楼", "层", "栋", "园区", "食堂", "停车场",
         ]
         if any(k in query for k in device_keywords):
@@ -139,10 +153,14 @@ class DeviceQueryHandler(IntentHandler):
         """
         根据当前 slots 判断还缺哪些必填参数
 
-        列表查询：无必填参数（设备类型/区域都是可选筛选条件）
-        详情查询：必须有设备名称或编码，否则无法定位到具体设备
+        设备类型（deviceType）是后端必填参数，列表/详情都缺不得；
+        区域/楼栋/楼层只是可选筛选条件。
+        详情查询另外还必须有设备名称或编码，否则无法定位到具体设备。
         """
         missing = []
+
+        if not slots.get("device_type"):
+            missing.append("device_type")
 
         if slots.get("query_type") == "device_detail" and not slots.get("device_keyword"):
             missing.append("device_keyword")
@@ -156,8 +174,13 @@ class DeviceQueryHandler(IntentHandler):
         """
         missing = state.missing_params
 
-        # 按优先级生成问题
-        if "device_keyword" in missing:
+        # 按优先级生成问题：先定设备类型（后端必填），再定具体设备
+        if "device_type" in missing:
+            if state.slots.get("query_type") == "device_detail":
+                question = "请问您想查看哪类设备的详情？监控、门禁、道闸、广播，还是信息发布设备？"
+            else:
+                question = "请问您想查询哪类设备？监控、门禁、道闸、广播，还是信息发布设备？"
+        elif "device_keyword" in missing:
             question = "请问您想查看哪台设备的详情？可以说设备名称或设备编码。"
         else:
             question = "请问您还需要补充什么信息？"

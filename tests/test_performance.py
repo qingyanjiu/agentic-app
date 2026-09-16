@@ -84,7 +84,7 @@ SLOT_EXTRACTORS = [
     ("meeting", extract_meeting_status_slots, "今天有什么会议安排"),
     ("fire", extract_emergency_fire_slots, "查下最新的消防"),
     ("device", extract_device_status_slots, "设备分类占比"),
-    ("device_query", extract_device_query_slots, "A栋3楼有哪些消防设备"),
+    ("device_query", extract_device_query_slots, "A栋3楼有哪些监控设备"),
 ]
 
 

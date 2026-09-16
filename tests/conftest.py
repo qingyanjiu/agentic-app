@@ -171,17 +171,17 @@ DOMAIN_TOOL_RESULTS = {
             '{"code":200,"online":70,"total":72}',
     },
     "device_query": {
-        # 设备列表：详情查询会先调它反查设备编码（keyword 匹配在本地做）
+        # 设备列表：jk 监控（大华 V5.0.16 口径，data 直接是通道数组）
+        # 详情查询会先调它反查设备编码（keyword 匹配在本地做）
         "device:getDeviceList":
-            '{"code":200,"total":2,"rows":['
-            '{"deviceCode":"MH-001","deviceName":"干粉灭火器","deviceType":"消防设备",'
-            '"area":"A栋3楼","status":"在线"},'
-            '{"deviceCode":"CAM-102","deviceName":"A栋枪机","deviceType":"安防设备",'
-            '"area":"A栋3楼","status":"离线"}]}',
+            '{"code":200,"data":['
+            '{"channelCode":"1000000$1$0$0","channelName":"A栋枪机","cameraType":1,'
+            '"chExt":{"channelDeviceIp":"10.1.1.5"}},'
+            '{"channelCode":"1000000$1$0$1","channelName":"B栋球机","cameraType":2,'
+            '"chExt":{"channelDeviceIp":"10.1.1.6"}}]}',
         "device:getDeviceDetail":
-            '{"code":200,"data":{"deviceCode":"MH-001","deviceName":"干粉灭火器",'
-            '"deviceType":"消防设备","area":"A栋3楼","status":"在线",'
-            '"pressure":"正常","battery":92}}',
+            '{"code":200,"data":{"channelCode":"1000000$1$0$0","channelName":"A栋枪机",'
+            '"cameraType":1,"status":1,"chExt":{"channelDeviceIp":"10.1.1.5"}}}',
     },
     "compositive_overview": {
         "overview:getBasicInfo":

@@ -86,10 +86,12 @@ class TestTopLevelIntent:
             # 综合态势总览
             ("园区面积多大", "compositive_overview"),
             ("设备健康度总览", "compositive_overview"),
-            # 设备查询（台账口径：设备列表 / 设备详情）
+            # 设备查询（台账口径：设备列表 / 设备详情，后端仅收
+            # jk 监控 / mj 门禁 / dz 道闸 / gb 广播 / xxfb 信息发布 五类）
             ("设备列表", "device_query"),
             ("园区有哪些设备", "device_query"),
-            ("查下A栋的消防设备", "device_query"),
+            ("查下A栋的监控设备", "device_query"),
+            ("查下门禁设备列表", "device_query"),
             ("设备详情", "device_query"),
             # 注意：只报编码、不带"设备"二字的短问法（如「MH-001的详情」）目前过不了
             # 顶层阈值（实测 0.53）会落到 other，带上"设备/台"这类名词即可命中；
@@ -203,13 +205,24 @@ class TestSubTypes:
             assert sub == expected, f"query={query!r} 总览子类型判为 {sub}（score={score:.4f}）"
 
     def test_device_query_sub_types(self):
+        """
+        只覆盖子类型分类器判得动的问法。
+
+        「清单/列表/有哪些」这类列表措辞在本模型里与详例句式贴得太近
+        （连列表语料自身的"看下设备清单"都会被判成 device_detail 0.83），
+        调语料收效甚微，因此改由 DeviceQueryHandler 的 LIST_WORDING
+        以"正则为纲"兜底，见 tests/test_handlers.py
+        ::TestFollowupNotOverwriteSubType::test_device_query_list_wording_beats_classifier
+        """
         cases = [
             ("设备列表", "device_list"),
             ("园区有哪些设备", "device_list"),
-            ("查下消防设备列表", "device_list"),
+            ("查下监控设备列表", "device_list"),
+            ("查下园区里的监控设备", "device_list"),
             ("设备详情", "device_detail"),
             ("MH-001的详情", "device_detail"),
             ("看下这台设备的设备信息", "device_detail"),
+            ("信息发布屏的详情", "device_detail"),
         ]
         for query, expected in cases:
             sub, score = run(classify_device_query_sub_type(query))
