@@ -27,15 +27,21 @@ DECLINE_KEYWORDS = [
 class SecurityStatusHandler(IntentHandler):
     name = "security_status"
 
-    async def extract_slots(self, query: str) -> dict:
+    async def extract_slots(self, query: str, is_followup: bool = False) -> dict:
         """
         抽取安防态势参数
 
         当前支持 alarm_list（告警列表）、alarm_detail（告警详情）、
         patrol（巡查/巡逻任务）、device（安防设备状态）。
         后续扩展其他子类型时，再在这里加 embedding 分类器兜底。
+
+        is_followup：追问轮置 True——只抽时间/告警ID等填空字段，
+        不重判子类型（短回复易落回默认值或误命中关键词，污染原查询）
         """
         slots = extract_security_status_slots(query)
+        if is_followup:
+            # 追问轮子类型只能不变：丢弃本轮重判结果，避免覆盖原查询
+            slots.pop("event_type", None)
         return slots
 
     def is_related(self, state: IntentState, query: str) -> bool:
@@ -179,7 +185,8 @@ class SecurityStatusHandler(IntentHandler):
         state.unrelated_count = 0
 
         # 从用户最新回复中抽取参数，补充到已有 slots
-        new_slots = await self.extract_slots(query)
+        # is_followup=True：追问轮只补填空字段，不重判子类型
+        new_slots = await self.extract_slots(query, is_followup=True)
         for k, v in new_slots.items():
             # 只覆盖非空值
             if v:

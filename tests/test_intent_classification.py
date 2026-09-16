@@ -24,6 +24,7 @@ from agent.intent import (
     classify_energy_sub_type,
     classify_meeting_sub_type,
     classify_fire_sub_type,
+    classify_perimeter_sub_type,
     classify_device_sub_type,
     classify_compositive_overview_sub_type,
 )
@@ -75,6 +76,9 @@ class TestTopLevelIntent:
             # 消防态势
             ("消防设备台账", "emergency_fire"),
             ("实时消防告警", "emergency_fire"),
+            # 周界态势（孪生周界）
+            ("周界防区一览", "emergency_perimeter"),
+            ("周界告警统计", "emergency_perimeter"),
             # 设备态势
             ("设备分类占比", "device_status"),
             ("门禁设备在线率", "device_status"),
@@ -149,6 +153,18 @@ class TestSubTypes:
         for query, expected in cases:
             sub, score = run(classify_fire_sub_type(query))
             assert sub == expected, f"query={query!r} 消防子类型判为 {sub}（score={score:.4f}）"
+
+    def test_perimeter_sub_types(self):
+        cases = [
+            ("在线防区有多少", "key_metrics"),
+            ("今日周界告警数", "key_metrics"),
+            ("防区布防状态", "area_overview"),
+            ("周界告警时段分布", "perimeter_alarm_stats"),
+            ("周界告警列表", "alarm_overview"),
+        ]
+        for query, expected in cases:
+            sub, score = run(classify_perimeter_sub_type(query))
+            assert sub == expected, f"query={query!r} 周界子类型判为 {sub}（score={score:.4f}）"
 
     def test_device_sub_types(self):
         cases = [

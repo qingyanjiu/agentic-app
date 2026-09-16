@@ -17,9 +17,11 @@ from agent.intent.slots import (
     extract_information_status_slots,
     extract_energy_status_slots,
     extract_emergency_fire_slots,
+    extract_emergency_perimeter_slots,
     extract_meeting_status_slots,
     extract_device_status_slots,
     extract_compositive_overview_slots,
+    extract_twins_inspection_slots,
 )
 
 
@@ -237,6 +239,104 @@ class TestFireSlots:
             qt = self.EXTRACT(option)["query_type"]
             assert qt in _JAVA_TOOL_MAP, (
                 f"反问选项「{option}」抽到 query_type={qt}，不在消防 _JAVA_TOOL_MAP 中，"
+                f"用户回复该选项将无法识别"
+            )
+
+
+# ============================================================
+# 周界态势（孪生周界）
+# 正则抽不到子类型时落 count 兜底（再由 graph 反问），
+# 与消防域 docs/问题排查记录.md 案例2 同一约定
+# ============================================================
+class TestPerimeterSlots:
+    EXTRACT = staticmethod(extract_emergency_perimeter_slots)
+
+    @pytest.mark.parametrize(
+        "query,expected",
+        [
+            # 告警一览（列表/实时口径，优先于统计）
+            ("周界告警一览", "alarm_overview"),
+            ("实时周界告警", "alarm_overview"),
+            ("最新的周界告警", "alarm_overview"),
+            # 关键指标
+            ("周界关键指标", "key_metrics"),
+            ("在线防区有多少", "key_metrics"),
+            ("今日告警数", "key_metrics"),
+            # 周界告警统计
+            ("周界告警统计", "perimeter_alarm_stats"),
+            ("告警小时曲线", "perimeter_alarm_stats"),
+            # 防区一览
+            ("防区一览", "area_overview"),
+            ("哪些防区在布防", "area_overview"),
+            # 无关词落 count 兜底
+            ("英文无关词", "count"),
+        ],
+    )
+    def test_query_type(self, query, expected):
+        assert self.EXTRACT(query)["query_type"] == expected
+
+    def test_aska_option_words_all_hit_regex(self):
+        """
+        反问的选项措辞要与 slots.py 正则关键词对齐，
+        用户照着念就能被识别（案例2 教训）。反问句里的 4 个选项词逐一验证。
+        """
+        from graph.emergency_perimeter_langgraph import _JAVA_TOOL_MAP
+
+        for option in ["关键指标", "防区一览", "告警统计", "告警一览"]:
+            qt = self.EXTRACT(option)["query_type"]
+            assert qt in _JAVA_TOOL_MAP, (
+                f"反问选项「{option}」抽到 query_type={qt}，不在周界 _JAVA_TOOL_MAP 中，"
+                f"用户回复该选项将无法识别"
+            )
+
+
+# ============================================================
+# 孪生巡检
+# 正则抽不到子类型时落 count 兜底（再由 graph 反问），
+# 与消防/周界域同一约定
+# ============================================================
+class TestInspectionSlots:
+    EXTRACT = staticmethod(extract_twins_inspection_slots)
+
+    @pytest.mark.parametrize(
+        "query,expected",
+        [
+            # 今日巡检（任务数/点位/完成率总览口径）
+            ("今日巡检", "today_inspection"),
+            ("今日巡检完成率怎么样", "today_inspection"),
+            ("今天有多少巡检任务", "today_inspection"),
+            ("巡检点位完成情况", "today_inspection"),
+            # 今日任务列表
+            ("今日任务列表", "today_tasks"),
+            ("今天的巡检任务有哪些", "today_tasks"),
+            ("谁在巡检", "today_tasks"),
+            ("巡检班组安排", "today_tasks"),
+            # 巡检执行状态
+            ("巡检执行状态", "inspection_execution_status"),
+            ("各巡检员正常异常情况", "inspection_execution_status"),
+            # 巡检统计
+            ("巡检统计", "inspection_statistics"),
+            ("平均巡检时长是多少", "inspection_statistics"),
+            ("近一个月巡检发现多少隐患", "inspection_statistics"),
+            # 无关词落 count 兜底
+            ("英文无关词", "count"),
+            ("查下孪生巡检", "count"),
+        ],
+    )
+    def test_query_type(self, query, expected):
+        assert self.EXTRACT(query)["query_type"] == expected
+
+    def test_aska_option_words_all_hit_regex(self):
+        """
+        反问的选项措辞要与 slots.py 正则关键词对齐，
+        用户照着念就能被识别（案例2 教训）。反问句里的 4 个选项词逐一验证。
+        """
+        from graph.twins_inspection_langgraph import _JAVA_TOOL_MAP
+
+        for option in ["今日巡检", "今日任务列表", "巡检统计", "巡检执行状态"]:
+            qt = self.EXTRACT(option)["query_type"]
+            assert qt in _JAVA_TOOL_MAP, (
+                f"反问选项「{option}」抽到 query_type={qt}，不在巡检 _JAVA_TOOL_MAP 中，"
                 f"用户回复该选项将无法识别"
             )
 

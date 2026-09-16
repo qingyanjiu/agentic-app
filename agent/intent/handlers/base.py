@@ -10,10 +10,12 @@ class IntentHandler(ABC):
     name = ""
     
     @abstractmethod
-    def extract_slots(self, query: str) -> dict:
+    def extract_slots(self, query: str, is_followup: bool = False) -> dict:
         """
         从用户输入中提取当前模块需要的参数
         每个子类必须实现
+        is_followup：追问轮置 True，只抽填空字段（人名/时间/ID 等），
+        不重判子类型，避免短回复的默认值/误判污染原查询
         """
         pass
     

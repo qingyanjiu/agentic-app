@@ -70,6 +70,15 @@ mcp_servers:
     transport: streamable_http
     url: http://host.docker.internal:2222/mcp/fire
 
+  # Java MCP Sidecar - 周界态势模块（/mcp/perimeter，与 Java 侧 PerimeterMcpServerConfig 一致）
+  # 工具：perimeter:getKeyMetrics / getAreaOverview / getPerimeterAlarmStats / getAlarmOverview
+  # 部署方式与人员态势一致：
+  # - Java 跑在宿主机：url: http://host.docker.internal:2222/mcp/perimeter
+  # - Java 跑在 Docker 且与 Python 同网络：url: http://mcp-sidecar:2222/mcp/perimeter
+  perimeter:
+    transport: streamable_http
+    url: http://host.docker.internal:2222/mcp/perimeter
+
   # Java MCP Sidecar - 设备态势模块（/mcp/device，与 Java 侧 DeviceMcpServerConfig 一致）
   # 部署方式与人员态势一致：
   # - Java 跑在宿主机：url: http://host.docker.internal:2222/mcp/device
@@ -87,6 +96,17 @@ mcp_servers:
     transport: streamable_http
     url: http://host.docker.internal:2222/mcp/overview
 
+  # Java MCP Sidecar - 孪生巡检模块（/mcp/inspection，与 Java 侧 InspectionMcpServerConfig 一致）
+  # 工具：inspection:getTodayInspection / getTodayTasks / getInspectionStatistics / getInspectionExecutionStatus
+  # 对应平台接口：/screenPatrol/todayOverview、/screenPatrol/todayTaskList、
+  #              /screenPatrol/statistics、/screenPatrol/executionStatus
+  # 部署方式与人员态势一致：
+  # - Java 跑在宿主机：url: http://host.docker.internal:2222/mcp/inspection
+  # - Java 跑在 Docker 且与 Python 同网络：url: http://mcp-sidecar:2222/mcp/inspection
+  inspection:
+    transport: streamable_http
+    url: http://host.docker.internal:2222/mcp/inspection
+
   # 本地 Python 实现的消防态势 mock MCP 服务（fire_server.py）
   # 当前已配置 Java MCP Sidecar（fire），先注释掉；
   # Java 侧未就绪时可临时启用 fire-local 并注释上面的 fire 做自测
@@ -95,6 +115,24 @@ mcp_servers:
   #   command: python
   #   args:
   #     - ./mcp_servers/fire_server.py
+
+  # 本地 Python 实现的周界态势 mock MCP 服务（perimeter_server.py）
+  # 当前已配置 Java MCP Sidecar（perimeter），先注释掉；
+  # Java 侧 /mcp/perimeter 未就绪时可临时启用 perimeter-local 并注释上面的 perimeter 做自测
+  # perimeter-local:
+  #   transport: stdio
+  #   command: python
+  #   args:
+  #     - ./mcp_servers/perimeter_server.py
+
+  # 本地 Python 实现的孪生巡检 mock MCP 服务（inspection_server.py）
+  # 当前已配置 Java MCP Sidecar（inspection），先注释掉；
+  # Java 侧 /mcp/inspection 未就绪时可临时启用 inspection-local 并注释上面的 inspection 做自测
+  # inspection-local:
+  #   transport: stdio
+  #   command: python
+  #   args:
+  #     - ./mcp_servers/inspection_server.py
 
   # 本地 Python 实现的 person_status MCP 服务
   # 当前已改用 Java MCP Sidecar，先注释掉，避免与 Java 侧车的工具冲突
