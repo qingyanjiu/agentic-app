@@ -26,14 +26,20 @@ DECLINE_KEYWORDS = [
 class CanteenStatusHandler(IntentHandler):
     name = "canteen_status"
 
-    async def extract_slots(self, query: str) -> dict:
+    async def extract_slots(self, query: str, is_followup: bool = False) -> dict:
         """
         抽取食堂管理参数
 
         event_type 用正则抽取（对称于安防态势），
         后续如果需要更细的子类型，可以在这里加 embedding 分类器兜底
+
+        is_followup：追问轮置 True——只抽时间/餐次等填空字段，
+        不重判子类型（短回复易落回默认值或误命中关键词，污染原查询）
         """
         slots = extract_canteen_status_slots(query)
+        if is_followup:
+            # 追问轮子类型只能不变：丢弃本轮重判结果，避免覆盖原查询
+            slots.pop("event_type", None)
         return slots
 
     def is_related(self, state: IntentState, query: str) -> bool:
@@ -166,7 +172,8 @@ class CanteenStatusHandler(IntentHandler):
         state.unrelated_count = 0
 
         # 从用户最新回复中抽取参数，补充到已有 slots
-        new_slots = await self.extract_slots(query)
+        # is_followup=True：追问轮只补填空字段，不重判子类型
+        new_slots = await self.extract_slots(query, is_followup=True)
         for k, v in new_slots.items():
             # 只覆盖非空值
             if v:

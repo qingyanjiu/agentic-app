@@ -39,9 +39,11 @@ GRAPH_MODULES = {
     "energy_status": "graph.energy_status_langgraph",
     "meeting_status": "graph.meeting_status_langgraph",
     "emergency_fire": "graph.emergency_fire_langgraph",
+    "emergency_perimeter": "graph.emergency_perimeter_langgraph",
     "device_status": "graph.device_status_langgraph",
     "compositive_overview": "graph.compositive_overview_langgraph",
     "device_query": "graph.device_query_langgraph",
+    "twins_inspection": "graph.twins_inspection_langgraph",
 }
 
 
@@ -133,6 +135,20 @@ DOMAIN_TOOL_RESULTS = {
         "fire:getFireAssets": '{"code":200,"total":1,"rows":[{"assetsName":"干粉灭火器","deviceCode":"MH-001"}]}',
         "fire:getMonthRepair": '{"code":200,"rows":[{"month":"2026-09","repairNum":4}]}',
     },
+    "emergency_perimeter": {
+        "perimeter:getKeyMetrics":
+            '{"code":200,"data":{"defenseTotal":24,"onlineNum":22,"offlineNum":2,"todayAlarmNum":5}}',
+        "perimeter:getAreaOverview":
+            '{"code":200,"total":2,"rows":[{"areaName":"东侧围墙防区01","status":"布防"},'
+            '{"areaName":"南门防区03","status":"撤防"}]}',
+        "perimeter:getPerimeterAlarmStats":
+            '{"code":200,"data":{"areaStats":[{"areaName":"东侧围墙防区01","alarmNum":3}],'
+            '"hourCurve":[{"hour":"08","alarmNum":1},{"hour":"10","alarmNum":2}]}}',
+        "perimeter:getAlarmOverview":
+            '{"code":200,"total":1,"rows":[{"alarmName":"周界入侵告警","areaName":"东侧围墙防区01",'
+            '"alarmLevel":"重要","handleStatus":"未处理","alarmTime":1725926400000,'
+            '"alarmReason":"检测到翻越行为"}]}',
+    },
     "device_status": {
         "device:getEquipClass":
             '{"code":200,"rows":[{"name":"消防设备","value":120},{"name":"空调","value":86},'
@@ -175,6 +191,19 @@ DOMAIN_TOOL_RESULTS = {
             '"onlineRate":{"current":98,"total":100,"percent":98},'
             '"maintenanceRate":{"percent":90},'
             '"lifeRate":{"current":85,"total":100,"percent":85}}]}',
+    },
+    "twins_inspection": {
+        "inspection:getTodayInspection":
+            '{"code":200,"data":{"taskCount":8,"pointCount":46,"completionRate":87.5,'
+            '"chartData":{"xData":["08:00","10:00"],"yData1":[2,3],"yData2":[2,2]}}}',
+        "inspection:getTodayTasks":
+            '{"code":200,"total":1,"rows":[{"name":"张伟","type":"日常巡检","state":"已完成",'
+            '"stateClass":"success","team":"巡检一班","time":"08:30"}]}',
+        "inspection:getInspectionStatistics":
+            '{"code":200,"data":{"avgTime":"25分钟","pointCount":320,"hazardCount":6,'
+            '"chartData":[{"value":12,"name":"日常巡检"}]}}',
+        "inspection:getInspectionExecutionStatus":
+            '{"code":200,"data":{"xData":["张伟","李娜"],"yData1":[12,10],"yData2":[1,0]}}',
     },
 }
 

@@ -23,7 +23,7 @@ SUB_TYPE_THRESHOLD = 0.6
 class DeviceQueryHandler(IntentHandler):
     name = "device_query"
 
-    async def extract_slots(self, query: str) -> dict:
+    async def extract_slots(self, query: str, is_followup: bool = False) -> dict:
         """
         抽取设备查询参数
 
@@ -31,23 +31,30 @@ class DeviceQueryHandler(IntentHandler):
           1. 正则先抽所有字段：query_type 由正则关键词决定（默认 device_list）
           2. 正则落到默认 device_list 时，才用 embedding 分类器补判，
              分数达标且判为 device_detail 才覆盖
+
+        is_followup：追问轮置 True——只抽设备名称/编码等填空字段，
+        不重判子类型（用户在详情追问里只回"MH-001"，短回复会被兜底口径冲掉）
         """
         # 1. 正则抽取所有字段
         slots = extract_device_query_slots(query)
-        if slots.get("query_type") == "device_detail":
-            return slots
 
         # 2. 正则落到默认 device_list 时交给分类器补判
-        try:
-            sub_type, score = await classify_device_query_sub_type(query)
-            logger.info(
-                f"[extract_slots] query={query}, regex=device_list(兜底), "
-                f"classifier sub_type={sub_type}, score={score:.4f}"
-            )
-            if sub_type == "device_detail" and score >= SUB_TYPE_THRESHOLD:
-                slots["query_type"] = sub_type
-        except Exception as e:
-            logger.warning(f"设备查询子类型分类失败，使用正则兜底结果: {e}")
+        #    （追问轮短回复易被误判，且补调分类器的成本无谓）
+        if slots.get("query_type") != "device_detail" and not is_followup:
+            try:
+                sub_type, score = await classify_device_query_sub_type(query)
+                logger.info(
+                    f"[extract_slots] query={query}, regex=device_list(兜底), "
+                    f"classifier sub_type={sub_type}, score={score:.4f}"
+                )
+                if sub_type == "device_detail" and score >= SUB_TYPE_THRESHOLD:
+                    slots["query_type"] = sub_type
+            except Exception as e:
+                logger.warning(f"设备查询子类型分类失败，使用正则兜底结果: {e}")
+
+        if is_followup:
+            # 追问轮子类型只能不变：丢弃本轮重判结果，避免覆盖原查询
+            slots.pop("query_type", None)
 
         return slots
 
@@ -110,7 +117,8 @@ class DeviceQueryHandler(IntentHandler):
         state.unrelated_count = 0
 
         # 从用户最新回复中抽取参数，补充到已有 slots
-        new_slots = await self.extract_slots(query)
+        # is_followup=True：追问轮只补填空字段，不重判子类型
+        new_slots = await self.extract_slots(query, is_followup=True)
         for k, v in new_slots.items():
             # 只覆盖非空值
             # 特别处理 query_type：如果不是默认值 device_list，才覆盖

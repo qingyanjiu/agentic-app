@@ -35,9 +35,11 @@ INFORMATION_STATUS_THRESHOLD = 0.65
 ENERGY_STATUS_THRESHOLD = 0.65
 MEETING_STATUS_THRESHOLD = 0.65
 EMERGENCY_FIRE_STATUS_THRESHOLD = 0.65
+EMERGENCY_PERIMETER_STATUS_THRESHOLD = 0.65
 DEVICE_STATUS_THRESHOLD = 0.65
 COMPOSITIVE_OVERVIEW_STATUS_THRESHOLD = 0.65
 DEVICE_QUERY_THRESHOLD = 0.65
+TWINS_INSPECTION_STATUS_THRESHOLD = 0.65
 
 
 # ============================================================
@@ -1633,6 +1635,213 @@ EMERGENCY_FIRE_STATUS_EXAMPLES = {
 }
 
 # ============================================================
+# 周界态势模块（孪生周界）的示例语料库（按子类型分组）
+# 每个 key 对应 extract_emergency_perimeter_slots 里的 query_type：
+#   key_metrics           -> 关键指标（在线/离线防区设备数、今日告警数）
+#   area_overview         -> 防区一览（防区列表与布防状态）
+#   perimeter_alarm_stats -> 周界告警统计（按区域/时段统计与小时曲线）
+#   alarm_overview        -> 告警一览（周界告警列表，点击看抓拍照片）
+#   count                 -> 一般周界查询（兜底）
+#
+# 用途（与 EMERGENCY_FIRE_STATUS_EXAMPLES 相同）：
+#   1. 所有示例的平均向量 = 周界态势意图中心（is_emergency_perimeter）
+#   2. 每个子类型的平均向量 = 子类型中心（classify_perimeter_sub_type）
+# 示例越多、覆盖越广，判断越准
+# ============================================================
+EMERGENCY_PERIMETER_STATUS_EXAMPLES = {
+    # 关键指标（key_metrics）
+    "key_metrics": [
+        "周界关键指标",
+        "防区关键指标",
+        "周界关键数据",
+        "在线防区数",
+        "离线防区数",
+        "防区设备在线数",
+        "防区设备离线数",
+        "有多少防区在线",
+        "今日周界告警数",
+        "今日报警数",
+        "周界在线率",
+        "防区在线情况",
+        "周界设备在线情况",
+        "防区总数",
+    ],
+
+    # 防区一览（area_overview）
+    "area_overview": [
+        "防区一览",
+        "防区列表",
+        "防区状态",
+        "防区布防状态",
+        "布防情况",
+        "哪些防区在布防",
+        "有没有撤防的防区",
+        "周界防区一览",
+        "周界防区列表",
+        "防区分布",
+        "防区明细",
+        "防区运行状态",
+        "有几个防区",
+        "园区围栏分布",
+    ],
+
+    # 周界告警统计（perimeter_alarm_stats）
+    "perimeter_alarm_stats": [
+        "周界告警统计",
+        "周界报警统计",
+        "周界告警分布",
+        "周界告警趋势",
+        "周界告警时段分布",
+        "告警按时段统计",
+        "告警小时曲线",
+        "各区域周界告警统计",
+        "告警按区域统计",
+        "哪个时段周界告警最多",
+        "周界入侵统计",
+        "今日周界告警统计",
+        "周界告警分析",
+        "防区告警统计",
+    ],
+
+    # 告警一览（alarm_overview）
+    "alarm_overview": [
+        "周界告警一览",
+        "周界告警列表",
+        "实时周界告警",
+        "最新的周界告警",
+        "当前周界告警",
+        "周界报警记录",
+        "周界告警信息",
+        "最近的周界入侵告警",
+        "现在有什么周界告警",
+        "看看周界告警抓拍",
+        "周界告警明细",
+        "翻越围栏告警记录",
+        "今天的围栏报警",
+        "周界告警处理情况",
+    ],
+
+    # 一般周界查询（count）：兜底
+    "count": [
+        "周界态势",
+        "孪生周界",
+        "周界情况",
+        "周界数据",
+        "周界概况",
+        "查一下周界",
+        "周界整体情况",
+        "园区周界",
+        "围栏态势",
+    ],
+}
+
+# ============================================================
+# 孪生巡检模块的示例语料库（按子类型分组）
+# 每个 key 对应 extract_twins_inspection_slots 里的 query_type：
+#   today_inspection             -> 今日巡检（任务数/点位/完成率 + 分时段图表）
+#   today_tasks                  -> 今日任务列表（人员/类型/状态/班组/时间）
+#   inspection_statistics        -> 巡检统计（平均时长/点位/隐患数，近1月/3月/1年）
+#   inspection_execution_status  -> 巡检执行状态（按人巡检正常/异常）
+#   count                        -> 一般巡检查询（兜底）
+#
+# 用途（与 EMERGENCY_PERIMETER_STATUS_EXAMPLES 相同）：
+#   1. 所有示例的平均向量 = 孪生巡检意图中心（is_twins_inspection）
+#   2. 每个子类型的平均向量 = 子类型中心（classify_inspection_sub_type）
+# 语料红线：安防域已收 AI巡查/智能巡检/巡查趋势/保安巡逻/巡更，
+# 设备域已收"设备巡检"，本模块只收"巡检任务/完成率/统计/执行状态"口径，
+# 避免与 security_status 中心向量竞争
+# ============================================================
+TWINS_INSPECTION_STATUS_EXAMPLES = {
+    # 今日巡检（today_inspection）
+    "today_inspection": [
+        "今日巡检",
+        "今日巡检总览",
+        "巡检完成率",
+        "今天巡检完成率是多少",
+        "今日巡检点位数",
+        "今天有多少巡检任务",
+        "今日巡检概况",
+        "巡检任务完成了多少",
+        "今日巡检情况总览",
+        "巡检任务数",
+        "今天巡检了多少个点位",
+        "孪生巡检总览",
+        "数字孪生巡检概况",
+        "巡检整体完成情况",
+    ],
+
+    # 今日任务列表（today_tasks）
+    "today_tasks": [
+        "今日任务列表",
+        "今日巡检任务列表",
+        "今天的巡检任务有哪些",
+        "巡检任务安排",
+        "今天谁在巡检",
+        "巡检班组安排",
+        "巡检人员任务",
+        "今日巡检任务明细",
+        "看看今日巡检任务",
+        "巡检任务状态",
+        "今天有哪些巡检任务在执行",
+        "巡检类型有哪些",
+        "各班组巡检任务",
+        "今日巡检任务执行到哪了",
+    ],
+
+    # 巡检统计（inspection_statistics）
+    "inspection_statistics": [
+        "巡检统计",
+        "巡检数据统计",
+        "平均巡检时长",
+        "巡检平均时长是多少",
+        "巡检发现多少隐患",
+        "近一月巡检统计",
+        "近三月巡检统计",
+        "近一年巡检统计",
+        "巡检隐患数量",
+        "巡检点位统计",
+        "本月巡检统计",
+        "巡检时长统计",
+        "巡检隐患统计",
+        "统计一下巡检点位和隐患",
+    ],
+
+    # 巡检执行状态（inspection_execution_status）
+    "inspection_execution_status": [
+        "巡检执行状态",
+        "巡检执行情况",
+        "按人巡检情况",
+        "各巡检员执行情况",
+        "巡检正常异常情况",
+        "每个巡检员的巡检情况",
+        "巡检员正常次数",
+        "谁巡检异常多",
+        "巡检执行对比",
+        "各人巡检正常异常统计",
+        "巡检人员的执行状态",
+        "按人统计巡检异常次数",
+        "巡检员工作量",
+        "巡检正常异常对比",
+    ],
+
+    # 一般巡检查询（count）：兜底
+    "count": [
+        "孪生巡检",
+        "数字孪生巡检",
+        "查下巡检",
+        "巡检数据",
+        "巡检情况",
+        "园区巡检",
+        "巡检信息",
+        "看看巡检",
+        "巡检应用",
+        "孪生巡检页面",
+        "打开巡检",
+        "巡检模块",
+    ],
+}
+
+# ============================================================
 # 会议管理模块的示例语料库（按子类型分组）
 # 每个 key 对应 extract_meeting_status_slots 里的 event_type：
 #   meeting_statistics      -> 会议统计
@@ -2512,6 +2721,40 @@ class PersonStatusClassifier:
             center = np.mean(all_device_query, axis=0)
             self.device_query_center = center / np.linalg.norm(center)
 
+        # 13. 周界态势整体中心向量 + 子类型中心向量
+        self.perimeter_center = None
+        self.perimeter_sub_centers = {}
+        perimeter_vectors = []
+        for sub_type, examples in EMERGENCY_PERIMETER_STATUS_EXAMPLES.items():
+            vecs = self.model.encode(
+                examples, convert_to_numpy=True, normalize_embeddings=True
+            )
+            perimeter_vectors.append(vecs)
+            center = np.mean(vecs, axis=0)
+            self.perimeter_sub_centers[sub_type] = center / np.linalg.norm(center)
+
+        if perimeter_vectors:
+            all_perimeter = np.concatenate(perimeter_vectors, axis=0)
+            center = np.mean(all_perimeter, axis=0)
+            self.perimeter_center = center / np.linalg.norm(center)
+
+        # 14. 孪生巡检整体中心向量 + 子类型中心向量
+        self.inspection_center = None
+        self.inspection_sub_centers = {}
+        inspection_vectors = []
+        for sub_type, examples in TWINS_INSPECTION_STATUS_EXAMPLES.items():
+            vecs = self.model.encode(
+                examples, convert_to_numpy=True, normalize_embeddings=True
+            )
+            inspection_vectors.append(vecs)
+            center = np.mean(vecs, axis=0)
+            self.inspection_sub_centers[sub_type] = center / np.linalg.norm(center)
+
+        if inspection_vectors:
+            all_inspection = np.concatenate(inspection_vectors, axis=0)
+            center = np.mean(all_inspection, axis=0)
+            self.inspection_center = center / np.linalg.norm(center)
+
         logger.info("[classifier] 意图识别模型加载完成")
 
     def _encode(self, query: str) -> np.ndarray:
@@ -2622,6 +2865,24 @@ class PersonStatusClassifier:
         logger.info(f"[classifier] query={query}, device_query_score={score:.4f}")
         return score >= threshold, score
 
+    def is_emergency_perimeter(self, query: str, threshold: float = EMERGENCY_PERIMETER_STATUS_THRESHOLD) -> tuple:
+        """判断用户输入是否属于周界态势意图"""
+        if self.perimeter_center is None:
+            return False, 0.0
+        query_vec = self._encode(query)
+        score = float(np.dot(query_vec, self.perimeter_center))
+        logger.info(f"[classifier] query={query}, perimeter_score={score:.4f}")
+        return score >= threshold, score
+
+    def is_twins_inspection(self, query: str, threshold: float = TWINS_INSPECTION_STATUS_THRESHOLD) -> tuple:
+        """判断用户输入是否属于孪生巡检意图"""
+        if self.inspection_center is None:
+            return False, 0.0
+        query_vec = self._encode(query)
+        score = float(np.dot(query_vec, self.inspection_center))
+        logger.info(f"[classifier] query={query}, inspection_score={score:.4f}")
+        return score >= threshold, score
+
     def classify_top_intent(self, query: str) -> tuple:
         """
         多意图判定：一次编码，分别算两个意图中心相似度，
@@ -2644,12 +2905,16 @@ class PersonStatusClassifier:
             if self.meeting_center is not None else -1.0,
             "emergency_fire": float(np.dot(query_vec, self.fire_center))
             if self.fire_center is not None else -1.0,
+            "emergency_perimeter": float(np.dot(query_vec, self.perimeter_center))
+            if self.perimeter_center is not None else -1.0,
             "device_status": float(np.dot(query_vec, self.device_center))
             if self.device_center is not None else -1.0,
             "compositive_overview": float(np.dot(query_vec, self.overview_center))
             if self.overview_center is not None else -1.0,
             "device_query": float(np.dot(query_vec, self.device_query_center))
             if self.device_query_center is not None else -1.0,
+            "twins_inspection": float(np.dot(query_vec, self.inspection_center))
+            if self.inspection_center is not None else -1.0,
         }
         best = max(scores, key=scores.get)
         best_score = scores[best]
@@ -2662,9 +2927,11 @@ class PersonStatusClassifier:
             "energy_status": ENERGY_STATUS_THRESHOLD,
             "meeting_status": MEETING_STATUS_THRESHOLD,
             "emergency_fire": EMERGENCY_FIRE_STATUS_THRESHOLD,
+            "emergency_perimeter": EMERGENCY_PERIMETER_STATUS_THRESHOLD,
             "device_status": DEVICE_STATUS_THRESHOLD,
             "compositive_overview": COMPOSITIVE_OVERVIEW_STATUS_THRESHOLD,
             "device_query": DEVICE_QUERY_THRESHOLD,
+            "twins_inspection": TWINS_INSPECTION_STATUS_THRESHOLD,
         }.get(best, PERSON_STATUS_THRESHOLD)
         if best_score >= threshold:
             return best, best_score
@@ -2758,6 +3025,28 @@ class PersonStatusClassifier:
             if score > best_score:
                 best_type, best_score = sub_type, score
         logger.info(f"[classifier] query={query}, device_sub_type={best_type}, score={best_score:.4f}")
+        return best_type, best_score
+
+    def classify_perimeter_sub_type(self, query: str) -> tuple:
+        """周界态势子类型判定"""
+        query_vec = self._encode(query)
+        best_type, best_score = None, -1.0
+        for sub_type, center in self.perimeter_sub_centers.items():
+            score = float(np.dot(query_vec, center))
+            if score > best_score:
+                best_type, best_score = sub_type, score
+        logger.info(f"[classifier] query={query}, perimeter_sub_type={best_type}, score={best_score:.4f}")
+        return best_type, best_score
+
+    def classify_inspection_sub_type(self, query: str) -> tuple:
+        """孪生巡检子类型判定"""
+        query_vec = self._encode(query)
+        best_type, best_score = None, -1.0
+        for sub_type, center in self.inspection_sub_centers.items():
+            score = float(np.dot(query_vec, center))
+            if score > best_score:
+                best_type, best_score = sub_type, score
+        logger.info(f"[classifier] query={query}, inspection_sub_type={best_type}, score={best_score:.4f}")
         return best_type, best_score
 
     def classify_compositive_overview_sub_type(self, query: str) -> tuple:
@@ -3043,5 +3332,39 @@ async def classify_device_query_sub_type(query: str) -> tuple:
     return await loop.run_in_executor(
         None,
         classifier.classify_device_query_sub_type,
+        query
+    )
+
+
+async def classify_perimeter_sub_type(query: str) -> tuple:
+    """
+    异步判断周界态势的子类型（query_type）
+
+    :param query: 用户输入
+    :return: (query_type, 相似度分数)，例如 ("area_overview", 0.72)
+    """
+    classifier = await get_classifier()
+
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        None,
+        classifier.classify_perimeter_sub_type,
+        query
+    )
+
+
+async def classify_inspection_sub_type(query: str) -> tuple:
+    """
+    异步判断孪生巡检的子类型（query_type）
+
+    :param query: 用户输入
+    :return: (query_type, 相似度分数)，例如 ("today_inspection", 0.72)
+    """
+    classifier = await get_classifier()
+
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        None,
+        classifier.classify_inspection_sub_type,
         query
     )

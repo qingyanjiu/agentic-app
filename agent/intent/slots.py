@@ -1085,6 +1085,131 @@ def extract_emergency_fire_slots(query: str) -> dict:
 
 
 # ============================================================
+# 周界态势（孪生周界）slot 抽取
+# 目前支持子类型（query_type）：
+#   key_metrics           -> 关键指标（在线/离线防区设备数、今日告警数）
+#   area_overview         -> 防区一览（防区列表与布防状态）
+#   perimeter_alarm_stats -> 周界告警统计（按区域/时段统计与小时曲线）
+#   alarm_overview        -> 告警一览（周界告警列表，点击看抓拍照片）
+#   count                 -> 一般周界查询（兜底）
+# ============================================================
+
+def extract_emergency_perimeter_slots(query: str) -> dict:
+    """
+    统一抽取周界态势相关的所有 slot
+    """
+    slots = {
+        "query_type": "count",
+        "date": parse_time_slot(query),
+    }
+
+    q = query
+
+    # 1. 告警一览（列表/实时口径，优先于统计，避免"告警列表"被统计误抢）
+    if re.search(
+        r"告警一览|告警列表|实时周界|实时告警|最新告警|当前告警|报警列表|"
+        r"报警记录|告警记录|告警信息|(最新|最近).{0,2}(周界|围栏)告警|"
+        r"现在有什么告警|有什么周界告警|告警抓拍|入侵记录|翻越.*记录",
+        q,
+    ):
+        slots["query_type"] = "alarm_overview"
+
+    # 2. 关键指标（在线/离线防区设备数、今日告警数，
+    #    放在统计之前，避免"今日告警数"被"告警数"类统计正则误抢）
+    elif re.search(
+        r"关键指标|防区.*(在线|离线)|(在线|离线).*防区|周界.*(在线|离线)|"
+        r"今日告警数|今日报警数|今日.*告警数|在线防区|离线防区",
+        q,
+    ):
+        slots["query_type"] = "key_metrics"
+
+    # 3. 周界告警统计（按区域/时段统计与小时曲线）
+    elif re.search(
+        r"告警统计|报警统计|告警.*统计|告警.*分布|告警.*趋势|告警.*时段|"
+        r"时段.*分布|小时.*曲线|告警.*曲线|按区域|告警分类|告警.*分析|"
+        r"有多少.*告警|告警.*情况",
+        q,
+    ):
+        slots["query_type"] = "perimeter_alarm_stats"
+
+    # 4. 防区一览（防区列表与布防状态）
+    elif re.search(
+        r"防区|布防|撤防|围栏|围界|周界",
+        q,
+    ):
+        slots["query_type"] = "area_overview"
+
+    # 5. 兜底：一般周界查询
+    # 默认 count，无需再判断
+
+    print(f"[perimeter slots] query={q} => {slots}")
+    return slots
+
+
+# ============================================================
+# 孪生巡检 slot 抽取
+# 目前支持子类型（query_type）：
+#   today_inspection             -> 今日巡检（任务数/点位/完成率 + 分时段图表）
+#   today_tasks                  -> 今日任务列表（人员/类型/状态/班组/时间）
+#   inspection_statistics        -> 巡检统计（平均时长/点位/隐患数，近1月/3月/1年）
+#   inspection_execution_status  -> 巡检执行状态（按人巡检正常/异常）
+#   count                        -> 一般巡检查询（兜底）
+# ============================================================
+
+def extract_twins_inspection_slots(query: str) -> dict:
+    """
+    统一抽取孪生巡检相关的所有 slot
+    """
+    slots = {
+        "query_type": "count",
+        "date": parse_time_slot(query),
+    }
+
+    q = query
+
+    # 1. 今日巡检总览（任务数/点位/完成率口径，
+    #    放在任务列表之前，避免"今日任务数/多少巡检任务"被任务列表正则误抢；
+    #    "今日巡检"后跟"任务"时不算总览，让位给任务列表）
+    if re.search(
+        r"任务数|完成率|巡检完成|今日巡检(?!任务)|巡检总览|巡检概况|"
+        r"多少.{0,4}巡检任务|多少.{0,4}点位|巡检点位",
+        q,
+    ):
+        slots["query_type"] = "today_inspection"
+
+    # 2. 今日任务列表（人员/类型/状态/班组/时间口径）
+    elif re.search(
+        r"任务列表|任务清单|巡检任务|任务安排|巡检安排|巡检班组|"
+        r"巡检人员|谁在巡检",
+        q,
+    ):
+        slots["query_type"] = "today_tasks"
+
+    # 3. 巡检执行状态（按人巡检正常/异常口径，先于统计，
+    #    避免"各人巡检正常异常统计"被统计误抢）
+    elif re.search(
+        r"执行状态|巡检执行|按人|巡检员|巡检正常|巡检异常|"
+        r"正常.{0,4}异常|异常.{0,4}正常|每人.{0,4}巡检",
+        q,
+    ):
+        slots["query_type"] = "inspection_execution_status"
+
+    # 4. 巡检统计（平均时长/点位/隐患数，近1月/3月/1年）
+    elif re.search(
+        r"巡检统计|巡检.{0,4}统计|平均.{0,4}时长|巡检时长|隐患|"
+        r"近一月|近三月|近一年",
+        q,
+    ):
+        slots["query_type"] = "inspection_statistics"
+
+    # 5. 兜底：一般巡检查询
+    # 默认 count，无需再判断
+
+    print(f"[inspection slots] query={q} => {slots}")
+    return slots
+
+
+# ============================================================
 # 会议管理 slot 抽取
 # 目前支持子类型（event_type）：
 #   meeting_statistics      -> 会议统计（预约数/平均时长/环比）

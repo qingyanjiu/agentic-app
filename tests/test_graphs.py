@@ -56,6 +56,10 @@ HAPPY_PATH_CASES = [
     ("emergency_fire", {"query_type": "fire_alarm_num"}),
     ("emergency_fire", {"query_type": "fire_assets"}),
     ("emergency_fire", {"query_type": "month_repair"}),
+    ("emergency_perimeter", {"query_type": "key_metrics"}),
+    ("emergency_perimeter", {"query_type": "area_overview"}),
+    ("emergency_perimeter", {"query_type": "perimeter_alarm_stats"}),
+    ("emergency_perimeter", {"query_type": "alarm_overview"}),
     ("device_status", {"query_type": "equip_class"}),
     ("device_status", {"query_type": "category_health"}),
     ("device_status", {"query_type": "month_maintenance", "date": SPAN_DATE}),
@@ -108,6 +112,11 @@ ASK_CASES = [
      "请问您想查看哪台设备的详情？"),
     ("device_query", {"query_type": "device_detail", "device_type": "消防设备"},
      "请问您想查看哪台设备的详情？"),
+    # 周界与消防同一约定：笼统问法 query_type=count -> 反问而非报错
+    ("emergency_perimeter", {"query_type": "count"},
+     "请问您想查询哪类周界数据？关键指标、防区一览、告警统计，还是告警一览？"),
+    ("emergency_perimeter", {},
+     "请问您想查询哪类周界数据？关键指标、防区一览、告警统计，还是告警一览？"),
 ]
 
 
@@ -132,6 +141,7 @@ def test_missing_params_asks_back(domain_graphs, module_key, slots, expected_que
         ("person_status", {"query_type": "location"}),
         ("emergency_fire", {"query_type": "count"}),
         ("device_query", {"query_type": "device_detail"}),
+        ("emergency_perimeter", {"query_type": "count"}),
     ],
 )
 def test_give_up_after_max_asks(domain_graphs, module_key, slots):
@@ -182,6 +192,8 @@ GUARD_CASES = [
     # 注意：fire 的 count 在 check_missing_params 就被反问拦截，到不了守卫；
     # 这里用「非法枚举值」验证守卫分支本身存在
     ("emergency_fire", {"query_type": "no_such_type"}),
+    # 周界同理：count 在 check_missing_params 被反问拦截，守卫用非法枚举值验证
+    ("emergency_perimeter", {"query_type": "no_such_type"}),
     ("device_status", {"query_type": "no_such_type"}),
     ("compositive_overview", {"query_type": "no_such_type"}),
     ("device_query", {"query_type": "no_such_type", "device_keyword": "MH-001"}),

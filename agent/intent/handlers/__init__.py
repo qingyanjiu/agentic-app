@@ -8,8 +8,10 @@ from .information_status_handler import InformationStatusHandler
 from .energy_status_handler import EnergyStatusHandler
 from .meeting_status_handler import MeetingStatusHandler
 from .emergency_fire_handler import EmergencyFireHandler
+from .emergency_perimeter_handler import EmergencyPerimeterHandler
 from .device_status_handler import DeviceStatusHandler
 from .compositive_overview_handler import CompositiveOverviewHandler
 from .device_query_handler import DeviceQueryHandler
+from .twins_inspection_handler import TwinsInspectionHandler
 
-__all__ = ["PersonStatusHandler", "SecurityStatusHandler", "CanteenStatusHandler", "VehicleStatusHandler", "InformationStatusHandler", "EnergyStatusHandler", "MeetingStatusHandler", "EmergencyFireHandler", "DeviceStatusHandler", "CompositiveOverviewHandler", "DeviceQueryHandler"]
+__all__ = ["PersonStatusHandler", "SecurityStatusHandler", "CanteenStatusHandler", "VehicleStatusHandler", "InformationStatusHandler", "EnergyStatusHandler", "MeetingStatusHandler", "EmergencyFireHandler", "EmergencyPerimeterHandler", "DeviceStatusHandler", "CompositiveOverviewHandler", "DeviceQueryHandler", "TwinsInspectionHandler"]

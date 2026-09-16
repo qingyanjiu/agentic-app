@@ -21,7 +21,7 @@ import asyncio
 
 # 新增：人员态势/安防态势/食堂管理/车辆态势/信息发布/能源态势/会议管理意图识别相关导入
 # classify_security_sub_type：安防态势子类型（event_type）判定，供安防 handler 追问/兜底使用
-from agent.intent import classify_intent, classify_security_sub_type, PersonStatusHandler, SecurityStatusHandler, CanteenStatusHandler, VehicleStatusHandler, InformationStatusHandler, EnergyStatusHandler, MeetingStatusHandler, EmergencyFireHandler, DeviceStatusHandler, CompositiveOverviewHandler, DeviceQueryHandler
+from agent.intent import classify_intent, classify_security_sub_type, PersonStatusHandler, SecurityStatusHandler, CanteenStatusHandler, VehicleStatusHandler, InformationStatusHandler, EnergyStatusHandler, MeetingStatusHandler, EmergencyFireHandler, EmergencyPerimeterHandler, DeviceStatusHandler, CompositiveOverviewHandler, TwinsInspectionHandler, DeviceQueryHandler
 from graph.person_status_langgraph import build_person_status_graph, load_person_status_tools
 from graph.security_status_langgraph import build_security_status_graph, load_security_tools
 from graph.canteen_status_langgraph import build_canteen_status_graph, load_canteen_tools
@@ -30,9 +30,11 @@ from graph.information_status_langgraph import build_information_status_graph, l
 from graph.energy_status_langgraph import build_energy_status_graph, load_energy_status_tools
 from graph.meeting_status_langgraph import build_meeting_status_graph, load_meeting_status_tools
 from graph.emergency_fire_langgraph import build_emergency_fire_graph, load_emergency_fire_tools
+from graph.emergency_perimeter_langgraph import build_emergency_perimeter_graph, load_emergency_perimeter_tools
 from graph.device_status_langgraph import build_device_status_graph, load_device_status_tools
 from graph.compositive_overview_langgraph import build_compositive_overview_graph, load_compositive_overview_tools
 from graph.device_query_langgraph import build_device_query_graph, load_device_query_tools
+from graph.twins_inspection_langgraph import build_twins_inspection_graph, load_twins_inspection_tools
 from memory.session_state import session_state, IntentState
 # from asr.voice_asr import get_recognizer, VoiceRecognizer
 # from asr.text_corrector import get_corrector, TextCorrector
@@ -137,6 +139,10 @@ async def get_person_status_graph():
     global _person_status_graph
     if _person_status_graph is None:
         tools = await load_person_status_tools()
+        if not tools:
+            # 空工具不入缓存：保持 None，下次查询自动重试加载（排查记录案例 9）
+            logger.warning("人员态势 MCP 工具为空，本次不编译图，待下次查询重试")
+            return None
         # 传入 llm，让 call_tool 节点用 LLM 根据 query_type 分析 MCP 返回生成回答
         _person_status_graph = build_person_status_graph(tools, llm=llm)
     return _person_status_graph
@@ -151,6 +157,17 @@ async def run_person_status_graph(websocket, state, user_id, session_id):
       4. 发送 events；有 ask 事件则保留状态等下一轮，否则标记 done 保留（供省略式追问继承）
     """
     graph = await get_person_status_graph()
+    if graph is None:
+        # MCP 工具不可用：发明确错误，状态按完成态保留（done），下轮可重新分类重试（排查记录案例 9）
+        state.done = True
+        state.missing_params = []
+        session_state.set(user_id, session_id, state)
+        chunk = _safe_serialize({
+            "event": "custom",
+            "data": {"type": "error", "content": "MCP 工具暂时不可用，请稍后再试。"},
+        })
+        await websocket.send_text(json.dumps(chunk, ensure_ascii=False))
+        return
 
     # 组装喂给图的输入状态
     graph_input = {
@@ -209,6 +226,10 @@ async def get_security_status_graph():
     global _security_status_graph
     if _security_status_graph is None:
         tools = await load_security_tools()
+        if not tools:
+            # 空工具不入缓存：保持 None，下次查询自动重试加载（排查记录案例 9）
+            logger.warning("安防 MCP 工具为空，本次不编译图，待下次查询重试")
+            return None
         # 传入 llm，让 call_tool 节点用 LLM 组织 MCP 返回生成回答
         _security_status_graph = build_security_status_graph(tools, llm=llm)
     return _security_status_graph
@@ -223,6 +244,17 @@ async def run_security_status_graph(websocket, state, user_id, session_id):
       4. 发送 events；有 ask 事件则保留状态等下一轮，否则标记 done 保留（供省略式追问继承）
     """
     graph = await get_security_status_graph()
+    if graph is None:
+        # MCP 工具不可用：发明确错误，状态按完成态保留（done），下轮可重新分类重试（排查记录案例 9）
+        state.done = True
+        state.missing_params = []
+        session_state.set(user_id, session_id, state)
+        chunk = _safe_serialize({
+            "event": "custom",
+            "data": {"type": "error", "content": "MCP 工具暂时不可用，请稍后再试。"},
+        })
+        await websocket.send_text(json.dumps(chunk, ensure_ascii=False))
+        return
 
     # 组装喂给图的输入状态
     graph_input = {
@@ -281,6 +313,10 @@ async def get_canteen_status_graph():
     global _canteen_status_graph
     if _canteen_status_graph is None:
         tools = await load_canteen_tools()
+        if not tools:
+            # 空工具不入缓存：保持 None，下次查询自动重试加载（排查记录案例 9）
+            logger.warning("食堂 MCP 工具为空，本次不编译图，待下次查询重试")
+            return None
         # 传入 llm，让 call_tool 节点用 LLM 组织 MCP 返回生成回答
         _canteen_status_graph = build_canteen_status_graph(tools, llm=llm)
     return _canteen_status_graph
@@ -295,6 +331,17 @@ async def run_canteen_status_graph(websocket, state, user_id, session_id):
       4. 发送 events；有 ask 事件则保留状态等下一轮，否则标记 done 保留（供省略式追问继承）
     """
     graph = await get_canteen_status_graph()
+    if graph is None:
+        # MCP 工具不可用：发明确错误，状态按完成态保留（done），下轮可重新分类重试（排查记录案例 9）
+        state.done = True
+        state.missing_params = []
+        session_state.set(user_id, session_id, state)
+        chunk = _safe_serialize({
+            "event": "custom",
+            "data": {"type": "error", "content": "MCP 工具暂时不可用，请稍后再试。"},
+        })
+        await websocket.send_text(json.dumps(chunk, ensure_ascii=False))
+        return
 
     # 组装喂给图的输入状态
     graph_input = {
@@ -352,6 +399,10 @@ async def get_vehicle_status_graph():
     global _vehicle_status_graph
     if _vehicle_status_graph is None:
         tools = await load_vehicle_status_tools()
+        if not tools:
+            # 空工具不入缓存：保持 None，下次查询自动重试加载（排查记录案例 9）
+            logger.warning("车辆 MCP 工具为空，本次不编译图，待下次查询重试")
+            return None
         # 传入 llm，让 call_tool 节点用 LLM 组织 MCP 返回生成回答
         _vehicle_status_graph = build_vehicle_status_graph(tools, llm=llm)
     return _vehicle_status_graph
@@ -366,6 +417,17 @@ async def run_vehicle_status_graph(websocket, state, user_id, session_id):
       4. 发送 events；有 ask 事件则保留状态等下一轮，否则标记 done 保留（供省略式追问继承）
     """
     graph = await get_vehicle_status_graph()
+    if graph is None:
+        # MCP 工具不可用：发明确错误，状态按完成态保留（done），下轮可重新分类重试（排查记录案例 9）
+        state.done = True
+        state.missing_params = []
+        session_state.set(user_id, session_id, state)
+        chunk = _safe_serialize({
+            "event": "custom",
+            "data": {"type": "error", "content": "MCP 工具暂时不可用，请稍后再试。"},
+        })
+        await websocket.send_text(json.dumps(chunk, ensure_ascii=False))
+        return
 
     # 组装喂给图的输入状态
     graph_input = {
@@ -424,6 +486,10 @@ async def get_information_status_graph():
     global _information_status_graph
     if _information_status_graph is None:
         tools = await load_information_status_tools()
+        if not tools:
+            # 空工具不入缓存：保持 None，下次查询自动重试加载（排查记录案例 9）
+            logger.warning("信息发布 MCP 工具为空，本次不编译图，待下次查询重试")
+            return None
         # 传入 llm，让 call_tool 节点用 LLM 组织 MCP 返回生成回答
         _information_status_graph = build_information_status_graph(tools, llm=llm)
     return _information_status_graph
@@ -438,6 +504,17 @@ async def run_information_status_graph(websocket, state, user_id, session_id):
       4. 发送 events；有 ask 事件则保留状态等下一轮，否则标记 done 保留（供省略式追问继承）
     """
     graph = await get_information_status_graph()
+    if graph is None:
+        # MCP 工具不可用：发明确错误，状态按完成态保留（done），下轮可重新分类重试（排查记录案例 9）
+        state.done = True
+        state.missing_params = []
+        session_state.set(user_id, session_id, state)
+        chunk = _safe_serialize({
+            "event": "custom",
+            "data": {"type": "error", "content": "MCP 工具暂时不可用，请稍后再试。"},
+        })
+        await websocket.send_text(json.dumps(chunk, ensure_ascii=False))
+        return
 
     # 组装喂给图的输入状态
     graph_input = {
@@ -496,6 +573,10 @@ async def get_energy_status_graph():
     global _energy_status_graph
     if _energy_status_graph is None:
         tools = await load_energy_status_tools()
+        if not tools:
+            # 空工具不入缓存：保持 None，下次查询自动重试加载（排查记录案例 9）
+            logger.warning("能源 MCP 工具为空，本次不编译图，待下次查询重试")
+            return None
         # 传入 llm，让 call_tool 节点用 LLM 组织 MCP 返回生成回答
         _energy_status_graph = build_energy_status_graph(tools, llm=llm)
     return _energy_status_graph
@@ -510,6 +591,17 @@ async def run_energy_status_graph(websocket, state, user_id, session_id):
       4. 发送 events；有 ask 事件则保留状态等下一轮，否则标记 done 保留（供省略式追问继承）
     """
     graph = await get_energy_status_graph()
+    if graph is None:
+        # MCP 工具不可用：发明确错误，状态按完成态保留（done），下轮可重新分类重试（排查记录案例 9）
+        state.done = True
+        state.missing_params = []
+        session_state.set(user_id, session_id, state)
+        chunk = _safe_serialize({
+            "event": "custom",
+            "data": {"type": "error", "content": "MCP 工具暂时不可用，请稍后再试。"},
+        })
+        await websocket.send_text(json.dumps(chunk, ensure_ascii=False))
+        return
 
     # 组装喂给图的输入状态
     graph_input = {
@@ -568,6 +660,10 @@ async def get_meeting_status_graph():
     global _meeting_status_graph
     if _meeting_status_graph is None:
         tools = await load_meeting_status_tools()
+        if not tools:
+            # 空工具不入缓存：保持 None，下次查询自动重试加载（排查记录案例 9）
+            logger.warning("会议管理 MCP 工具为空，本次不编译图，待下次查询重试")
+            return None
         # 传入 llm，让 call_tool 节点用 LLM 组织 MCP 返回生成回答
         _meeting_status_graph = build_meeting_status_graph(tools, llm=llm)
     return _meeting_status_graph
@@ -582,6 +678,17 @@ async def run_meeting_status_graph(websocket, state, user_id, session_id):
       4. 发送 events；有 ask 事件则保留状态等下一轮，否则标记 done 保留（供省略式追问继承）
     """
     graph = await get_meeting_status_graph()
+    if graph is None:
+        # MCP 工具不可用：发明确错误，状态按完成态保留（done），下轮可重新分类重试（排查记录案例 9）
+        state.done = True
+        state.missing_params = []
+        session_state.set(user_id, session_id, state)
+        chunk = _safe_serialize({
+            "event": "custom",
+            "data": {"type": "error", "content": "MCP 工具暂时不可用，请稍后再试。"},
+        })
+        await websocket.send_text(json.dumps(chunk, ensure_ascii=False))
+        return
 
     # 组装喂给图的输入状态
     graph_input = {
@@ -640,6 +747,10 @@ async def get_emergency_fire_graph():
     global _emergency_fire_graph
     if _emergency_fire_graph is None:
         tools = await load_emergency_fire_tools()
+        if not tools:
+            # 空工具不入缓存：保持 None，下次查询自动重试加载（排查记录案例 9）
+            logger.warning("消防 MCP 工具为空，本次不编译图，待下次查询重试")
+            return None
         # 传入 llm，让 call_tool 节点用 LLM 组织 MCP 返回生成回答
         _emergency_fire_graph = build_emergency_fire_graph(tools, llm=llm)
     return _emergency_fire_graph
@@ -654,6 +765,104 @@ async def run_emergency_fire_graph(websocket, state, user_id, session_id):
       4. 发送 events；有 ask 事件则保留状态等下一轮，否则标记 done 保留（供省略式追问继承）
     """
     graph = await get_emergency_fire_graph()
+    if graph is None:
+        # MCP 工具不可用：发明确错误，状态按完成态保留（done），下轮可重新分类重试（排查记录案例 9）
+        state.done = True
+        state.missing_params = []
+        session_state.set(user_id, session_id, state)
+        chunk = _safe_serialize({
+            "event": "custom",
+            "data": {"type": "error", "content": "MCP 工具暂时不可用，请稍后再试。"},
+        })
+        await websocket.send_text(json.dumps(chunk, ensure_ascii=False))
+        return
+
+    # 组装喂给图的输入状态
+    graph_input = {
+        "slots": state.slots,
+        "missing_params": state.missing_params,
+        "ask_count": state.ask_count,
+        "unrelated_count": state.unrelated_count,
+        "last_question": state.last_question,
+        "original_query": state.original_query,
+        "answer": None,
+        "error": None,
+        "done": state.done,
+        "events": [],
+    }
+    print(f"[GRAPH INPUT] user={user_id}, session={session_id}")
+    print(json.dumps(graph_input, ensure_ascii=False, default=str))
+
+    final_state = await graph.ainvoke(graph_input)
+
+    print(f"[GRAPH OUTPUT] user={user_id}, session={session_id}")
+    print(json.dumps(final_state, ensure_ascii=False, default=str))
+
+    # 图内多轮追问会更新这些字段，回写供下一轮 handle_reply 使用
+    state.slots = final_state["slots"]
+    state.missing_params = final_state["missing_params"]
+    state.ask_count = final_state["ask_count"]
+    state.last_question = final_state["last_question"]
+
+    # 发送事件；存在 ask 事件说明进入追问，保留状态等待用户补充
+    keep_state = False
+    for chunk in final_state["events"]:
+        text = _safe_serialize(chunk)
+        await websocket.send_text(json.dumps(text, ensure_ascii=False))
+        if chunk.get("event") == "custom" and chunk.get("data", {}).get("type") == "ask":
+            keep_state = True
+
+    if keep_state:
+        session_state.set(user_id, session_id, state)
+    else:
+        # 查询已结束（已出答案或报错）：不清空状态，标记 done 留在会话中，
+        # 供下一轮「昨天呢 / 那上周呢」类省略式追问拼接上下文重新分类（情况 1.5）；
+        # 靠 SessionStateManager 的 300 秒超时自动过期
+        state.done = True
+        state.missing_params = []
+        session_state.set(user_id, session_id, state)
+
+
+# ============================================================
+# 周界态势 LangGraph 执行助手
+# 与人员/安防/食堂/车辆/信息发布/能源态势/会议管理/消防态势对称：懒加载图，用图执行周界态势流程
+# ============================================================
+_emergency_perimeter_graph = None
+
+async def get_emergency_perimeter_graph():
+    """懒加载：首次调用时从 MCP 加载周界态势工具并编译图，之后复用"""
+    global _emergency_perimeter_graph
+    if _emergency_perimeter_graph is None:
+        tools = await load_emergency_perimeter_tools()
+        if not tools:
+            # 空工具不入缓存：保持 None，下次查询自动重试加载（排查记录案例 9）
+            logger.warning("周界 MCP 工具为空，本次不编译图，待下次查询重试")
+            return None
+        # 传入 llm，让 call_tool 节点用 LLM 组织 MCP 返回生成回答
+        _emergency_perimeter_graph = build_emergency_perimeter_graph(tools, llm=llm)
+    return _emergency_perimeter_graph
+
+
+async def run_emergency_perimeter_graph(websocket, state, user_id, session_id):
+    """
+    用 LangGraph 图执行周界态势流程（与人员/安防/食堂/车辆/信息发布/能源态势/会议管理对称）：
+      1. 把 IntentState(dataclass) 转成图需要的 EmergencyPerimeterGraphState(TypedDict)
+      2. ainvoke 跑图
+      3. 把图更新后的 slots/ask_count/last_question 回写到会话状态
+      4. 发送 events；有 ask 事件则保留状态等下一轮，否则标记 done 保留（供省略式追问继承）
+    """
+    graph = await get_emergency_perimeter_graph()
+    if graph is None:
+        # MCP 工具不可用：发明确错误，状态按完成态保留（done），下轮可重新分类重试（排查记录案例 9）
+        state.done = True
+        state.missing_params = []
+        session_state.set(user_id, session_id, state)
+        chunk = _safe_serialize({
+            "event": "custom",
+            "data": {"type": "error", "content": "MCP 工具暂时不可用，请稍后再试。"},
+        })
+        await websocket.send_text(json.dumps(chunk, ensure_ascii=False))
+        return
 
     # 组装喂给图的输入状态
     graph_input = {
@@ -712,6 +921,10 @@ async def get_device_status_graph():
     global _device_status_graph
     if _device_status_graph is None:
         tools = await load_device_status_tools()
+        if not tools:
+            # 空工具不入缓存：保持 None，下次查询自动重试加载（排查记录案例 9）
+            logger.warning("设备 MCP 工具为空，本次不编译图，待下次查询重试")
+            return None
         # 传入 llm，让 call_tool 节点用 LLM 组织 MCP 返回生成回答
         _device_status_graph = build_device_status_graph(tools, llm=llm)
     return _device_status_graph
@@ -726,6 +939,17 @@ async def run_device_status_graph(websocket, state, user_id, session_id):
       4. 发送 events；有 ask 事件则保留状态等下一轮，否则标记 done 保留（供省略式追问继承）
     """
     graph = await get_device_status_graph()
+    if graph is None:
+        # MCP 工具不可用：发明确错误，状态按完成态保留（done），下轮可重新分类重试（排查记录案例 9）
+        state.done = True
+        state.missing_params = []
+        session_state.set(user_id, session_id, state)
+        chunk = _safe_serialize({
+            "event": "custom",
+            "data": {"type": "error", "content": "MCP 工具暂时不可用，请稍后再试。"},
+        })
+        await websocket.send_text(json.dumps(chunk, ensure_ascii=False))
+        return
 
     # 组装喂给图的输入状态
     graph_input = {
@@ -785,6 +1009,10 @@ async def get_compositive_overview_graph():
     global _compositive_overview_graph
     if _compositive_overview_graph is None:
         tools = await load_compositive_overview_tools()
+        if not tools:
+            # 空工具不入缓存：保持 None，下次查询自动重试加载（排查记录案例 9）
+            logger.warning("综合态势总览 MCP 工具为空，本次不编译图，待下次查询重试")
+            return None
         # 传入 llm，让 call_tool 节点用 LLM 组织 MCP 返回生成回答
         _compositive_overview_graph = build_compositive_overview_graph(tools, llm=llm)
     return _compositive_overview_graph
@@ -799,6 +1027,105 @@ async def run_compositive_overview_graph(websocket, state, user_id, session_id):
       4. 发送 events；有 ask 事件则保留状态等下一轮，否则标记 done 保留（供省略式追问继承）
     """
     graph = await get_compositive_overview_graph()
+    if graph is None:
+        # MCP 工具不可用：发明确错误，状态按完成态保留（done），下轮可重新分类重试（排查记录案例 9）
+        state.done = True
+        state.missing_params = []
+        session_state.set(user_id, session_id, state)
+        chunk = _safe_serialize({
+            "event": "custom",
+            "data": {"type": "error", "content": "MCP 工具暂时不可用，请稍后再试。"},
+        })
+        await websocket.send_text(json.dumps(chunk, ensure_ascii=False))
+        return
+
+    # 组装喂给图的输入状态
+    graph_input = {
+        "slots": state.slots,
+        "missing_params": state.missing_params,
+        "ask_count": state.ask_count,
+        "unrelated_count": state.unrelated_count,
+        "last_question": state.last_question,
+        "original_query": state.original_query,
+        "answer": None,
+        "error": None,
+        "done": state.done,
+        "events": [],
+    }
+    print(f"[GRAPH INPUT] user={user_id}, session={session_id}")
+    print(json.dumps(graph_input, ensure_ascii=False, default=str))
+
+    final_state = await graph.ainvoke(graph_input)
+
+    print(f"[GRAPH OUTPUT] user={user_id}, session={session_id}")
+    print(json.dumps(final_state, ensure_ascii=False, default=str))
+
+    # 图内多轮追问会更新这些字段，回写供下一轮 handle_reply 使用
+    state.slots = final_state["slots"]
+    state.missing_params = final_state["missing_params"]
+    state.ask_count = final_state["ask_count"]
+    state.last_question = final_state["last_question"]
+
+    # 发送事件；存在 ask 事件说明进入追问，保留状态等待用户补充
+    keep_state = False
+    for chunk in final_state["events"]:
+        text = _safe_serialize(chunk)
+        await websocket.send_text(json.dumps(text, ensure_ascii=False))
+        if chunk.get("event") == "custom" and chunk.get("data", {}).get("type") == "ask":
+            keep_state = True
+
+    if keep_state:
+        session_state.set(user_id, session_id, state)
+    else:
+        # 查询已结束（已出答案或报错）：不清空状态，标记 done 留在会话中，
+        # 供下一轮「昨天呢 / 那上周呢」类省略式追问拼接上下文重新分类（情况 1.5）；
+        # 靠 SessionStateManager 的 300 秒超时自动过期
+        state.done = True
+        state.missing_params = []
+        session_state.set(user_id, session_id, state)
+
+
+# ============================================================
+# 孪生巡检 LangGraph 执行助手
+# 与人员/安防/食堂/车辆/信息发布/能源态势/会议管理/消防态势/周界态势对称：
+# 懒加载图，用图执行孪生巡检流程
+# ============================================================
+_twins_inspection_graph = None
+
+async def get_twins_inspection_graph():
+    """懒加载：首次调用时从 MCP 加载孪生巡检工具并编译图，之后复用"""
+    global _twins_inspection_graph
+    if _twins_inspection_graph is None:
+        tools = await load_twins_inspection_tools()
+        if not tools:
+            # 空工具不入缓存：保持 None，下次查询自动重试加载（排查记录案例 9）
+            logger.warning("孪生巡检 MCP 工具为空，本次不编译图，待下次查询重试")
+            return None
+        # 传入 llm,让 call_tool 节点用 LLM 组织 MCP 返回生成回答
+        _twins_inspection_graph = build_twins_inspection_graph(tools, llm=llm)
+    return _twins_inspection_graph
+
+
+async def run_twins_inspection_graph(websocket, state, user_id, session_id):
+    """
+    用 LangGraph 图执行孪生巡检流程（与其它态势域对称）：
+      1. 把 IntentState(dataclass) 转成图需要的 TwinsInspectionGraphState(TypedDict)
+      2. ainvoke 跑图
+      3. 把图更新后的 slots/ask_count/last_question 回写到会话状态
+      4. 发送 events；有 ask 事件则保留状态等下一轮，否则标记 done 保留（供省略式追问继承）
+    """
+    graph = await get_twins_inspection_graph()
+    if graph is None:
+        # MCP 工具不可用：发明确错误，状态按完成态保留（done），下轮可重新分类重试（排查记录案例 9）
+        state.done = True
+        state.missing_params = []
+        session_state.set(user_id, session_id, state)
+        chunk = _safe_serialize({
+            "event": "custom",
+            "data": {"type": "error", "content": "MCP 工具暂时不可用，请稍后再试。"},
+        })
+        await websocket.send_text(json.dumps(chunk, ensure_ascii=False))
+        return
 
     # 组装喂给图的输入状态
     graph_input = {
@@ -1104,10 +1431,12 @@ MODULE_HANDLERS = {
     "information_status": InformationStatusHandler,
     "energy_status": EnergyStatusHandler,
     "emergency_fire": EmergencyFireHandler,
+    "emergency_perimeter": EmergencyPerimeterHandler,
     "meeting_status": MeetingStatusHandler,
     "device_status": DeviceStatusHandler,
     "compositive_overview": CompositiveOverviewHandler,
     "device_query": DeviceQueryHandler,
+    "twins_inspection": TwinsInspectionHandler,
 }
 
 MODULE_RUNNERS = {
@@ -1118,22 +1447,31 @@ MODULE_RUNNERS = {
     "information_status": run_information_status_graph,
     "energy_status": run_energy_status_graph,
     "emergency_fire": run_emergency_fire_graph,
+    "emergency_perimeter": run_emergency_perimeter_graph,
     "meeting_status": run_meeting_status_graph,
     "device_status": run_device_status_graph,
     "compositive_overview": run_compositive_overview_graph,
     "device_query": run_device_query_graph,
+    "twins_inspection": run_twins_inspection_graph,
 }
 
 
-async def start_module_flow(websocket, query: str, module: str, user_id: str, session_id) -> None:
+async def start_module_flow(websocket, query: str, module: str, user_id: str, session_id,
+                            slots: dict = None, original_query: str = None) -> None:
     """
     启动某业务域的全新查询流程（与情况 2 的新意图分支同构）：
       1. 用对应 handler 抽取初始 slots 与缺失参数
       2. 创建会话状态
       3. 用对应 LangGraph 图执行（内部会回写/保留会话状态）
+
+    slots / original_query：省略式追问的继承式启动可选传入——
+      slots 由调用方用本轮输入单独抽取（拼接串整体抽槽会把实体查成上轮的）；
+      original_query 固定传首轮原话（拼接串回写会滚雪球，稀释后续分类得分）。
+      缺省时维持现状：从 query 抽取、原话即 query。
     """
     handler = MODULE_HANDLERS[module]()
-    slots = await handler.extract_slots(query)
+    if slots is None:
+        slots = await handler.extract_slots(query)
     missing = handler._get_missing_params(slots)
 
     state = IntentState(
@@ -1142,7 +1480,7 @@ async def start_module_flow(websocket, query: str, module: str, user_id: str, se
         missing_params=missing,
         ask_count=0,
         unrelated_count=0,
-        original_query=query,
+        original_query=original_query or query,
         done=False
     )
     session_state.set(user_id, session_id, state)
@@ -1231,7 +1569,7 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
             #              → 不进追问分支，仅在情况 1.5 里充当省略式追问的上下文
             is_waiting = bool(
                 active_state and not active_state.done
-                and active_state.module in ("person_status", "security_status", "canteen_status", "vehicle_status", "information_status", "energy_status", "meeting_status", "emergency_fire", "device_status", "compositive_overview", "device_query")
+                and active_state.module in ("person_status", "security_status", "canteen_status", "vehicle_status", "information_status", "energy_status", "meeting_status", "emergency_fire", "emergency_perimeter", "device_status", "compositive_overview", "twins_inspection", "device_query")
             )
 
             # 预计算顶层意图（人员态势 / 安防态势 / 食堂管理 / 车辆态势 / 信息发布 / 能源态势 / 会议管理 / 消防态势 / other），只算一次
@@ -1260,12 +1598,16 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
                     handler = EnergyStatusHandler()
                 elif active_state.module == "emergency_fire":
                     handler = EmergencyFireHandler()
+                elif active_state.module == "emergency_perimeter":
+                    handler = EmergencyPerimeterHandler()
                 elif active_state.module == "device_status":
                     handler = DeviceStatusHandler()
                 elif active_state.module == "compositive_overview":
                     handler = CompositiveOverviewHandler()
                 elif active_state.module == "device_query":
                     handler = DeviceQueryHandler()
+                elif active_state.module == "twins_inspection":
+                    handler = TwinsInspectionHandler()
                 else:
                     handler = MeetingStatusHandler()
                 
@@ -1348,6 +1690,9 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
                     elif active_state.module == "emergency_fire":
                         # 用 LangGraph 图执行消防态势流程（内部会回写/保留会话状态）
                         await run_emergency_fire_graph(websocket, result["state"], user_id, session_id)
+                    elif active_state.module == "emergency_perimeter":
+                        # 用 LangGraph 图执行周界态势流程（内部会回写/保留会话状态）
+                        await run_emergency_perimeter_graph(websocket, result["state"], user_id, session_id)
                     elif active_state.module == "device_status":
                         # 用 LangGraph 图执行设备态势流程（内部会回写/保留会话状态）
                         await run_device_status_graph(websocket, result["state"], user_id, session_id)
@@ -1357,6 +1702,9 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
                     elif active_state.module == "device_query":
                         # 用 LangGraph 图执行设备查询流程（内部会回写/保留会话状态）
                         await run_device_query_graph(websocket, result["state"], user_id, session_id)
+                    elif active_state.module == "twins_inspection":
+                        # 用 LangGraph 图执行孪生巡检流程（内部会回写/保留会话状态）
+                        await run_twins_inspection_graph(websocket, result["state"], user_id, session_id)
                     else:
                         # 用 LangGraph 图执行会议管理流程（内部会回写/保留会话状态）
                         await run_meeting_status_graph(websocket, result["state"], user_id, session_id)
@@ -1365,7 +1713,11 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
 
             # 情况 1.5：上一轮查询已完成（done=True）且本轮识别不出业务意图（other）
             # → 视为省略式追问（如「昨天呢」「那上周呢」）：
-            #   用上一轮原问题拼接本轮输入重新分类，命中业务域则按全新流程执行；
+            #   用上一轮原问题拼接本轮输入重新分类；命中业务域则按继承式启动——
+            #   拼接串只喂分类器；槽位只用本轮输入抽取（拼接串整体抽槽会把
+            #   "那李四呢"的实体查成上轮的张三）；同域继承本轮没抽到的实体槽
+            #   （时间不继承，"那上周呢"的时间必须来自本轮）；original_query
+            #   保持首轮原话不回写拼接串（连续追问不滚雪球）；
             #   仍未命中则不 continue，掉到下方原有 pipeline
             elif top_intent == "other" and active_state is not None and active_state.done:
                 merged_query = f"{active_state.original_query} {query}"
@@ -1374,7 +1726,17 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
                     logging.info(
                         f"[省略式追问] 拼接上轮问题({active_state.module})重新分类命中 {merged_intent}，本轮输入：{query}"
                     )
-                    await start_module_flow(websocket, merged_query, merged_intent, user_id, session_id)
+                    handler = MODULE_HANDLERS[merged_intent]()
+                    # ① 槽位只用本轮输入抽取
+                    slots = await handler.extract_slots(query)
+                    # ② 同域继承本轮没抽到的实体槽；时间与子类型不继承
+                    if merged_intent == active_state.module:
+                        for k in ("person_name", "area", "alarm_id", "meal"):
+                            if not slots.get(k) and active_state.slots.get(k):
+                                slots[k] = active_state.slots[k]
+                    # ③ original_query 传首轮原话，不回写拼接串
+                    await start_module_flow(websocket, query, merged_intent, user_id, session_id,
+                                            slots=slots, original_query=active_state.original_query)
                     continue  # 跳过原有 pipeline
 
             # 情况 2：没有进行中状态，但新意图属于人员态势
@@ -1693,6 +2055,64 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
 
                 # 用 LangGraph 图执行设备查询流程（内部会回写/保留会话状态）
                 await run_device_query_graph(websocket, state, user_id, session_id)
+
+                continue  # 跳过原有 pipeline
+
+            # 情况 2.11：没有进行中状态，但新意图属于周界态势
+            elif top_intent == "emergency_perimeter":
+                print("[DEBUG] 进入周界态势新意图分支, query:", query)
+
+                handler = EmergencyPerimeterHandler()
+
+                # 从用户输入中抽取初始 slots
+                slots = await handler.extract_slots(query)
+
+                # 判断初始 slots 是否完整
+                missing = handler._get_missing_params(slots)
+
+                # 创建新的会话状态
+                state = IntentState(
+                    module="emergency_perimeter",
+                    slots=slots,
+                    missing_params=missing,
+                    ask_count=0,
+                    unrelated_count=0,
+                    original_query=query,
+                    done=False
+                )
+                session_state.set(user_id, session_id, state)
+
+                # 用 LangGraph 图执行周界态势流程（内部会回写/保留会话状态）
+                await run_emergency_perimeter_graph(websocket, state, user_id, session_id)
+
+                continue  # 跳过原有 pipeline
+
+            # 情况 2.12：没有进行中状态，但新意图属于孪生巡检
+            elif top_intent == "twins_inspection":
+                print("[DEBUG] 进入孪生巡检新意图分支, query:", query)
+
+                handler = TwinsInspectionHandler()
+
+                # 从用户输入中抽取初始 slots
+                slots = await handler.extract_slots(query)
+
+                # 判断初始 slots 是否完整
+                missing = handler._get_missing_params(slots)
+
+                # 创建新的会话状态
+                state = IntentState(
+                    module="twins_inspection",
+                    slots=slots,
+                    missing_params=missing,
+                    ask_count=0,
+                    unrelated_count=0,
+                    original_query=query,
+                    done=False
+                )
+                session_state.set(user_id, session_id, state)
+
+                # 用 LangGraph 图执行孪生巡检流程（内部会回写/保留会话状态）
+                await run_twins_inspection_graph(websocket, state, user_id, session_id)
 
                 continue  # 跳过原有 pipeline
 
