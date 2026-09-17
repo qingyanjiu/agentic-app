@@ -126,6 +126,11 @@ ASK_CASES = [
      "请问您想查询哪类周界数据？关键指标、防区一览、告警统计，还是告警一览？"),
     ("emergency_perimeter", {},
      "请问您想查询哪类周界数据？关键指标、防区一览、告警统计，还是告警一览？"),
+    # 设备态势同理：笼统问法 -> 反问哪类设备（选定后按台账口径列设备）
+    ("device_status", {"query_type": "count"},
+     "请问您想查询哪类设备？监控、门禁、道闸、广播，还是信息发布设备？"),
+    ("device_status", {},
+     "请问您想查询哪类设备？监控、门禁、道闸、广播，还是信息发布设备？"),
 ]
 
 
@@ -151,6 +156,7 @@ def test_missing_params_asks_back(domain_graphs, module_key, slots, expected_que
         ("emergency_fire", {"query_type": "count"}),
         ("device_query", {"query_type": "device_detail"}),
         ("emergency_perimeter", {"query_type": "count"}),
+        ("device_status", {"query_type": "count"}),
     ],
 )
 def test_give_up_after_max_asks(domain_graphs, module_key, slots):
@@ -203,6 +209,7 @@ GUARD_CASES = [
     ("emergency_fire", {"query_type": "no_such_type"}),
     # 周界同理：count 在 check_missing_params 被反问拦截，守卫用非法枚举值验证
     ("emergency_perimeter", {"query_type": "no_such_type"}),
+    # 设备态势同理：count 已被"哪类设备"反问拦截（见 ASK_CASES）
     ("device_status", {"query_type": "no_such_type"}),
     ("compositive_overview", {"query_type": "no_such_type"}),
     # 设备查询：deviceType 必填，缺了会在 check_missing_params 被反问拦截，
@@ -445,6 +452,76 @@ class TestDeviceQueryFullFlow:
 
         # 区域筛选照常透传（A栋3楼在 mock 里不做过滤，这里只验证槽位不丢）
         assert state.slots["area"] == "A栋3楼"
+
+
+class TestDeviceStatusFullFlow:
+    """
+    两轮完整流程：设备态势笼统问法 -> 反问"哪类设备" -> 用户答类型 -> 按台账口径列设备
+
+    对照 device_query 的同一场景：设备域后端只有"设备列表/设备详情"两个台账工具，
+    因此设备态势兜底选定的类型最终落到 device:getDeviceList。
+    """
+
+    def test_vague_query_ask_type_then_list(self, domain_graphs):
+        from agent.intent.handlers.device_status_handler import DeviceStatusHandler
+        from agent.intent.slots import extract_device_status_slots
+        from memory.session_state import IntentState
+
+        handler = DeviceStatusHandler()
+
+        # ---- 第一轮：「查下设备情况」正则落 count -> 图反问哪类设备 ----
+        slots = extract_device_status_slots("查下设备情况")
+        assert slots["query_type"] == "count"
+        assert handler._get_missing_params(slots) == ["device_type"]
+
+        r1 = run(domain_graphs("device_status").ainvoke(graph_input(slots)))
+        ask_events = asks_of(r1)
+        assert len(ask_events) == 1
+        assert ask_events[0]["question"].startswith("请问您想查询哪类设备？")
+        assert ask_events[0]["missing_params"] == ["device_type"]
+        assert not r1.get("done"), "追问轮不应结束流程"
+        assert answers_of(r1) == [], "这一次不该给出答案"
+
+        # ---- 第二轮：用户回「监控」，走 handler.handle_reply 补槽 ----
+        state = IntentState(
+            module="device_status",
+            slots=dict(r1["slots"]),
+            missing_params=["device_type"],
+            ask_count=r1["ask_count"],
+            unrelated_count=0,
+            original_query="查下设备情况",
+            done=False,
+        )
+        reply = run(handler.handle_reply(state, "监控", llm=None))
+        assert reply["action"] == "continue"
+        assert state.slots["device_type"] == "jk"
+        assert state.slots["query_type"] == "device_list"
+        assert state.missing_params == []
+
+        r2 = run(domain_graphs("device_status").ainvoke(graph_input(state.slots)))
+        answer_list = answers_of(r2)
+        assert answer_list, "第二轮应给出答案"
+        assert "暂不支持" not in answer_list[-1]
+        assert "工具未加载" not in answer_list[-1]
+        assert "A栋枪机" in answer_list[-1], "答案应来自 mock 的设备列表数据"
+        assert r2.get("done") is True
+
+
+def test_device_status_list_passes_device_type():
+    """台账分支：deviceType 应作为入参下发给 device:getDeviceList"""
+    from conftest import FakeTool
+
+    device_mod = get_graph_module("device_status")
+    tool = FakeTool("device:getDeviceList", '{"code":200,"data":[]}')
+    node = device_mod.make_call_tool_node({"device:getDeviceList": tool})
+
+    out = run(node({
+        "slots": {"query_type": "device_list", "device_type": "mj"},
+        "original_query": "看下门禁设备",
+    }))
+
+    assert out.get("error") is None
+    assert tool.calls == [{"deviceType": "mj"}], f"实际调用参数: {tool.calls}"
 
 
 # ============================================================

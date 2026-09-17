@@ -1,6 +1,6 @@
 import logging
 from .base import IntentHandler
-from agent.intent.slots import extract_device_status_slots
+from agent.intent.slots import extract_device_status_slots, extract_device_type
 from agent.intent.classifier import classify_device_sub_type
 from memory.session_state import IntentState
 
@@ -13,10 +13,22 @@ MAX_UNRELATED = 3
 # 大于等于该分数时，以 embedding 分类器结果覆盖正则结果
 SUB_TYPE_THRESHOLD = 0.6
 
+# 统计口径信号词：追问"哪类设备"时，回复里带这些词说明用户重说了完整问法
+# （"门禁设备在线率"），不能当成对设备类型问题的回答
+_TYPE_ANSWER_NOISE = (
+    "在线", "离线", "率", "趋势", "占比", "统计", "健康", "排名", "分布", "数量", "走势",
+)
+
 
 # ============================================================
 # 设备态势意图处理器
 # 负责：参数抽取、追问相关性判断、生成追问问题
+#
+# 兜底反问（与消防/周界同一约定）：
+#   用户只说"查下设备"这类笼统问法时，正则落 count 兜底、分类器也判不出子类型，
+#   此时不再走 call_tool 的"暂不支持"守卫，而是反问"哪类设备"；
+#   用户选定后按**台账口径**调 device:getDeviceList 列出该类设备
+#   （设备域后端只有"设备列表/设备详情"两个台账工具）。
 # ============================================================
 class DeviceStatusHandler(IntentHandler):
     name = "device_status"
@@ -103,6 +115,27 @@ class DeviceStatusHandler(IntentHandler):
         # 用户回复相关，重置不相关计数
         state.unrelated_count = 0
 
+        # 上一轮问的是"哪类设备"：只按设备类型解析这一句回复。
+        # 不能交给下面的常规合并路径——"门禁"在设备态势正则里会命中
+        # mj_online（门禁在线率），用户其实只是在回答设备类型。
+        # 但回复里带"在线率/趋势/占比"这类统计口径词时，说明用户重说了一个
+        # 完整问法（如"门禁设备在线率"），那种情况仍走常规路径
+        if "device_type" in (state.missing_params or []) and not any(
+            k in query for k in _TYPE_ANSWER_NOISE
+        ):
+            device_type = extract_device_type(query)
+            if device_type:
+                state.slots["device_type"] = device_type
+                # 类型选定了才敢定口径：笼统问法一律按台账列表查
+                if state.slots.get("query_type") in (None, "", "count"):
+                    state.slots["query_type"] = "device_list"
+                state.missing_params = self._get_missing_params(state.slots)
+                return {
+                    "action": "continue",
+                    "state": state,
+                    "slots": state.slots
+                }
+
         # 从用户最新回复中抽取参数，补充到已有 slots
         new_slots = await self.extract_slots(query)
         for k, v in new_slots.items():
@@ -123,9 +156,15 @@ class DeviceStatusHandler(IntentHandler):
     def _get_missing_params(self, slots: dict) -> list:
         """
         根据当前 slots 判断还缺哪些必填参数
-        设备态势目前不强制需要额外参数
+
+        设备态势其余子类型不强制需要额外参数（月度趋势的 date 为可选）；
+        只有 query_type 落到 count 兜底（分不清哪类设备数据）时，
+        视为缺 device_type，走反问（与 graph 的 check_missing_params 对称）。
+        类型已经明确的（device_type 有值）不用再问，按台账列表查即可
         """
         missing = []
+        if slots.get("query_type") in (None, "", "count") and not slots.get("device_type"):
+            missing.append("device_type")
         return missing
 
     def generate_question(self, state: IntentState) -> str:
@@ -136,7 +175,9 @@ class DeviceStatusHandler(IntentHandler):
         missing = state.missing_params
 
         # 按优先级生成问题
-        if "date" in missing:
+        if "device_type" in missing:
+            question = "请问您想查询哪类设备？监控、门禁、道闸、广播，还是信息发布设备？"
+        elif "date" in missing:
             question = "请问您想查询哪个月份的设备数据？"
         else:
             question = "请问您还需要补充什么信息？"

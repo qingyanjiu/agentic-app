@@ -97,10 +97,30 @@ class TestMissingParams:
         assert h._get_missing_params({"event_type": "x"}) == ["date"]
         assert h._get_missing_params({"event_type": "x", "date": {"time_type": "span"}}) == []
 
-    @pytest.mark.parametrize("module_key", ["vehicle_status", "energy_status", "meeting_status", "device_status", "compositive_overview"])
+    @pytest.mark.parametrize("module_key", ["vehicle_status", "energy_status", "meeting_status", "compositive_overview"])
     def test_vehicle_energy_meeting_need_nothing(self, module_key):
         h = handler_of(module_key)
         assert h._get_missing_params({}) == []
+
+    @pytest.mark.parametrize(
+        "slots,expected",
+        [
+            # 笼统问法：分不清要哪类设备数据 -> 反问哪类设备
+            ({"query_type": "count"}, ["device_type"]),
+            ({}, ["device_type"]),
+            ({"query_type": None}, ["device_type"]),
+            # 设备类型选定后按台账口径查，不再缺参数
+            ({"query_type": "count", "device_type": "jk"}, []),
+            ({"query_type": "device_list", "device_type": "mj"}, []),
+            # 统计口径的子类型不接反问（与消防/周界同一约定：兜底值才视为缺失）
+            ({"query_type": "equip_class"}, []),
+            ({"query_type": "mj_online"}, []),
+        ],
+    )
+    def test_device_status_count_treated_as_missing(self, slots, expected):
+        """设备态势：query_type 落 count 兜底时视为缺"哪类设备"，走反问而非报错"""
+        h = handler_of("device_status")
+        assert h._get_missing_params(slots) == expected
 
     def test_device_query_needs_type_and_keyword(self):
         """设备类型（deviceType）是后端必填，列表/详情都要；详情另需设备名称/编码"""
@@ -174,6 +194,8 @@ class TestQuestionConsistency:
              "请问您想查询哪类周界数据？关键指标、防区一览、告警统计，还是告警一览？"),
             ("twins_inspection", ["query_type"],
              "请问您想查询哪类巡检数据？今日巡检、今日任务列表、巡检统计，还是巡检执行状态？"),
+            ("device_status", ["device_type"],
+             "请问您想查询哪类设备？监控、门禁、道闸、广播，还是信息发布设备？"),
         ],
     )
     def test_handler_question_matches_graph_ask_param(self, module_key, missing, expected_question):
@@ -423,3 +445,82 @@ class TestFollowupNotOverwriteSubType:
         """没有列表措辞时，分类器兜底照常生效：口语化详情问法仍判 device_detail"""
         slots = run(DeviceQueryHandler().extract_slots("看下这台设备的设备信息"))
         assert slots["query_type"] == "device_detail"
+
+
+# ============================================================
+# 6. 设备态势兜底反问：笼统问法 -> 问"哪类设备" -> 按台账口径查
+# ============================================================
+class TestDeviceStatusHandleReply:
+    def _vague_state(self, slots: dict = None) -> IntentState:
+        """兜底轮的状态：query_type=count、缺 device_type"""
+        return make_state(
+            "device_status",
+            slots if slots is not None else {"query_type": "count"},
+            ["device_type"],
+        )
+
+    def test_reply_type_word_fills_device_type(self):
+        """用户照反问选项回「监控」→ device_type=jk，口径定为台账列表"""
+        state = self._vague_state()
+        result = run(DeviceStatusHandler().handle_reply(state, "监控", llm=None))
+
+        assert result["action"] == "continue"
+        assert state.slots["device_type"] == "jk"
+        assert state.slots["query_type"] == "device_list"
+        assert state.missing_params == []
+
+    @pytest.mark.parametrize(
+        "reply,expected_type",
+        [
+            ("监控", "jk"),
+            # 关键回归：「门禁」在设备态势正则里会命中 mj_online（门禁在线率），
+            # 但这一轮是在回答"哪类设备"，必须按设备类型解析
+            ("门禁", "mj"),
+            ("道闸", "dz"),
+            ("广播", "gb"),
+            ("信息发布设备", "xxfb"),
+        ],
+    )
+    def test_type_words_not_hijacked_by_status_regex(self, reply, expected_type):
+        state = self._vague_state()
+        result = run(DeviceStatusHandler().handle_reply(state, reply, llm=None))
+
+        assert result["action"] == "continue"
+        assert state.slots["device_type"] == expected_type
+        assert state.slots["query_type"] == "device_list"
+
+    def test_restated_full_query_keeps_statistics_sub_type(self):
+        """回复里带统计口径词（"门禁设备在线率"）说明用户重说了完整问法，不当作类型回答"""
+        state = self._vague_state()
+        result = run(DeviceStatusHandler().handle_reply(state, "门禁设备在线率", llm=None))
+
+        assert result["action"] == "continue"
+        assert state.slots["query_type"] == "mj_online"
+
+    def test_reply_unrelated_triggers_re_ask(self):
+        state = self._vague_state()
+        result = run(DeviceStatusHandler().handle_reply(state, "今天天气不错", llm=None))
+
+        assert result["action"] == "re_ask"
+        assert state.unrelated_count == 1
+
+    def test_three_unrelated_replies_give_up(self):
+        state = self._vague_state()
+        handler = DeviceStatusHandler()
+        for _ in range(3):
+            result = run(handler.handle_reply(state, "今天天气不错", llm=None))
+
+        assert result["action"] == "give_up"
+
+    def test_known_sub_type_needs_no_type(self):
+        """
+        统计口径的子类型不接反问：进追问轮走常规合并，
+        不会把"设备"这类泛化词收成 device_type，也不会再问哪类设备
+        （此处不断言 query_type：常规路径本来就把子类型判定交给分类器兜底）
+        """
+        state = make_state("device_status", {"query_type": "equip_class"}, [])
+        result = run(DeviceStatusHandler().handle_reply(state, "看下设备", llm=None))
+
+        assert result["action"] == "continue"
+        assert "device_type" not in state.slots
+        assert state.missing_params == []

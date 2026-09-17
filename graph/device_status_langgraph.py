@@ -7,7 +7,18 @@ from langgraph.graph import StateGraph, END
 
 from mcp_client.mcp_loader import get_mcp_tools
 
+# deviceType 码到中文名的权威映射（别名词典的首个别名即标准名），
+# 只用于拼 LLM 提示语，下发给 Java 的仍是码本身
+from agent.intent.slots import DEVICE_TYPE_DICT
+
 logger = logging.getLogger(__name__)
+
+
+def _device_type_label(device_type: str) -> str:
+    """deviceType 码转中文名，未知码原样返回"""
+    if not device_type:
+        return "不限"
+    return DEVICE_TYPE_DICT.get(device_type, [device_type])[0]
 
 
 # ============================================================
@@ -21,6 +32,14 @@ logger = logging.getLogger(__name__)
 #   anfang_online    -> device:getAnfangDeviceOnlinePercentage
 #   gb_online        -> device:getGbOnlinePercentage
 #   mj_online        -> device:getMjOnlinePercentage
+#
+# 另外一条台账口径的分支（与 device_query 共用同一个工具）：
+#   device_list      -> device:getDeviceList
+#
+#   "查下设备"这类笼统问法正则落 count 兜底、分类器也救不回来时，
+#   不复用"暂不支持"守卫，而是反问"哪类设备"；用户选定后按台账口径
+#   列出该类设备（设备名称/编码/所在位置/状态），用的就是 device_query
+#   的设备列表工具——后端设备域只有"设备列表/设备详情"两个台账工具。
 # ============================================================
 _JAVA_TOOL_MAP = {
     "equip_class": "device:getEquipClass",
@@ -31,6 +50,7 @@ _JAVA_TOOL_MAP = {
     "anfang_online": "device:getAnfangDeviceOnlinePercentage",
     "gb_online": "device:getGbOnlinePercentage",
     "mj_online": "device:getMjOnlinePercentage",
+    "device_list": "device:getDeviceList",
 }
 
 # 支持可选 date 参数的工具（Java 侧接口带 ?date=，格式 yyyy-MM）
@@ -72,6 +92,7 @@ def _query_type_label(query_type: str) -> str:
         "anfang_online": "安防设备在线率",
         "gb_online": "广播设备在线率",
         "mj_online": "门禁设备在线率",
+        "device_list": "设备列表查询",
     }.get(query_type, "设备态势数据")
 
 
@@ -91,6 +112,16 @@ async def _llm_format_device_result(
         label = _query_type_label(query_type)
         original_query = state.get("original_query") or query_type
 
+        # 台账口径要带上用户选定的设备类型（设备态势其余子类型是全域统计）
+        type_rule = ""
+        if query_type == "device_list":
+            device_type = state.get("slots", {}).get("device_type") or ""
+            if device_type:
+                type_rule = (
+                    f"用户选定的设备类型：{_device_type_label(device_type)}，"
+                    "回答里点明查的是这类设备；\n"
+                )
+
         requirement = {
             "equip_class": "列出各设备分类的数量和占比；",
             "category_health": "按类别列出健康度评分、在线率、维保率、寿命情况；",
@@ -100,6 +131,7 @@ async def _llm_format_device_result(
             "anfang_online": "列出安防设备在线率（total/zhoujie/dz/mj 各组统计）；",
             "gb_online": "列出广播设备在线率；",
             "mj_online": "列出门禁设备在线率；",
+            "device_list": "把查到的设备逐条列出来（设备名称、设备编码、所在区域或安装位置、状态）；",
         }.get(query_type, "把返回数据整理清楚；")
 
         prompt = (
@@ -111,6 +143,7 @@ async def _llm_format_device_result(
             f"{raw_text}\n\n"
             "要求：\n"
             f"1. {requirement}\n"
+            f"{type_rule}"
             "2. 回答必须基于返回数据，不要编造数字；\n"
             "3. 如果返回数据里没有用户要查的信息，只如实说明即可，不要建议查询其他时间段或其他内容；\n"
             "4. 不要向用户提出任何追问、提议或反问，只回答本次查询的结果；\n"
@@ -196,28 +229,92 @@ class DeviceStatusGraphState(TypedDict):
 def init_state(state: DeviceStatusGraphState) -> dict:
     """
     初始化节点：确保 slots 中日期结构存在
+
+    兜底值 count 只表示"正则没判出子类型"，本身不是合法工具类型：
+    设备类型已明确时按台账口径归一到 device_list（与 handle_reply 的落地一致）
     """
     slots = state.get("slots", {})
     if "date" not in slots or not slots.get("date"):
         slots["date"] = {}
+    if slots.get("query_type") in (None, "", "count") and slots.get("device_type"):
+        slots["query_type"] = "device_list"
     return {"slots": slots}
 
 
 def check_missing_params(state: DeviceStatusGraphState) -> dict:
     """
-    检查缺失参数
-    设备态势目前不强制需要额外参数（月度趋势的 date 为可选）
+    检查缺失参数（与 DeviceStatusHandler._get_missing_params 保持一致）
+
+    设备态势其余子类型不强制需要额外参数（月度趋势的 date 为可选），
+    唯一会缺的是"笼统问法"：query_type 落到 count 兜底，
+    分不清用户要哪类设备数据，此时视为缺 device_type，走反问。
     """
     slots = state["slots"]
+    query_type = slots.get("query_type")
     missing = []
+
+    if not query_type or query_type == "count":
+        missing.append("device_type")
+
     return {"missing_params": missing}
 
 
 def route_missing_params(state: DeviceStatusGraphState) -> str:
     """
-    条件路由：设备态势无强制必填参数，直接调用工具
+    条件路由：缺设备类型就反问，反问超过 3 次放弃，否则直接调用工具
     """
+    if state["missing_params"]:
+        if state["ask_count"] >= 3:
+            return "give_up"
+        return "ask_param"
     return "call_tool"
+
+
+def ask_param(state: DeviceStatusGraphState) -> dict:
+    """
+    参数缺失时生成追问问题（与 DeviceStatusHandler.generate_question 保持一致）
+    """
+    missing = state["missing_params"]
+
+    if "device_type" in missing:
+        question = "请问您想查询哪类设备？监控、门禁、道闸、广播，还是信息发布设备？"
+    else:
+        question = "请问您还需要补充什么信息？"
+
+    ask_count = state["ask_count"] + 1
+
+    return {
+        "last_question": question,
+        "ask_count": ask_count,
+        "events": [{
+            "event": "custom",
+            "data": {
+                "type": "ask",
+                "question": question,
+                "missing_params": missing,
+                "ask_count": ask_count,
+            },
+        }],
+    }
+
+
+def give_up(state: DeviceStatusGraphState) -> dict:
+    """
+    追问次数超限，放弃当前任务
+    """
+    return {
+        "done": True,
+        "events": [
+            {
+                "event": "custom",
+                "data": {
+                    "type": "answer",
+                    "content": "追问次数过多，我先不继续了。请问您还有其他问题吗？",
+                },
+            },
+            {"event": "custom", "data": {"type": "done"}},
+        ],
+    }
 
 
 def make_call_tool_node(tools: dict, llm=None):
@@ -259,6 +356,11 @@ def make_call_tool_node(tools: dict, llm=None):
             if start_time and isinstance(start_time, str):
                 # start_time 为 ISO 时间串，取年月部分 yyyy-MM
                 tool_args["date"] = start_time[:7]
+        elif query_type == "device_list":
+            # 台账口径：设备列表按 deviceType（必填）筛选
+            device_type = state["slots"].get("device_type")
+            if device_type:
+                tool_args["deviceType"] = device_type
 
         print(f"[MCP CALL] tool={java_tool_name}, args={tool_args}")
 
@@ -310,7 +412,12 @@ def build_device_status_graph(tools: dict, llm=None) -> StateGraph:
     构建设备态势 LangGraph 状态图
 
     流程：
-        init -> check_missing_params -> call_tool (调用 MCP，LLM 组织回答) -> finalize -> END
+        init -> check_missing_params ->┬-> call_tool (调用 MCP，LLM 组织回答) -> finalize -> END
+                                       ├-> ask_param (笼统问法缺设备类型，反问后等用户回复) -> END
+                                       └-> give_up (追问超过 3 次) -> END
+
+    参数：除"哪类设备"（deviceType）外无强制必填参数；
+    月度趋势的 date 为可选，由 call_tool 透传
 
     :param tools: MCP 工具字典（工具名 -> 工具）
     :param llm: 可选的 LLM，用于根据 query_type 分析 MCP 返回生成回答；不传则原样返回
@@ -320,6 +427,8 @@ def build_device_status_graph(tools: dict, llm=None) -> StateGraph:
     # 注册节点
     workflow.add_node("init", init_state)
     workflow.add_node("check_missing_params", check_missing_params)
+    workflow.add_node("ask_param", ask_param)
+    workflow.add_node("give_up", give_up)
     workflow.add_node("call_tool", make_call_tool_node(tools, llm))
     workflow.add_node("finalize", finalize)
 
@@ -327,16 +436,19 @@ def build_device_status_graph(tools: dict, llm=None) -> StateGraph:
     workflow.set_entry_point("init")
     workflow.add_edge("init", "check_missing_params")
 
-    # 设备态势无强制必填参数，直接路由到工具调用
     workflow.add_conditional_edges(
         "check_missing_params",
         route_missing_params,
         {
+            "ask_param": "ask_param",
+            "give_up": "give_up",
             "call_tool": "call_tool",
         },
     )
 
     # 结束边
+    workflow.add_edge("ask_param", END)
+    workflow.add_edge("give_up", END)
     workflow.add_edge("call_tool", "finalize")
     workflow.add_edge("finalize", END)
 

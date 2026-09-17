@@ -169,6 +169,14 @@ DOMAIN_TOOL_RESULTS = {
             '{"code":200,"online":45,"total":50}',
         "device:getMjOnlinePercentage":
             '{"code":200,"online":70,"total":72}',
+        # 台账口径：笼统问法兜底反问"哪类设备"后，用这个工具列设备
+        # （与 device_query 同一工具，jk 大华 V5.0.16 口径）
+        "device:getDeviceList":
+            '{"code":200,"data":['
+            '{"channelCode":"1000000$1$0$0","channelName":"A栋枪机","cameraType":1,'
+            '"chExt":{"channelDeviceIp":"10.1.1.5"}},'
+            '{"channelCode":"1000000$1$0$1","channelName":"B栋球机","cameraType":2,'
+            '"chExt":{"channelDeviceIp":"10.1.1.6"}}]}',
     },
     "device_query": {
         # 设备列表：jk 监控（大华 V5.0.16 口径，data 直接是通道数组）
