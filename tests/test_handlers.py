@@ -187,8 +187,10 @@ class TestQuestionConsistency:
         assert state.ask_count == 1
 
         # 与对应 graph 的 ask_param 输出一致
+        # slots 必传：消防/周界/巡检域的 ask_param 会把 _type_options
+        # （「第N个」序数指代的选项清单）写进 state["slots"]
         graph_mod = get_graph_module(module_key)
-        graph_out = graph_mod.ask_param({"missing_params": missing, "ask_count": 0})
+        graph_out = graph_mod.ask_param({"slots": {}, "missing_params": missing, "ask_count": 0})
         assert graph_out["last_question"] == question
 
     @pytest.mark.parametrize("module_key", ["security_status", "canteen_status", "information_status"])
@@ -199,16 +201,26 @@ class TestQuestionConsistency:
 
 # ============================================================
 # 3. graph 与 handler 缺参规则的已知不一致（案例排查记录风格：先记录，待修）
+# security_index 两侧已一致（均为无参实时查询，不要求 date），
+# 作为常规回归断言；alarm_detail 仍不一致，单独标 xfail：
+#   graph 要求 date（alarm_detail 底层走 getAiInspectionEvents，
+#   需要 startTime/endTime），handler 只要求 alarm_id。
+#   strict=True：哪天对齐了会以 XPASS 失败提醒删掉本标记
 # ============================================================
-@pytest.mark.xfail(strict=False, reason="安防域 graph 与 handler 缺参规则不一致："
-                                        "graph 对 security_index 不要求 date、对 alarm_detail 仍要求 date；"
-                                        "handler 对 security_index 要求 date、对 alarm_detail 只要求 alarm_id")
 class TestKnownDivergenceSecurity:
     @pytest.mark.parametrize(
         "slots",
         [
             {"event_type": "security_index"},
-            {"event_type": "alarm_detail", "alarm_id": "3"},
+            pytest.param(
+                {"event_type": "alarm_detail", "alarm_id": "3"},
+                marks=pytest.mark.xfail(
+                    strict=True,
+                    reason="安防域 alarm_detail 缺参规则不一致："
+                           "graph 要求 date（底层 getAiInspectionEvents 需要时间区间），"
+                           "handler 只要求 alarm_id",
+                ),
+            ),
         ],
     )
     def test_rules_should_be_consistent(self, slots):

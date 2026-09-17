@@ -34,7 +34,7 @@ SUB_TYPE_THRESHOLD = 0.6
 class EmergencyFireHandler(IntentHandler):
     name = "emergency_fire"
 
-    async def extract_slots(self, query: str) -> dict:
+    async def extract_slots(self, query: str, is_followup: bool = False) -> dict:
         """
         抽取消防态势参数
 
@@ -42,12 +42,16 @@ class EmergencyFireHandler(IntentHandler):
           1. 正则先抽所有字段：query_type 由正则关键词决定
           2. 仅当正则没有命中任何类型（落到 count 兜底）时，
              才用 embedding 分类器判定子类型，分数达标则覆盖
+
+        is_followup：追问轮置 True——不重判子类型（正则落 count 时
+        不再交给分类器补判），避免短回复被误判成其他子类型，
+        覆盖掉已识别的 query_type
         """
         # 1. 正则抽取所有字段
         slots = extract_emergency_fire_slots(query)
 
-        # 2. 只有正则落到 count 兜底时才交给分类器补判
-        if slots.get("query_type") == "count":
+        # 2. 只有正则落到 count 兜底时才交给分类器补判（追问轮不重判子类型）
+        if slots.get("query_type") == "count" and not is_followup:
             try:
                 sub_type, score = await classify_fire_sub_type(query)
                 logger.info(
@@ -212,12 +216,17 @@ class EmergencyFireHandler(IntentHandler):
         state.unrelated_count = 0
 
         # 从用户最新回复中抽取参数，补充到已有 slots
-        new_slots = await self.extract_slots(query)
+        # is_followup=True：追问轮不重判子类型（只允许补填未定的子类型）
+        new_slots = await self.extract_slots(query, is_followup=True)
         for k, v in new_slots.items():
             # 只覆盖非空值
-            # 特别处理 query_type：如果不是默认值 count，才覆盖
-            if v and (k != "query_type" or v != "count"):
-                state.slots[k] = v
+            # 特别处理 query_type：不是默认值 count 才补填，
+            # 且子类型已定时不被本轮兜底/重判结果覆盖
+            if not v or (k == "query_type" and v == "count"):
+                continue
+            if k == "query_type" and state.slots.get("query_type") not in (None, "", "count"):
+                continue
+            state.slots[k] = v
 
         # 重新计算缺失参数
         state.missing_params = self._get_missing_params(state.slots)
