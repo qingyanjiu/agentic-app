@@ -1,0 +1,38 @@
+# agentic-app 开发容器（dev only）
+#
+#   cd /Users/louisliu/dev/AI_projects/agentic-app
+#   docker compose -f docker-compose.dev.yml up -d
+#   docker compose -f docker-compose.dev.yml exec agentic-dev bash
+#
+# 改了 image 或环境变量后重建：
+#   docker compose -f docker-compose.dev.yml up -d --force-recreate
+#
+# 设计原则：镜像只装"环境"。所有会持续增长的东西——VS Code Server、
+# 包管理器缓存——一律落在 volume 或 bind mount 上，这样镜像层永远不会
+# 再膨胀，也就不需要再 docker commit 了。
+#
+# node-dev 的编排在 /Users/louisliu/Documents/docker-compose.node-dev.yml
+
+services:
+  agentic-dev:
+    image: qingyanjiu/langchain:slim
+    container_name: langchain-agent-dev
+    command: tail -f /dev/null          # 保活，供 VS Code attach
+    working_dir: /root/agentic-app
+    restart: unless-stopped             # 不要开机自启就删掉这行
+    ports:
+      - "8001:8001"                     # uvicorn app:app
+    volumes:
+      # 代码：宿主机为准，容器只是运行环境
+      - /Users/louisliu/dev/AI_projects/agentic-app:/root/agentic-app
+      # 【关键】VS Code 每次升级都会往里塞一个新版本（400~700MB），
+      # 挂进 volume 后它再也不进镜像层。
+      - vscode-server-agentic:/root/.vscode-server
+    environment:
+      PIP_NO_CACHE_DIR: "1"             # pip 不再留下载缓存
+      HF_ENDPOINT: https://hf-mirror.com
+      # 模型权重留在容器内（/root/.cache/huggingface），commit 时会一起带走
+      TZ: Asia/Shanghai
+
+volumes:
+  vscode-server-agentic:
