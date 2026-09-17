@@ -26,6 +26,7 @@ from agent.intent.handlers.emergency_fire_handler import EmergencyFireHandler
 from agent.intent.handlers.emergency_perimeter_handler import EmergencyPerimeterHandler
 from agent.intent.handlers.device_status_handler import DeviceStatusHandler
 from agent.intent.handlers.compositive_overview_handler import CompositiveOverviewHandler
+from agent.intent.handlers.device_query_handler import DeviceQueryHandler
 from agent.intent.handlers.twins_inspection_handler import TwinsInspectionHandler
 
 
@@ -42,6 +43,7 @@ def handler_of(module_key: str):
         "emergency_perimeter": EmergencyPerimeterHandler,
         "device_status": DeviceStatusHandler,
         "compositive_overview": CompositiveOverviewHandler,
+        "device_query": DeviceQueryHandler,
         "twins_inspection": TwinsInspectionHandler,
     }[module_key]()
 
@@ -99,6 +101,17 @@ class TestMissingParams:
     def test_vehicle_energy_meeting_need_nothing(self, module_key):
         h = handler_of(module_key)
         assert h._get_missing_params({}) == []
+
+    def test_device_query_needs_type_and_keyword(self):
+        """设备类型（deviceType）是后端必填，列表/详情都要；详情另需设备名称/编码"""
+        h = handler_of("device_query")
+        assert h._get_missing_params({"query_type": "device_list"}) == ["device_type"]
+        assert h._get_missing_params({"query_type": "device_list", "device_type": "jk"}) == []
+        assert h._get_missing_params({"query_type": "device_detail"}) == ["device_type", "device_keyword"]
+        assert h._get_missing_params({"query_type": "device_detail", "device_type": "mj"}) == ["device_keyword"]
+        assert h._get_missing_params(
+            {"query_type": "device_detail", "device_type": "mj", "device_keyword": "MH-001"}
+        ) == []
 
     @pytest.mark.parametrize(
         "slots,expected",
@@ -374,3 +387,39 @@ class TestFollowupNotOverwriteSubType:
         fresh_person = run(PersonStatusHandler().extract_slots("李四昨天的轨迹"))
         assert fresh_person["query_type"] == "trace"
         assert fresh_person["person_name"] == "李四"
+
+    def test_device_query_reply_type_keeps_query_type(self):
+        """设备查询缺类型 → 答「监控」→ query_type=device_list 不变、device_type=jk"""
+        state = make_state("device_query", {"query_type": "device_list"}, ["device_type"])
+        result = run(DeviceQueryHandler().handle_reply(state, "监控", llm=None))
+
+        assert result["action"] == "continue"
+        assert state.slots["query_type"] == "device_list"
+        assert state.slots["device_type"] == "jk"
+
+    def test_device_query_reply_code_keeps_device_detail(self):
+        """设备详情缺名称/编码 → 答「MJ-003」→ device_detail 不被兜底口径冲掉"""
+        state = make_state(
+            "device_query",
+            {"query_type": "device_detail", "device_type": "mj"},
+            ["device_keyword"],
+        )
+        result = run(DeviceQueryHandler().handle_reply(state, "MJ-003", llm=None))
+
+        assert result["action"] == "continue"
+        assert state.slots["query_type"] == "device_detail"
+        assert state.slots["device_keyword"] == "MJ-003"
+
+    @pytest.mark.parametrize(
+        "query",
+        ["查下广播设备清单", "信息屏有哪些", "园区有哪些设备", "道闸设备清单"],
+    )
+    def test_device_query_list_wording_beats_classifier(self, query):
+        """明确的列表措辞以正则为纲，不被子类型分类器改判成详情"""
+        slots = run(DeviceQueryHandler().extract_slots(query))
+        assert slots["query_type"] == "device_list", f"query={query!r} 落入 {slots['query_type']}"
+
+    def test_device_query_fresh_flow_still_judges_detail(self):
+        """没有列表措辞时，分类器兜底照常生效：口语化详情问法仍判 device_detail"""
+        slots = run(DeviceQueryHandler().extract_slots("看下这台设备的设备信息"))
+        assert slots["query_type"] == "device_detail"

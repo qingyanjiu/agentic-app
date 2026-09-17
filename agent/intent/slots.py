@@ -1285,3 +1285,160 @@ def extract_meeting_status_slots(query: str) -> dict:
 
     print(f"[meeting slots] query={q} => {slots}")
     return slots
+
+
+# ============================================================
+# 设备查询模块 slot 抽取
+# 与"设备态势"（/services/device，统计口径）区分：
+#   设备查询是"台账口径"——查设备列表 / 查某台设备详情
+#
+# 目前支持子类型（query_type）：
+#   device_list   -> 设备列表（可按设备类型、区域/楼栋/楼层筛选）
+#   device_detail -> 设备详情（需要设备名称或编码定位到具体设备）
+#
+# 约定：
+#   1. 设备名称/编码的模糊搜索由后端返回列表后本地匹配完成，
+#      不下发给 Java 工具（用户确认：设备数量不多，列表全量返回后再匹配）
+#   2. deviceType **必填**（后端要求，取值 jk/mj/dz/gb/xxfb），
+#      列表与详情缺类型时都要追问
+#   3. 详情查询还必须有 device_keyword（设备名称或编码），缺失时追问
+# ============================================================
+
+# 设备类型别名词典
+# key 就是 Java 侧 deviceType 的取值（**必填**，目前只有这五种，取值见后端接口文档）：
+#   jk   监控设备   大华 dahua/V5.0.16（海康侧 data 为 {total, list[]}，编码字段是 cameraIndexCode）
+#   mj   门禁设备   大华 dahua/V5.0.16
+#   dz   道闸设备   大华 dahua/V5.0.16（五种里只有它支持 otherparam 过滤）
+#   gb   广播设备   ITC itc/V1.0（编码字段是 EndpointID）
+#   xxfb 信息发布设备 和信 hx/V4.8.5（data 为设备数组，编码字段是 code）
+#
+# 注意：消防/能耗/网络/空调这类设备**后端没有可查类型**，不要收进词典，
+# 否则会抽出后端不认的 deviceType（消防台账属于 emergency_fire 域）。
+DEVICE_TYPE_DICT = {
+    "jk": ["监控设备", "监控", "摄像头", "摄像机", "枪机", "球机", "半球", "视频监控", "安防设备", "安防"],
+    "mj": ["门禁设备", "门禁", "闸机", "门禁控制器", "门禁通道"],
+    "dz": ["道闸设备", "道闸", "车闸", "车牌识别闸机"],
+    "gb": ["广播设备", "广播", "音箱", "喇叭", "广播终端"],
+    "xxfb": ["信息发布设备", "信息发布屏", "信息发布", "信息屏", "发布屏", "发布终端", "显示屏"],
+}
+
+
+def extract_device_type(query: str) -> str:
+    """
+    从用户输入中抽取设备类型
+
+    使用别名词典做统一映射
+    例如用户说"摄像头"会映射成 deviceType="jk"
+
+    :param query: 用户输入
+    :return: deviceType 取值（jk/mj/dz/gb/xxfb）；未命中返回空字符串
+    """
+    for standard, aliases in DEVICE_TYPE_DICT.items():
+        for alias in aliases:
+            if alias in query:
+                return standard
+    return ""
+
+
+def parse_floor_slot(query: str) -> str:
+    """
+    从用户输入中抽取楼层（设备查询特有：设备台账按楼层定位很常见）
+
+    例如："3楼"、"三楼"、"3层"、"3F" -> "3楼"
+
+    :param query: 用户输入
+    :return: 楼层描述，如"3楼"；未命中返回空字符串
+    """
+    m = re.search(r"([0-9]+|[一二三四五六七八九十]+)\s*(?:楼|层|[fF])", query)
+    if not m:
+        return ""
+    # 中文数字统一成阿拉伯数字，便于后端按楼层过滤（"三楼" 与 "3楼" 命中同一条数据）
+    return f"{_parse_chinese_number(m.group(1))}楼"
+
+
+def extract_device_keyword(query: str) -> str:
+    """
+    从用户输入中抽取设备名称/编码关键字
+
+    只做高置信度抽取（编码、引号包裹、显式"名称是/叫"句式），
+    抽不到就返回空串，由详情查询的追问逻辑兜底——
+    宁可追问一句，也不要把"设备"、"详情"这类通用词当成设备名。
+
+    :param query: 用户输入
+    :return: 设备名称/编码关键字；未命中返回空字符串
+    """
+    # 1. 编码类：字母 + 数字，如 MH-001 / CAM102 / DEV-01
+    m = re.search(r"[A-Za-z]{1,8}[-_]?\d{1,6}", query)
+    if m:
+        return m.group(0)
+
+    # 2. 引号包裹的名称
+    m = re.search(r"[“\"'‘]([^”\"'’]{2,20})[”\"'’]", query)
+    if m:
+        return m.group(1).strip()
+
+    # 3. 显式句式：名称是X / 编码为X / 叫X的
+    m = re.search(
+        r"(?:名称|名字|编号|编码)(?:是|为|叫|:|：)?\s*([\w一-龥\-]{2,20})",
+        query,
+    ) or re.search(r"叫([\w一-龥\-]{2,20})的", query)
+    if m:
+        keyword = m.group(1)
+        # 去掉被一起捕获的尾巴（"的详情"、"的信息"…）
+        keyword = re.sub(r"(的)?(详情|信息|情况|数据|列表|资料).*$", "", keyword)
+        keyword = keyword.strip("的了 ")
+        if len(keyword) >= 2:
+            return keyword
+
+    return ""
+
+
+def extract_device_query_slots(query: str) -> dict:
+    """
+    统一抽取设备查询相关的所有 slot
+
+    query_type：
+      - device_list   设备列表（可按设备类型/区域/楼层筛选）
+      - device_detail 设备详情（需要 device_keyword 定位设备）
+    device_type：deviceType 取值，jk/mj/dz/gb/xxfb（必填，缺失时追问）
+    area：区域/楼栋（复用 AREA_DICT），与楼层拼接，如"A栋3楼"
+    device_keyword：设备名称/编码关键字（详情必填；列表可选，用于本地模糊匹配）
+
+    :param query: 用户输入
+    :return: {"query_type": "...", "device_type": "...", "area": "...", "device_keyword": "..."}
+    """
+    q = query
+
+    # 区域 / 楼栋 + 楼层，例如"A栋3楼" / "食堂" / "3楼"
+    area = parse_area_slot(query)
+    floor = parse_floor_slot(query)
+    if floor and floor not in area:
+        area = f"{area}{floor}"
+
+    slots = {
+        "query_type": "device_list",
+        "device_type": extract_device_type(query),
+        "area": area,
+        "device_keyword": extract_device_keyword(query),
+    }
+
+    # 1. 设备详情：问某台设备的具体信息
+    #    "设备详情/设备档案/这台设备的..." 归详情，
+    #    "设备列表/有哪些设备" 归列表（默认值，无需判断）
+    if re.search(
+        r"详情|详细|档案|具体信息|设备信息|这台设备|该设备|这台|那台|"
+        r"是什么设备|设备的?参数|规格",
+        q,
+    ):
+        slots["query_type"] = "device_detail"
+
+    # 1.1 已经用名称/编码定位到某台设备，再问"信息/资料/情况"，
+    #     也是详情查询（避免"XX设备的信息"被当成列表口径）
+    elif slots["device_keyword"] and re.search(r"信息|资料|情况|参数|状态", q):
+        slots["query_type"] = "device_detail"
+
+    # 2. 兜底：设备列表
+    #    默认 device_list，无需再判断
+
+    print(f"[device query slots] query={q} => {slots}")
+    return slots

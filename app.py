@@ -21,7 +21,7 @@ import asyncio
 
 # 新增：人员态势/安防态势/食堂管理/车辆态势/信息发布/能源态势/会议管理意图识别相关导入
 # classify_security_sub_type：安防态势子类型（event_type）判定，供安防 handler 追问/兜底使用
-from agent.intent import classify_intent, classify_security_sub_type, PersonStatusHandler, SecurityStatusHandler, CanteenStatusHandler, VehicleStatusHandler, InformationStatusHandler, EnergyStatusHandler, MeetingStatusHandler, EmergencyFireHandler, EmergencyPerimeterHandler, DeviceStatusHandler, CompositiveOverviewHandler, TwinsInspectionHandler
+from agent.intent import classify_intent, classify_security_sub_type, PersonStatusHandler, SecurityStatusHandler, CanteenStatusHandler, VehicleStatusHandler, InformationStatusHandler, EnergyStatusHandler, MeetingStatusHandler, EmergencyFireHandler, EmergencyPerimeterHandler, DeviceStatusHandler, CompositiveOverviewHandler, TwinsInspectionHandler, DeviceQueryHandler
 from graph.person_status_langgraph import build_person_status_graph, load_person_status_tools
 from graph.security_status_langgraph import build_security_status_graph, load_security_tools
 from graph.canteen_status_langgraph import build_canteen_status_graph, load_canteen_tools
@@ -33,6 +33,7 @@ from graph.emergency_fire_langgraph import build_emergency_fire_graph, load_emer
 from graph.emergency_perimeter_langgraph import build_emergency_perimeter_graph, load_emergency_perimeter_tools
 from graph.device_status_langgraph import build_device_status_graph, load_device_status_tools
 from graph.compositive_overview_langgraph import build_compositive_overview_graph, load_compositive_overview_tools
+from graph.device_query_langgraph import build_device_query_graph, load_device_query_tools
 from graph.twins_inspection_langgraph import build_twins_inspection_graph, load_twins_inspection_tools
 from memory.session_state import session_state, IntentState
 # from asr.voice_asr import get_recognizer, VoiceRecognizer
@@ -107,8 +108,8 @@ except Exception as e:
 
 # 全局模型和工具
 llm_factory = CustomLLMFactory()
-llm = llm_factory.llms['silicon']
-# llm = llm_factory.llms['zp']
+llm = llm_factory.llms['local']
+# llm = llm_factory.llms['sillicon']
 @app.on_event("startup")
 async def startup():
     logger.info("[startup] 开始预加载意图识别模型...")
@@ -1172,6 +1173,79 @@ async def run_twins_inspection_graph(websocket, state, user_id, session_id):
         session_state.set(user_id, session_id, state)
 
 
+# ============================================================
+# 设备查询 LangGraph 执行助手
+# 与人员/安防/食堂/车辆/信息发布/能源态势/会议管理/消防态势/设备态势/综合态势总览对称：
+# 懒加载图，用图执行设备查询流程（设备列表 / 设备详情）
+# ============================================================
+_device_query_graph = None
+
+async def get_device_query_graph():
+    """懒加载：首次调用时从 MCP 加载设备查询工具并编译图，之后复用"""
+    global _device_query_graph
+    if _device_query_graph is None:
+        tools = await load_device_query_tools()
+        # 传入 llm，让 call_tool 节点用 LLM 组织 MCP 返回生成回答
+        _device_query_graph = build_device_query_graph(tools, llm=llm)
+    return _device_query_graph
+
+
+async def run_device_query_graph(websocket, state, user_id, session_id):
+    """
+    用 LangGraph 图执行设备查询流程（与其它域对称）：
+      1. 把 IntentState(dataclass) 转成图需要的 DeviceQueryGraphState(TypedDict)
+      2. ainvoke 跑图
+      3. 把图更新后的 slots/ask_count/last_question 回写到会话状态
+      4. 发送 events；有 ask 事件则保留状态等下一轮，否则标记 done 保留（供省略式追问继承）
+    """
+    graph = await get_device_query_graph()
+
+    # 组装喂给图的输入状态
+    graph_input = {
+        "slots": state.slots,
+        "missing_params": state.missing_params,
+        "ask_count": state.ask_count,
+        "unrelated_count": state.unrelated_count,
+        "last_question": state.last_question,
+        "original_query": state.original_query,
+        "answer": None,
+        "error": None,
+        "done": state.done,
+        "events": [],
+    }
+    print(f"[GRAPH INPUT] user={user_id}, session={session_id}")
+    print(json.dumps(graph_input, ensure_ascii=False, default=str))
+
+    final_state = await graph.ainvoke(graph_input)
+
+    print(f"[GRAPH OUTPUT] user={user_id}, session={session_id}")
+    print(json.dumps(final_state, ensure_ascii=False, default=str))
+
+    # 图内多轮追问会更新这些字段，回写供下一轮 handle_reply 使用
+    state.slots = final_state["slots"]
+    state.missing_params = final_state["missing_params"]
+    state.ask_count = final_state["ask_count"]
+    state.last_question = final_state["last_question"]
+
+    # 发送事件；存在 ask 事件说明进入追问，保留状态等待用户补充
+    keep_state = False
+    for chunk in final_state["events"]:
+        text = _safe_serialize(chunk)
+        await websocket.send_text(json.dumps(text, ensure_ascii=False))
+        if chunk.get("event") == "custom" and chunk.get("data", {}).get("type") == "ask":
+            keep_state = True
+
+    if keep_state:
+        session_state.set(user_id, session_id, state)
+    else:
+        # 查询已结束（已出答案或报错）：不清空状态，标记 done 留在会话中，
+        # 供下一轮「那A栋呢」类省略式追问拼接上下文重新分类（情况 1.5）；
+        # 靠 SessionStateManager 的 300 秒超时自动过期
+        state.done = True
+        state.missing_params = []
+        session_state.set(user_id, session_id, state)
+
+
 async def safe_send_message(websocket: WebSocket, message: dict):
     """安全地发送WebSocket消息，处理连接断开的情况"""
     try:
@@ -1361,6 +1435,7 @@ MODULE_HANDLERS = {
     "meeting_status": MeetingStatusHandler,
     "device_status": DeviceStatusHandler,
     "compositive_overview": CompositiveOverviewHandler,
+    "device_query": DeviceQueryHandler,
     "twins_inspection": TwinsInspectionHandler,
 }
 
@@ -1376,6 +1451,7 @@ MODULE_RUNNERS = {
     "meeting_status": run_meeting_status_graph,
     "device_status": run_device_status_graph,
     "compositive_overview": run_compositive_overview_graph,
+    "device_query": run_device_query_graph,
     "twins_inspection": run_twins_inspection_graph,
 }
 
@@ -1493,7 +1569,7 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
             #              → 不进追问分支，仅在情况 1.5 里充当省略式追问的上下文
             is_waiting = bool(
                 active_state and not active_state.done
-                and active_state.module in ("person_status", "security_status", "canteen_status", "vehicle_status", "information_status", "energy_status", "meeting_status", "emergency_fire", "emergency_perimeter", "device_status", "compositive_overview", "twins_inspection")
+                and active_state.module in ("person_status", "security_status", "canteen_status", "vehicle_status", "information_status", "energy_status", "meeting_status", "emergency_fire", "emergency_perimeter", "device_status", "compositive_overview", "twins_inspection", "device_query")
             )
 
             # 预计算顶层意图（人员态势 / 安防态势 / 食堂管理 / 车辆态势 / 信息发布 / 能源态势 / 会议管理 / 消防态势 / other），只算一次
@@ -1528,6 +1604,8 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
                     handler = DeviceStatusHandler()
                 elif active_state.module == "compositive_overview":
                     handler = CompositiveOverviewHandler()
+                elif active_state.module == "device_query":
+                    handler = DeviceQueryHandler()
                 elif active_state.module == "twins_inspection":
                     handler = TwinsInspectionHandler()
                 else:
@@ -1621,6 +1699,9 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
                     elif active_state.module == "compositive_overview":
                         # 用 LangGraph 图执行综合态势总览流程（内部会回写/保留会话状态）
                         await run_compositive_overview_graph(websocket, result["state"], user_id, session_id)
+                    elif active_state.module == "device_query":
+                        # 用 LangGraph 图执行设备查询流程（内部会回写/保留会话状态）
+                        await run_device_query_graph(websocket, result["state"], user_id, session_id)
                     elif active_state.module == "twins_inspection":
                         # 用 LangGraph 图执行孪生巡检流程（内部会回写/保留会话状态）
                         await run_twins_inspection_graph(websocket, result["state"], user_id, session_id)
@@ -1948,7 +2029,36 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
 
                 continue  # 跳过原有 pipeline
 
-            # 情况 2.10：没有进行中状态，但新意图属于周界态势
+            # 情况 2.10：没有进行中状态，但新意图属于设备查询（设备列表 / 设备详情）
+            elif top_intent == "device_query":
+                print("[DEBUG] 进入设备查询新意图分支, query:", query)
+
+                handler = DeviceQueryHandler()
+
+                # 从用户输入中抽取初始 slots
+                slots = await handler.extract_slots(query)
+
+                # 判断初始 slots 是否完整（详情查询缺设备名称/编码时进入追问）
+                missing = handler._get_missing_params(slots)
+
+                # 创建新的会话状态
+                state = IntentState(
+                    module="device_query",
+                    slots=slots,
+                    missing_params=missing,
+                    ask_count=0,
+                    unrelated_count=0,
+                    original_query=query,
+                    done=False
+                )
+                session_state.set(user_id, session_id, state)
+
+                # 用 LangGraph 图执行设备查询流程（内部会回写/保留会话状态）
+                await run_device_query_graph(websocket, state, user_id, session_id)
+
+                continue  # 跳过原有 pipeline
+
+            # 情况 2.11：没有进行中状态，但新意图属于周界态势
             elif top_intent == "emergency_perimeter":
                 print("[DEBUG] 进入周界态势新意图分支, query:", query)
 
@@ -1977,7 +2087,7 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
 
                 continue  # 跳过原有 pipeline
 
-            # 情况 2.11：没有进行中状态，但新意图属于孪生巡检
+            # 情况 2.12：没有进行中状态，但新意图属于孪生巡检
             elif top_intent == "twins_inspection":
                 print("[DEBUG] 进入孪生巡检新意图分支, query:", query)
 

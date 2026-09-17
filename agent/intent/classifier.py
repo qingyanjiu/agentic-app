@@ -38,6 +38,7 @@ EMERGENCY_FIRE_STATUS_THRESHOLD = 0.65
 EMERGENCY_PERIMETER_STATUS_THRESHOLD = 0.65
 DEVICE_STATUS_THRESHOLD = 0.65
 COMPOSITIVE_OVERVIEW_STATUS_THRESHOLD = 0.65
+DEVICE_QUERY_THRESHOLD = 0.65
 TWINS_INSPECTION_STATUS_THRESHOLD = 0.65
 
 
@@ -2420,6 +2421,104 @@ CANTEEN_STATUS_EXAMPLES = {
     ],
 }
 # ============================================================
+# 设备查询模块的示例语料库（按子类型分组）
+# 每个 key 对应 extract_device_query_slots 里的 query_type：
+#   device_list   -> 设备列表（可按设备类型/区域/楼栋/楼层筛选）
+#   device_detail -> 设备详情（按设备名称或编码定位到具体设备）
+#
+# 语料红线（避免与相邻意图抢中心向量）：
+#   1. 严禁收录"设备分类占比 / 各类设备数量占比 / 设备健康度 / 在线率 /
+#      月度维修报修 / 分区域设备统计"这类统计口径问法，
+#      它们归设备态势 device_status；
+#   2. 严禁收录"设备健康度总览 / 设备健康分"总览问法，
+#      它们归综合态势总览 compositive_overview；
+#   3. 只写后端**可查的 5 类设备**（jk 监控 / mj 门禁 / dz 道闸 /
+#      gb 广播 / xxfb 信息发布，见 slots.py 的 DEVICE_TYPE_DICT）：
+#      消防（灭火器/烟感）归 emergency_fire，电表水表归 energy_status，
+#      网络设备/空调后端没有 deviceType 可查，都不收录；
+#   4. 本语料只写"台账口径"：把设备列出来、看某一台设备的档案
+#
+# 用途（与 PERSON_STATUS_EXAMPLES 相同）：
+#   1. 所有示例的平均向量 = 设备查询意图中心（is_device_query）
+#   2. 每个子类型的平均向量 = 子类型中心（classify_device_query_sub_type）
+# ============================================================
+DEVICE_QUERY_EXAMPLES = {
+    # 设备列表（device_list）
+    "device_list": [
+        "设备列表",
+        "查一下设备列表",
+        # "园区 + 设备"的问法会和综合态势总览的"IoT设备总数"抢中心向量，
+        # 这里多铺几条台账口径的变体把边界拉开（见 docs 语料红线说明）
+        "园区有哪些设备",
+        "园区里有哪些设备",
+        "园区设备都有哪些",
+        "园区设备有哪些",
+        "园区都有什么设备",
+        "园区设备清单",
+        "园区设备列表",
+        "园区里都有什么设备",
+        "都有哪些设备",
+        "设备台账",
+        "看下设备清单",
+        "列出所有设备",
+        "帮我把设备列出来",
+        "楼里都有什么设备",
+        # 区域/楼栋/楼层筛选
+        "查一下A栋的设备",
+        "A栋3楼有哪些设备",
+        "三楼的设备列表",
+        "B栋的设备有哪些",
+        "主楼设备清单",
+        "食堂的设备有哪些",
+        "停车场有哪些设备",
+        "查下园区里的设备",
+        # 五类设备各自的列表问法
+        "监控设备列表",
+        "查下园区里的监控设备",
+        "有哪些摄像头",
+        "A栋的摄像头有哪些",
+        "门禁设备列表",
+        "有哪些门禁设备",
+        "道闸设备清单",
+        "广播设备清单",
+        "查下广播设备",
+        "信息发布设备有哪些",
+        "信息屏有哪些",
+    ],
+
+    # 设备详情（device_detail）
+    "device_detail": [
+        "设备详情",
+        "看下设备详情",
+        "查一下设备档案",
+        "这台设备的信息",
+        "某台设备的详情怎么看",
+        "设备详情里面有什么",
+        "该设备是什么设备",
+        "看下该设备的参数",
+        "帮我看下这台设备的资料",
+        # 带编码/名称的详情问法
+        "CAM102这个设备详情",
+        "设备编码为CAM-201的详情",
+        "看下设备编码CAM-201的档案",
+        "MH-001的详情",
+        "设备编号为MJ-003的详情",
+        "这台摄像头的具体信息",
+        "看下A栋摄像头的设备信息",
+        "这个门禁的档案",
+        "这台门禁设备的信息",
+        "查一下3F门禁的详细信息",
+        "看下这个道闸的信息",
+        "查下这台广播终端的详情",
+        "看下这台广播设备的资料",
+        "信息发布屏的详情",
+        "查一下信息发布设备的详细档案",
+        "这个信息屏的设备信息",
+    ],
+}
+
+
+# ============================================================
 # 人员态势小模型分类器
 # 基于 sentence-transformers 的 embedding 相似度判断
 #
@@ -2613,7 +2712,24 @@ class PersonStatusClassifier:
             center = np.mean(all_overview, axis=0)
             self.overview_center = center / np.linalg.norm(center)
 
-        # 12. 周界态势整体中心向量 + 子类型中心向量
+        # 12. 设备查询整体中心向量 + 子类型中心向量
+        self.device_query_center = None
+        self.device_query_sub_centers = {}
+        device_query_vectors = []
+        for sub_type, examples in DEVICE_QUERY_EXAMPLES.items():
+            vecs = self.model.encode(
+                examples, convert_to_numpy=True, normalize_embeddings=True
+            )
+            device_query_vectors.append(vecs)
+            center = np.mean(vecs, axis=0)
+            self.device_query_sub_centers[sub_type] = center / np.linalg.norm(center)
+
+        if device_query_vectors:
+            all_device_query = np.concatenate(device_query_vectors, axis=0)
+            center = np.mean(all_device_query, axis=0)
+            self.device_query_center = center / np.linalg.norm(center)
+
+        # 13. 周界态势整体中心向量 + 子类型中心向量
         self.perimeter_center = None
         self.perimeter_sub_centers = {}
         perimeter_vectors = []
@@ -2630,7 +2746,7 @@ class PersonStatusClassifier:
             center = np.mean(all_perimeter, axis=0)
             self.perimeter_center = center / np.linalg.norm(center)
 
-        # 13. 孪生巡检整体中心向量 + 子类型中心向量
+        # 14. 孪生巡检整体中心向量 + 子类型中心向量
         self.inspection_center = None
         self.inspection_sub_centers = {}
         inspection_vectors = []
@@ -2748,6 +2864,15 @@ class PersonStatusClassifier:
         logger.info(f"[classifier] query={query}, overview_score={score:.4f}")
         return score >= threshold, score
 
+    def is_device_query(self, query: str, threshold: float = DEVICE_QUERY_THRESHOLD) -> tuple:
+        """判断用户输入是否属于设备查询意图"""
+        if self.device_query_center is None:
+            return False, 0.0
+        query_vec = self._encode(query)
+        score = float(np.dot(query_vec, self.device_query_center))
+        logger.info(f"[classifier] query={query}, device_query_score={score:.4f}")
+        return score >= threshold, score
+
     def is_emergency_perimeter(self, query: str, threshold: float = EMERGENCY_PERIMETER_STATUS_THRESHOLD) -> tuple:
         """判断用户输入是否属于周界态势意图"""
         if self.perimeter_center is None:
@@ -2794,6 +2919,8 @@ class PersonStatusClassifier:
             if self.device_center is not None else -1.0,
             "compositive_overview": float(np.dot(query_vec, self.overview_center))
             if self.overview_center is not None else -1.0,
+            "device_query": float(np.dot(query_vec, self.device_query_center))
+            if self.device_query_center is not None else -1.0,
             "twins_inspection": float(np.dot(query_vec, self.inspection_center))
             if self.inspection_center is not None else -1.0,
         }
@@ -2811,6 +2938,7 @@ class PersonStatusClassifier:
             "emergency_perimeter": EMERGENCY_PERIMETER_STATUS_THRESHOLD,
             "device_status": DEVICE_STATUS_THRESHOLD,
             "compositive_overview": COMPOSITIVE_OVERVIEW_STATUS_THRESHOLD,
+            "device_query": DEVICE_QUERY_THRESHOLD,
             "twins_inspection": TWINS_INSPECTION_STATUS_THRESHOLD,
         }.get(best, PERSON_STATUS_THRESHOLD)
         if best_score >= threshold:
@@ -2940,6 +3068,17 @@ class PersonStatusClassifier:
         logger.info(f"[classifier] query={query}, overview_sub_type={best_type}, score={best_score:.4f}")
         return best_type, best_score
 
+    def classify_device_query_sub_type(self, query: str) -> tuple:
+        """设备查询子类型判定（device_list / device_detail）"""
+        query_vec = self._encode(query)
+        best_type, best_score = None, -1.0
+        for sub_type, center in self.device_query_sub_centers.items():
+            score = float(np.dot(query_vec, center))
+            if score > best_score:
+                best_type, best_score = sub_type, score
+        logger.info(f"[classifier] query={query}, device_query_sub_type={best_type}, score={best_score:.4f}")
+        return best_type, best_score
+
 
     def classify_sub_type(self, query: str) -> tuple:
         """
@@ -2991,10 +3130,10 @@ async def get_classifier():
 
 async def classify_intent(query: str) -> dict:
     """
-    统一意图识别入口（人员态势 / 安防态势 / 食堂管理 / 车辆态势 / 信息发布 / 能源态势 / 会议管理 / 其他）
+    统一意图识别入口（人员态势 / 安防态势 / 食堂管理 / 车辆态势 / 信息发布 / 能源态势 / 会议管理 / 消防态势 / 设备态势 / 综合态势总览 / 设备查询 / 其他）
 
     :param query: 用户输入
-    :return: {"intent": "person_status" | "security_status" | "canteen_status" | "vehicle_status" | "information_status" | "energy_status" | "meeting_status" | "other", "score": 相似度}
+    :return: {"intent": "person_status" | "security_status" | "canteen_status" | "vehicle_status" | "information_status" | "energy_status" | "meeting_status" | "emergency_fire" | "device_status" | "compositive_overview" | "device_query" | "other", "score": 相似度}
     """
     # 获取分类器单例
     # 第一次调用时会在线程池中加载模型
@@ -3184,6 +3323,23 @@ async def classify_compositive_overview_sub_type(query: str) -> tuple:
     return await loop.run_in_executor(
         None,
         classifier.classify_compositive_overview_sub_type,
+        query
+    )
+
+
+async def classify_device_query_sub_type(query: str) -> tuple:
+    """
+    异步判断设备查询的子类型（query_type）
+
+    :param query: 用户输入
+    :return: (query_type, 相似度分数)，例如 ("device_list", 0.72)
+    """
+    classifier = await get_classifier()
+
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        None,
+        classifier.classify_device_query_sub_type,
         query
     )
 

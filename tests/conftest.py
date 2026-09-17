@@ -42,6 +42,7 @@ GRAPH_MODULES = {
     "emergency_perimeter": "graph.emergency_perimeter_langgraph",
     "device_status": "graph.device_status_langgraph",
     "compositive_overview": "graph.compositive_overview_langgraph",
+    "device_query": "graph.device_query_langgraph",
     "twins_inspection": "graph.twins_inspection_langgraph",
 }
 
@@ -168,6 +169,19 @@ DOMAIN_TOOL_RESULTS = {
             '{"code":200,"online":45,"total":50}',
         "device:getMjOnlinePercentage":
             '{"code":200,"online":70,"total":72}',
+    },
+    "device_query": {
+        # 设备列表：jk 监控（大华 V5.0.16 口径，data 直接是通道数组）
+        # 详情查询会先调它反查设备编码（keyword 匹配在本地做）
+        "device:getDeviceList":
+            '{"code":200,"data":['
+            '{"channelCode":"1000000$1$0$0","channelName":"A栋枪机","cameraType":1,'
+            '"chExt":{"channelDeviceIp":"10.1.1.5"}},'
+            '{"channelCode":"1000000$1$0$1","channelName":"B栋球机","cameraType":2,'
+            '"chExt":{"channelDeviceIp":"10.1.1.6"}}]}',
+        "device:getDeviceDetail":
+            '{"code":200,"data":{"channelCode":"1000000$1$0$0","channelName":"A栋枪机",'
+            '"cameraType":1,"status":1,"chExt":{"channelDeviceIp":"10.1.1.5"}}}',
     },
     "compositive_overview": {
         "overview:getBasicInfo":
