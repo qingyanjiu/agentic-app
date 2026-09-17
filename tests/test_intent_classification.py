@@ -86,8 +86,8 @@ class TestTopLevelIntent:
             # 综合态势总览
             ("园区面积多大", "compositive_overview"),
             ("设备健康度总览", "compositive_overview"),
-            # 设备查询（台账口径：设备列表 / 设备详情，后端仅收
-            # jk 监控 / mj 门禁 / dz 道闸 / gb 广播 / xxfb 信息发布 五类）
+            # 设备查询（台账口径：设备列表 / 设备详情，资产库的 syncSource 八类：
+            # 0门禁 1道闸 2梯控 3监控 4入侵报警 5广播 6水表 7电表）
             ("设备列表", "device_query"),
             ("园区有哪些设备", "device_query"),
             ("查下A栋的监控设备", "device_query"),

@@ -70,13 +70,14 @@ HAPPY_PATH_CASES = [
     ("device_status", {"query_type": "mj_online"}),
     ("compositive_overview", {"query_type": "basic_info"}),
     ("compositive_overview", {"query_type": "device_health"}),
-    # 设备查询：deviceType 必填（jk 监控/mj 门禁/dz 道闸/gb 广播/xxfb 信息发布）
-    # 详情另需设备名称/编码（给名称时靠列表反查编码）
-    ("device_query", {"query_type": "device_list", "device_type": "jk", "area": "A栋3楼"}),
-    ("device_query", {"query_type": "device_list", "device_type": "mj"}),
-    ("device_query", {"query_type": "device_detail", "device_type": "jk",
-                      "device_keyword": "1000000$1$0$0"}),
-    ("device_query", {"query_type": "device_detail", "device_type": "jk",
+    # 设备查询：资产库口径，设备类型码是 syncSource（0门禁 1道闸 2梯控 3监控
+    # 4入侵报警 5广播 6水表 7电表），筛选参数全可选；
+    # 详情另需设备名称/编号（据此先在列表里搜出内部 id）
+    ("device_query", {"query_type": "device_list", "device_type": "3", "area": "A栋3楼"}),
+    ("device_query", {"query_type": "device_list", "device_type": "0"}),
+    ("device_query", {"query_type": "device_detail", "device_type": "3",
+                      "device_keyword": "CY-HIK-JK-001-0001"}),
+    ("device_query", {"query_type": "device_detail", "device_type": "3",
                       "device_keyword": "A栋枪机"}),
 ]
 
@@ -111,26 +112,22 @@ ASK_CASES = [
      "请问您想查询哪类消防数据？设备台账、告警统计、实时告警，还是月度报修？"),
     ("emergency_fire", {},
      "请问您想查询哪类消防数据？设备台账、告警统计、实时告警，还是月度报修？"),
-    # 设备查询缺设备类型（后端必填）-> 先反问哪类设备
-    ("device_query", {"query_type": "device_list"},
-     "请问您想查询哪类设备？"),
-    ("device_query", {},
-     "请问您想查询哪类设备？"),
+    # 设备查询：列表接口筛选参数全可选，所以列表不缺参数、不反问；
+    # 只有详情缺设备名称/编号时 -> 反问哪台设备
     ("device_query", {"query_type": "device_detail"},
-     "请问您想查看哪类设备的详情？"),
-    # 设备类型齐了但详情缺设备名称/编码 -> 反问哪台设备
-    ("device_query", {"query_type": "device_detail", "device_type": "mj"},
+     "请问您想查看哪台设备的详情？"),
+    ("device_query", {"query_type": "device_detail", "device_type": "0"},
      "请问您想查看哪台设备的详情？"),
     # 周界与消防同一约定：笼统问法 query_type=count -> 反问而非报错
     ("emergency_perimeter", {"query_type": "count"},
      "请问您想查询哪类周界数据？关键指标、防区一览、告警统计，还是告警一览？"),
     ("emergency_perimeter", {},
      "请问您想查询哪类周界数据？关键指标、防区一览、告警统计，还是告警一览？"),
-    # 设备态势同理：笼统问法 -> 反问哪类设备（选定后按台账口径列设备）
+    # 设备态势同理：笼统问法 -> 反问哪类设备（选定后按资产库台账口径列设备）
     ("device_status", {"query_type": "count"},
-     "请问您想查询哪类设备？监控、门禁、道闸、广播，还是信息发布设备？"),
+     "请问您想查询哪类设备？门禁、道闸、梯控、监控、入侵报警、广播、水表，还是电表？"),
     ("device_status", {},
-     "请问您想查询哪类设备？监控、门禁、道闸、广播，还是信息发布设备？"),
+     "请问您想查询哪类设备？门禁、道闸、梯控、监控、入侵报警、广播、水表，还是电表？"),
 ]
 
 
@@ -212,9 +209,8 @@ GUARD_CASES = [
     # 设备态势同理：count 已被"哪类设备"反问拦截（见 ASK_CASES）
     ("device_status", {"query_type": "no_such_type"}),
     ("compositive_overview", {"query_type": "no_such_type"}),
-    # 设备查询：deviceType 必填，缺了会在 check_missing_params 被反问拦截，
-    # 这里带上类型码，验证非法 query_type 的守卫分支
-    ("device_query", {"query_type": "no_such_type", "device_type": "jk",
+    # 设备查询：详情缺名称/编号会被反问拦截，这里带齐参数，验证非法 query_type 的守卫分支
+    ("device_query", {"query_type": "no_such_type", "device_type": "0",
                       "device_keyword": "MJ-003"}),
 ]
 
@@ -277,192 +273,232 @@ def test_device_month_tool_without_date():
 
 
 # ============================================================
-# 8.1 设备查询：列表筛选参数透传 / 详情先反查设备编码
+# 8.1 设备查询（资产库口径）：列表筛选透传 / 详情先拿名称编号换内部 id
 # ============================================================
-def test_device_query_list_passes_filters():
-    """列表查询：设备类型（deviceType 码）+ 区域 应作为入参下发给 device:getDeviceList"""
+# 资产库设备清单：{data:{page:{...}, data:[设备数组]}}
+# 注意 status 是启用状态，空间名是 spaceName 全路径
+_ASSET_ROWS = (
+    '{"code":200,"data":{"page":{"total":2,"size":20,"pages":1,"current":1},"data":['
+    '{"id":"1001","name":"A栋枪机","code":"CY-HIK-JK-001-0001","syncSource":"3",'
+    '"status":"1","spaceName":"园区/A栋/3楼"},'
+    '{"id":"1002","name":"A栋球机","code":"CY-HIK-JK-001-0002","syncSource":"3",'
+    '"status":"1","spaceName":"园区/A栋/3楼"}]}}'
+)
+
+
+def test_device_query_list_passes_sync_source():
+    """列表查询：设备类型以 syncSource 下发给 device_query:listDevice（区域不下发）"""
     from conftest import FakeTool
 
     mod = get_graph_module("device_query")
-    tool = FakeTool("device:getDeviceList", '{"code":200,"data":[]}')
-    node = mod.make_call_tool_node({"device:getDeviceList": tool})
+    tool = FakeTool("device_query:listDevice", '{"code":200,"data":{"data":[]}}')
+    node = mod.make_call_tool_node({"device_query:listDevice": tool})
 
     out = run(node({
-        "slots": {"query_type": "device_list", "device_type": "jk", "area": "A栋3楼"},
+        "slots": {"query_type": "device_list", "device_type": "3"},
+        "original_query": "有哪些监控设备",
+    }))
+
+    assert out.get("error") is None
+    assert tool.calls == [{"syncSource": "3"}], f"实际调用参数: {tool.calls}"
+
+
+def test_device_query_list_area_filters_locally():
+    """位置名后端只认 spaceId，不下发；改为多拉一页回来按 spaceName 本地过滤"""
+    from conftest import FakeTool
+
+    mod = get_graph_module("device_query")
+    tool = FakeTool("device_query:listDevice", '{"code":200,"data":{"data":[]}}')
+    node = mod.make_call_tool_node({"device_query:listDevice": tool})
+
+    out = run(node({
+        "slots": {"query_type": "device_list", "device_type": "3", "area": "A栋3楼"},
         "original_query": "A栋3楼有哪些监控设备",
     }))
 
     assert out.get("error") is None
-    assert tool.calls == [{"deviceType": "jk", "area": "A栋3楼"}], f"实际调用参数: {tool.calls}"
+    assert tool.calls == [{"syncSource": "3", "pageSize": 200}], f"实际调用参数: {tool.calls}"
 
 
-def test_device_query_detail_resolves_code_by_name():
-    """详情查询：用户只报设备名称时，先用列表反查编码，再拿编码调详情（大华 jk 口径）"""
+def test_device_query_detail_resolves_id_by_name():
+    """详情查询：用户报名称时，先用列表搜出设备，再拿内部 id 调详情"""
     from conftest import FakeTool
 
     mod = get_graph_module("device_query")
-    list_tool = FakeTool(
-        "device:getDeviceList",
-        '{"code":200,"data":['
-        '{"channelCode":"1000000$1$0$0","channelName":"A栋枪机","cameraType":1},'
-        '{"channelCode":"1000000$1$0$1","channelName":"B栋球机","cameraType":2}]}',
-    )
-    detail_tool = FakeTool("device:getDeviceDetail", '{"code":200,"data":{}}')
+    list_tool = FakeTool("device_query:listDevice", _ASSET_ROWS)
+    detail_tool = FakeTool("device_query:getDeviceDetail", '{"code":200,"data":{}}')
     node = mod.make_call_tool_node({
-        "device:getDeviceList": list_tool,
-        "device:getDeviceDetail": detail_tool,
+        "device_query:listDevice": list_tool,
+        "device_query:getDeviceDetail": detail_tool,
     })
 
     out = run(node({
-        "slots": {"query_type": "device_detail", "device_type": "jk",
+        "slots": {"query_type": "device_detail", "device_type": "3",
                   "device_keyword": "A栋枪机"},
         "original_query": "A栋枪机的详情",
     }))
 
     assert out.get("error") is None
-    assert list_tool.calls == [{"deviceType": "jk"}], f"实际调用参数: {list_tool.calls}"
-    assert detail_tool.calls == [
-        {"deviceCode": "1000000$1$0$0", "deviceType": "jk"}
-    ], f"实际调用参数: {detail_tool.calls}"
+    # 名称走模糊匹配查一次就够了（两条数据里"完全相等"的只有 A栋枪机）
+    assert list_tool.calls == [{"name": "A栋枪机", "pageSize": 20}], f"实际调用参数: {list_tool.calls}"
+    assert detail_tool.calls == [{"id": "1001"}], f"实际调用参数: {detail_tool.calls}"
 
 
-def test_device_query_detail_uses_code_directly():
-    """详情查询：用户直接报编码时，编码原样作为 deviceCode 下发，不再反查列表"""
+def test_device_query_detail_falls_back_to_code_search():
+    """详情查询：用户报编号时，名称搜不到再按编号精确搜一次"""
     from conftest import FakeTool
 
     mod = get_graph_module("device_query")
-    list_tool = FakeTool("device:getDeviceList", '{"code":200,"data":[]}')
-    detail_tool = FakeTool("device:getDeviceDetail", '{"code":200,"data":{}}')
+    detail_tool = FakeTool("device_query:getDeviceDetail", '{"code":200,"data":{}}')
+
+    class SequenceTool(FakeTool):
+        """第一次（按名称搜）空空如也，第二次（按编号搜）才返回数据"""
+
+        async def ainvoke(self, args=None, **kwargs):
+            self.calls.append(args)
+            if len(self.calls) == 1:
+                return '{"code":200,"data":{"data":[]}}'
+            return _ASSET_ROWS
+
+    list_tool = SequenceTool("device_query:listDevice", "")
     node = mod.make_call_tool_node({
-        "device:getDeviceList": list_tool,
-        "device:getDeviceDetail": detail_tool,
+        "device_query:listDevice": list_tool,
+        "device_query:getDeviceDetail": detail_tool,
     })
 
     out = run(node({
-        "slots": {"query_type": "device_detail", "device_type": "mj",
-                  "device_keyword": "MJ-003"},
-        "original_query": "MJ-003的详情",
+        "slots": {"query_type": "device_detail", "device_type": "3",
+                  "device_keyword": "CY-HIK-JK-001-0002"},
+        "original_query": "CY-HIK-JK-001-0002的详情",
     }))
 
     assert out.get("error") is None
-    assert list_tool.calls == [], "编码形态的关键字不应再反查列表"
-    assert detail_tool.calls == [
-        {"deviceCode": "MJ-003", "deviceType": "mj"}
-    ], f"实际调用参数: {detail_tool.calls}"
+    assert list_tool.calls == [
+        {"name": "CY-HIK-JK-001-0002", "pageSize": 20},
+        {"code": "CY-HIK-JK-001-0002", "pageSize": 20},
+    ], f"实际调用参数: {list_tool.calls}"
+    assert detail_tool.calls == [{"id": "1002"}], f"实际调用参数: {detail_tool.calls}"
 
 
-@pytest.mark.parametrize(
-    "device_type,payload,keyword,expected_code",
-    [
-        # mj 门禁 / dz 道闸：大华 {totalRows, pageData[]}
-        ("mj",
-         '{"code":200,"totalRows":1,"pageData":[{"deviceCode":"MJ-003","deviceName":"A栋门禁",'
-         '"deviceIp":"10.1.2.3","units":[{"unitType":7,"channels":[{"channelCode":"MJ-003$1"}]}]}]}',
-         "A栋门禁", "MJ-003"),
-        ("dz",
-         '{"code":200,"totalRows":1,"pageData":[{"deviceCode":"DZ-001","deviceName":"南门道闸",'
-         '"deviceIp":"10.1.3.3"}]}',
-         "南门道闸", "DZ-001"),
-        # gb 广播：ITC {EndPointsArray[]}
-        ("gb",
-         '{"code":200,"EndPointsArray":[{"EndpointID":"EP-1001",'
-         '"EndpointName":"食堂广播终端","EndpointIP":"10.1.4.7"}]}',
-         "食堂广播终端", "EP-1001"),
-        # xxfb 信息发布：和信 data 为设备数组（code/name）
-        ("xxfb",
-         '{"code":200,"data":[{"code":"XXFB-01","name":"大厅信息发布屏",'
-         '"ipAddress":"10.1.5.9","online":1,"status":1}]}',
-         "大厅信息发布屏", "XXFB-01"),
-        # jk 海康：{total, list[]}
-        ("jk",
-         '{"code":200,"total":1,"list":[{"cameraIndexCode":"hk001122",'
-         '"cameraName":"北门半球","cameraType":3,"status":1}]}',
-         "北门半球", "hk001122"),
-    ],
-)
-def test_device_query_detail_resolves_code_per_vendor(
-    device_type, payload, keyword, expected_code
-):
-    """详情反查要兼容各厂商返回结构（pageData / EndPointsArray / data 数组 / list）"""
+def test_device_query_detail_not_found():
+    """详情查询：列表里搜不到就不调详情接口，如实说没找到"""
     from conftest import FakeTool
 
     mod = get_graph_module("device_query")
-    list_tool = FakeTool("device:getDeviceList", payload)
-    detail_tool = FakeTool("device:getDeviceDetail", '{"code":200,"data":{}}')
+    list_tool = FakeTool("device_query:listDevice", '{"code":200,"data":{"data":[]}}')
+    detail_tool = FakeTool("device_query:getDeviceDetail", '{"code":200,"data":{}}')
     node = mod.make_call_tool_node({
-        "device:getDeviceList": list_tool,
-        "device:getDeviceDetail": detail_tool,
+        "device_query:listDevice": list_tool,
+        "device_query:getDeviceDetail": detail_tool,
     })
 
     out = run(node({
-        "slots": {"query_type": "device_detail", "device_type": device_type,
-                  "device_keyword": keyword},
-        "original_query": f"{keyword}的详情",
+        "slots": {"query_type": "device_detail", "device_type": "0",
+                  "device_keyword": "不存在的设备"},
+        "original_query": "不存在的设备的详情",
     }))
 
     assert out.get("error") is None
-    assert detail_tool.calls == [
-        {"deviceCode": expected_code, "deviceType": device_type}
-    ], f"实际调用参数: {detail_tool.calls}"
+    assert detail_tool.calls == [], "搜不到设备时不该再调详情接口"
+    assert "没有找到" in out["answer"]
+
+
+def test_device_query_detail_ambiguous_lists_candidates():
+    """详情查询：匹配到多台又不完全相等时不猜，把候选列出来让用户指定"""
+    from conftest import FakeTool
+
+    mod = get_graph_module("device_query")
+    list_tool = FakeTool("device_query:listDevice", _ASSET_ROWS)
+    detail_tool = FakeTool("device_query:getDeviceDetail", '{"code":200,"data":{}}')
+    node = mod.make_call_tool_node({
+        "device_query:listDevice": list_tool,
+        "device_query:getDeviceDetail": detail_tool,
+    })
+
+    out = run(node({
+        "slots": {"query_type": "device_detail", "device_type": "3",
+                  "device_keyword": "A栋"},
+        "original_query": "A栋的详情",
+    }))
+
+    assert out.get("error") is None
+    assert detail_tool.calls == [], "有歧义时不该猜一台去查详情"
+    answer = out["answer"]
+    assert "匹配到 2 台设备" in answer
+    assert "CY-HIK-JK-001-0001" in answer and "CY-HIK-JK-001-0002" in answer
 
 
 class TestDeviceQueryFullFlow:
-    """两轮完整流程：缺设备类型 -> 反问 -> 用户答类型 -> 正常查询"""
+    """两轮完整流程：详情缺设备名称/编号 -> 反问 -> 用户答编号 -> 正常查询"""
 
-    def test_list_ask_type_then_answer(self, domain_graphs):
+    def test_detail_ask_keyword_then_answer(self, domain_graphs):
         from agent.intent.handlers.device_query_handler import DeviceQueryHandler
-        from agent.intent.slots import extract_device_query_slots
         from memory.session_state import IntentState
 
         handler = DeviceQueryHandler()
 
-        # ---- 第一轮：「查下A栋3楼的设备」没给类型，图应反问哪类设备 ----
-        slots = run(handler.extract_slots("查下A栋3楼的设备"))
-        assert slots["device_type"] == ""
-        assert handler._get_missing_params(slots) == ["device_type"]
+        # ---- 第一轮：「看下设备详情」没有名称/编号，图应反问哪台设备 ----
+        slots = run(handler.extract_slots("看下设备详情"))
+        assert slots["query_type"] == "device_detail"
+        assert slots["device_keyword"] == ""
+        assert handler._get_missing_params(slots) == ["device_keyword"]
 
         r1 = run(domain_graphs("device_query").ainvoke(graph_input(slots)))
         ask_events = asks_of(r1)
         assert len(ask_events) == 1
-        assert "哪类设备" in ask_events[0]["question"]
-        assert ask_events[0]["missing_params"] == ["device_type"]
+        assert "哪台设备" in ask_events[0]["question"]
+        assert ask_events[0]["missing_params"] == ["device_keyword"]
+        assert not r1.get("done"), "追问轮不应结束流程"
+        assert answers_of(r1) == [], "这一次不该给出答案"
 
-        # ---- 第二轮：用户回「监控」，走 handler.handle_reply 补槽 ----
+        # ---- 第二轮：用户回编号，走 handler.handle_reply 补槽 ----
         state = IntentState(
             module="device_query",
             slots=dict(r1["slots"]),
-            missing_params=["device_type"],
+            missing_params=["device_keyword"],
             ask_count=1,
             unrelated_count=0,
-            original_query="查下A栋3楼的设备",
+            original_query="看下设备详情",
             done=False,
         )
-        reply = run(handler.handle_reply(state, "监控", llm=None))
+        reply = run(handler.handle_reply(state, "CY-HIK-JK-001-0001", llm=None))
         assert reply["action"] == "continue"
-        assert state.slots["device_type"] == "jk"
-        assert state.slots["query_type"] == "device_list"
+        assert state.slots["device_keyword"] == "CY-HIK-JK-001-0001"
+        assert state.slots["query_type"] == "device_detail", "补槽不该把详情口径冲成列表"
         assert state.missing_params == []
 
         r2 = run(domain_graphs("device_query").ainvoke(graph_input(state.slots)))
         answer_list = answers_of(r2)
         assert answer_list, "第二轮应给出答案"
         assert "暂不支持" not in answer_list[-1]
-        assert "A栋枪机" in answer_list[-1], "答案应来自 mock 的设备列表数据"
+        assert "工具未加载" not in answer_list[-1]
+        assert "A栋枪机" in answer_list[-1], "答案应来自 mock 的设备详情数据"
         assert r2.get("done") is True
 
-        # 区域筛选照常透传（A栋3楼在 mock 里不做过滤，这里只验证槽位不丢）
-        assert state.slots["area"] == "A栋3楼"
+    def test_list_without_type_answers_directly(self, domain_graphs):
+        """列表口径不再强制问设备类型：不给类型也直接出答案（资产库接口全可选）"""
+        from agent.intent.handlers.device_query_handler import DeviceQueryHandler
+
+        handler = DeviceQueryHandler()
+        slots = run(handler.extract_slots("园区有哪些设备"))
+        assert handler._get_missing_params(slots) == []
+
+        final = run(domain_graphs("device_query").ainvoke(graph_input(slots)))
+        assert asks_of(final) == [], "列表口径不该反问"
+        answer_list = answers_of(final)
+        assert answer_list and "A栋枪机" in answer_list[-1]
 
 
 class TestDeviceStatusFullFlow:
     """
     两轮完整流程：设备态势笼统问法 -> 反问"哪类设备" -> 用户答类型 -> 按台账口径列设备
 
-    对照 device_query 的同一场景：设备域后端只有"设备列表/设备详情"两个台账工具，
-    因此设备态势兜底选定的类型最终落到 device:getDeviceList。
+    对照 device_query 的同一场景：设备域只有"设备列表/设备详情"两个台账工具，
+    因此设备态势兜底选定的类型最终落到 device_query:listDevice（资产库口径的 syncSource）。
     """
 
     def test_vague_query_ask_type_then_list(self, domain_graphs):
+
         from agent.intent.handlers.device_status_handler import DeviceStatusHandler
         from agent.intent.slots import extract_device_status_slots
         from memory.session_state import IntentState
@@ -494,7 +530,7 @@ class TestDeviceStatusFullFlow:
         )
         reply = run(handler.handle_reply(state, "监控", llm=None))
         assert reply["action"] == "continue"
-        assert state.slots["device_type"] == "jk"
+        assert state.slots["device_type"] == "3", "监控在资产库口径里是 syncSource=3"
         assert state.slots["query_type"] == "device_list"
         assert state.missing_params == []
 
@@ -507,21 +543,21 @@ class TestDeviceStatusFullFlow:
         assert r2.get("done") is True
 
 
-def test_device_status_list_passes_device_type():
-    """台账分支：deviceType 应作为入参下发给 device:getDeviceList"""
+def test_device_status_list_passes_sync_source():
+    """台账分支：设备类型码（syncSource）应作为入参下发给 device_query:listDevice"""
     from conftest import FakeTool
 
     device_mod = get_graph_module("device_status")
-    tool = FakeTool("device:getDeviceList", '{"code":200,"data":[]}')
-    node = device_mod.make_call_tool_node({"device:getDeviceList": tool})
+    tool = FakeTool("device_query:listDevice", '{"code":200,"data":{"data":[]}}')
+    node = device_mod.make_call_tool_node({"device_query:listDevice": tool})
 
     out = run(node({
-        "slots": {"query_type": "device_list", "device_type": "mj"},
+        "slots": {"query_type": "device_list", "device_type": "0"},
         "original_query": "看下门禁设备",
     }))
 
     assert out.get("error") is None
-    assert tool.calls == [{"deviceType": "mj"}], f"实际调用参数: {tool.calls}"
+    assert tool.calls == [{"syncSource": "0"}], f"实际调用参数: {tool.calls}"
 
 
 # ============================================================
@@ -531,7 +567,7 @@ TOOL_MISSING_CASES = [
     ("person_status", {"query_type": "realtime"}),
     ("canteen_status", {"event_type": "dining_count", "date": SPAN_DATE}),
     ("emergency_fire", {"query_type": "fire_alarm_list"}),
-    ("device_query", {"query_type": "device_list", "device_type": "jk"}),
+    ("device_query", {"query_type": "device_list", "device_type": "3"}),
 ]
 
 

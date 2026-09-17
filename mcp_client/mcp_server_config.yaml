@@ -83,14 +83,28 @@ mcp_servers:
   # 工具：设备态势统计（device:getEquipClass / getCategoryHealth / getMonthMaintenance /
   #      getMonthRepair / getStatisRegion / getAnfangDeviceOnlinePercentage /
   #      getGbOnlinePercentage / getMjOnlinePercentage）
-  #      以及设备查询台账口径（device:getDeviceList / device:getDeviceDetail，
-  #      供 device_query 意图使用；Java 侧如未实现，Python 侧会提示"工具未加载"）
   # 部署方式与人员态势一致：
   # - Java 跑在宿主机：url: http://host.docker.internal:2222/mcp/device
   # - Java 跑在 Docker 且与 Python 同网络：url: http://mcp-sidecar:2222/mcp/device
   device:
     transport: streamable_http
     url: http://host.docker.internal:2222/mcp/device
+
+  # Java MCP Sidecar - 设备查询模块（/mcp/devicequery，
+  # 与 Java 侧 PlatformDeviceQueryMcp 一致，工具名前缀 device_query:）
+  # 设备查询意图（device_query）用资产库口径的两个工具：
+  #   device_query:listDevice      设备资产清单（分页，可按 syncSource/status/name/code 等筛）
+  #   device_query:getDeviceDetail 设备详情（按列表返回的内部 id 查）
+  # 设备态势（device_status）笼统问法的兜底也走 listDevice（按 syncSource 列设备）
+  #
+  # 说明：该端点还有状态统计/在线率/厂商透传另外三组工具，Python 侧暂不使用；
+  #      其中 5 个接口与 /mcp/device 重叠（device:getEquipClass 等），别混用。
+  # 部署方式同上：
+  # - Java 跑在宿主机：url: http://host.docker.internal:2222/mcp/devicequery
+  # - Java 跑在 Docker 且与 Python 同网络：url: http://mcp-sidecar:2222/mcp/devicequery
+  devicequery:
+    transport: streamable_http
+    url: http://host.docker.internal:2222/mcp/devicequery
 
   # Java MCP Sidecar - 综合态势总览模块（/mcp/overview，与 Java 侧 OverviewMcpServerConfig 一致）
   # 工具：overview:getBasicInfo / overview:getDeviceHealth（接口文档 §2.1）

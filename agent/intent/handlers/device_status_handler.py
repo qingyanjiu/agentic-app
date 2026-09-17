@@ -27,8 +27,8 @@ _TYPE_ANSWER_NOISE = (
 # 兜底反问（与消防/周界同一约定）：
 #   用户只说"查下设备"这类笼统问法时，正则落 count 兜底、分类器也判不出子类型，
 #   此时不再走 call_tool 的"暂不支持"守卫，而是反问"哪类设备"；
-#   用户选定后按**台账口径**调 device:getDeviceList 列出该类设备
-#   （设备域后端只有"设备列表/设备详情"两个台账工具）。
+#   用户选定后按**台账口径**调 device_query:listDevice 列出该类设备
+#   （设备域只有"设备列表/设备详情"两个台账工具，走资产库口径的 syncSource）。
 # ============================================================
 class DeviceStatusHandler(IntentHandler):
     name = "device_status"
@@ -79,7 +79,9 @@ class DeviceStatusHandler(IntentHandler):
         device_keywords = [
             "设备", "分类", "占比", "健康", "在线", "离线", "维修", "维保",
             "报修", "区域", "安防", "监控", "广播", "门禁", "趋势", "统计",
-            "数量", "故障"
+            "数量", "故障",
+            # 兜底反问的选项词（资产库口径的八类设备）
+            "道闸", "梯控", "电梯", "入侵报警", "报警", "水表", "电表",
         ]
         if any(k in query for k in device_keywords):
             return True
@@ -176,7 +178,7 @@ class DeviceStatusHandler(IntentHandler):
 
         # 按优先级生成问题
         if "device_type" in missing:
-            question = "请问您想查询哪类设备？监控、门禁、道闸、广播，还是信息发布设备？"
+            question = "请问您想查询哪类设备？门禁、道闸、梯控、监控、入侵报警、广播、水表，还是电表？"
         elif "date" in missing:
             question = "请问您想查询哪个月份的设备数据？"
         else:

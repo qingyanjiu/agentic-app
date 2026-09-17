@@ -83,6 +83,22 @@ def make_tools(results_by_tool: dict, delay: float = 0.0) -> dict:
 # 各域 MCP 工具的模拟返回数据
 # 结构参照 Java sidecar 真实返回（rows 列表 / 文本），只保证流程能走通
 # ============================================================
+
+# 资产库设备清单（device_query:listDevice 的真实返回形状）：
+# {code, data:{page:{total,size,pages,current}, data:[设备数组]}}
+# 注意 status 是启用状态（0停用 1启用 2维修 3报废），不是在线/离线
+DEVICE_ASSET_LIST_RESULT = (
+    '{"code":200,"data":{"page":{"total":2,"size":100,"pages":1,"current":1},"data":['
+    '{"id":"1001","name":"A栋枪机","code":"CY-HIK-JK-001-0001","syncSource":"3",'
+    '"deviceTypeName":"监控设备","status":"1","spaceId":"2001",'
+    '"spaceName":"园区/A栋/3楼","personInChargeName":"张三","orgName":"安防部",'
+    '"maintained":"1"},'
+    '{"id":"1002","name":"北门门禁","code":"CY-DH-MJ-002-0001","syncSource":"0",'
+    '"deviceTypeName":"门禁设备","status":"1","spaceId":"2002",'
+    '"spaceName":"园区/北门/门岗","personInChargeName":"李四","orgName":"安防部",'
+    '"maintained":"0"}]}}'
+)
+
 DOMAIN_TOOL_RESULTS = {
     "person_status": {
         "person_status:getTodayPersonnelAffairs":
@@ -169,27 +185,20 @@ DOMAIN_TOOL_RESULTS = {
             '{"code":200,"online":45,"total":50}',
         "device:getMjOnlinePercentage":
             '{"code":200,"online":70,"total":72}',
-        # 台账口径：笼统问法兜底反问"哪类设备"后，用这个工具列设备
-        # （与 device_query 同一工具，jk 大华 V5.0.16 口径）
-        "device:getDeviceList":
-            '{"code":200,"data":['
-            '{"channelCode":"1000000$1$0$0","channelName":"A栋枪机","cameraType":1,'
-            '"chExt":{"channelDeviceIp":"10.1.1.5"}},'
-            '{"channelCode":"1000000$1$0$1","channelName":"B栋球机","cameraType":2,'
-            '"chExt":{"channelDeviceIp":"10.1.1.6"}}]}',
+        # 台账口径：笼统问法兜底反问"哪类设备"后，用资产库列表工具列设备
+        # （与 device_query 同一工具，/mcp/devicequery 的 device_query:listDevice）
+        "device_query:listDevice": DEVICE_ASSET_LIST_RESULT,
     },
     "device_query": {
-        # 设备列表：jk 监控（大华 V5.0.16 口径，data 直接是通道数组）
-        # 详情查询会先调它反查设备编码（keyword 匹配在本地做）
-        "device:getDeviceList":
-            '{"code":200,"data":['
-            '{"channelCode":"1000000$1$0$0","channelName":"A栋枪机","cameraType":1,'
-            '"chExt":{"channelDeviceIp":"10.1.1.5"}},'
-            '{"channelCode":"1000000$1$0$1","channelName":"B栋球机","cameraType":2,'
-            '"chExt":{"channelDeviceIp":"10.1.1.6"}}]}',
-        "device:getDeviceDetail":
-            '{"code":200,"data":{"channelCode":"1000000$1$0$0","channelName":"A栋枪机",'
-            '"cameraType":1,"status":1,"chExt":{"channelDeviceIp":"10.1.1.5"}}}',
+        # 设备列表：资产库 {page:{...}, data:[设备数组]}（Java PlatformDeviceQueryMcp 口径）
+        # 详情查询会先调它把"名称/编号"换成"内部 id"
+        "device_query:listDevice": DEVICE_ASSET_LIST_RESULT,
+        # 设备详情：按内部 id 查，返回单个设备对象（比列表多负责人/组织）
+        "device_query:getDeviceDetail":
+            '{"code":200,"data":{"id":"1001","name":"A栋枪机","code":"CY-HIK-JK-001-0001",'
+            '"syncSource":"3","deviceTypeName":"监控设备","status":"1","spaceId":"2001",'
+            '"spaceName":"园区/A栋/3楼","personInChargeName":"张三","orgName":"安防部",'
+            '"maintained":"1"}}',
     },
     "compositive_overview": {
         "overview:getBasicInfo":

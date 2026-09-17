@@ -34,12 +34,14 @@ def _device_type_label(device_type: str) -> str:
 #   mj_online        -> device:getMjOnlinePercentage
 #
 # 另外一条台账口径的分支（与 device_query 共用同一个工具）：
-#   device_list      -> device:getDeviceList
+#   device_list      -> device_query:listDevice
 #
 #   "查下设备"这类笼统问法正则落 count 兜底、分类器也救不回来时，
 #   不复用"暂不支持"守卫，而是反问"哪类设备"；用户选定后按台账口径
-#   列出该类设备（设备名称/编码/所在位置/状态），用的就是 device_query
-#   的设备列表工具——后端设备域只有"设备列表/设备详情"两个台账工具。
+#   列出该类设备（设备名称/编号/所在位置/启用状态），用的就是 device_query
+#   意图的资产库列表工具——设备域只有"设备列表/设备详情"两个台账工具。
+#   注意这条分支走的是**资产库**口径（syncSource 0门禁…7电表），
+#   和设备态势的在线率/统计工具不是一回事。
 # ============================================================
 _JAVA_TOOL_MAP = {
     "equip_class": "device:getEquipClass",
@@ -50,7 +52,7 @@ _JAVA_TOOL_MAP = {
     "anfang_online": "device:getAnfangDeviceOnlinePercentage",
     "gb_online": "device:getGbOnlinePercentage",
     "mj_online": "device:getMjOnlinePercentage",
-    "device_list": "device:getDeviceList",
+    "device_list": "device_query:listDevice",
 }
 
 # 支持可选 date 参数的工具（Java 侧接口带 ?date=，格式 yyyy-MM）
@@ -131,7 +133,10 @@ async def _llm_format_device_result(
             "anfang_online": "列出安防设备在线率（total/zhoujie/dz/mj 各组统计）；",
             "gb_online": "列出广播设备在线率；",
             "mj_online": "列出门禁设备在线率；",
-            "device_list": "把查到的设备逐条列出来（设备名称、设备编码、所在区域或安装位置、状态）；",
+            "device_list": (
+                "把查到的设备逐条列出来（设备名称、设备编号、所在位置、启用状态；"
+                "status 是启用状态 0停用 1启用 2维修 3报废，不要说成在线/离线）；"
+            ),
         }.get(query_type, "把返回数据整理清楚；")
 
         prompt = (
@@ -277,7 +282,7 @@ def ask_param(state: DeviceStatusGraphState) -> dict:
     missing = state["missing_params"]
 
     if "device_type" in missing:
-        question = "请问您想查询哪类设备？监控、门禁、道闸、广播，还是信息发布设备？"
+        question = "请问您想查询哪类设备？门禁、道闸、梯控、监控、入侵报警、广播、水表，还是电表？"
     else:
         question = "请问您还需要补充什么信息？"
 
@@ -357,10 +362,10 @@ def make_call_tool_node(tools: dict, llm=None):
                 # start_time 为 ISO 时间串，取年月部分 yyyy-MM
                 tool_args["date"] = start_time[:7]
         elif query_type == "device_list":
-            # 台账口径：设备列表按 deviceType（必填）筛选
+            # 台账口径：资产库列表按 syncSource（设备类型码）筛选
             device_type = state["slots"].get("device_type")
             if device_type:
-                tool_args["deviceType"] = device_type
+                tool_args["syncSource"] = device_type
 
         print(f"[MCP CALL] tool={java_tool_name}, args={tool_args}")
 

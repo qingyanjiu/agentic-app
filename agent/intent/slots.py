@@ -1294,50 +1294,56 @@ def extract_meeting_status_slots(query: str) -> dict:
 #
 # 目前支持子类型（query_type）：
 #   device_list   -> 设备列表（可按设备类型、区域/楼栋/楼层筛选）
-#   device_detail -> 设备详情（需要设备名称或编码定位到具体设备）
+#   device_detail -> 设备详情（需要设备名称或编号定位到具体设备）
 #
-# 约定：
-#   1. 设备名称/编码的模糊搜索由后端返回列表后本地匹配完成，
-#      不下发给 Java 工具（用户确认：设备数量不多，列表全量返回后再匹配）
-#   2. deviceType **必填**（后端要求，取值 jk/mj/dz/gb/xxfb），
-#      列表与详情缺类型时都要追问
-#   3. 详情查询还必须有 device_keyword（设备名称或编码），缺失时追问
+# 口径是**资产库**（Java 侧 /mcp/devicequery 的 device_query:listDevice /
+# device_query:getDeviceDetail，查平台纳管的设备资产），不是厂商实时设备：
+#   1. 设备类型码是 syncSource（八类，见下），它是**可选**筛选条件——
+#      列表接口所有筛选参数都可选，不传就是全部设备
+#   2. 只有详情必须有 device_keyword（设备名称或编号）：
+#      详情接口只认内部 id，得先拿名称/编号去列表里把它搜出来，缺失时追问
+#   3. 位置（area）后端只认 spaceId，这里的位置名由 graph 侧拉回列表后
+#      按 spaceName 本地过滤
 # ============================================================
 
 # 设备类型别名词典
-# key 就是 Java 侧 deviceType 的取值（**必填**，目前只有这五种，取值见后端接口文档）：
-#   jk   监控设备   大华 dahua/V5.0.16（海康侧 data 为 {total, list[]}，编码字段是 cameraIndexCode）
-#   mj   门禁设备   大华 dahua/V5.0.16
-#   dz   道闸设备   大华 dahua/V5.0.16（五种里只有它支持 otherparam 过滤）
-#   gb   广播设备   ITC itc/V1.0（编码字段是 EndpointID）
-#   xxfb 信息发布设备 和信 hx/V4.8.5（data 为设备数组，编码字段是 code）
+# key 就是资产库的 syncSource 取值（取值见 /deviceInfo/list 接口文档）：
+#   0 门禁 1 道闸 2 梯控 3 监控 4 入侵报警 5 广播 6 水表 7 电表
 #
-# 注意：消防/能耗/网络/空调这类设备**后端没有可查类型**，不要收进词典，
-# 否则会抽出后端不认的 deviceType（消防台账属于 emergency_fire 域）。
+# 注意：消防（灭火器/烟感）归 emergency_fire 域，网络设备/空调在资产库里
+# 没有对应类型，不要收进词典。命中不了就不落码——按"全部设备"查即可。
 DEVICE_TYPE_DICT = {
-    "jk": ["监控设备", "监控", "摄像头", "摄像机", "枪机", "球机", "半球", "视频监控", "安防设备", "安防"],
-    "mj": ["门禁设备", "门禁", "闸机", "门禁控制器", "门禁通道"],
-    "dz": ["道闸设备", "道闸", "车闸", "车牌识别闸机"],
-    "gb": ["广播设备", "广播", "音箱", "喇叭", "广播终端"],
-    "xxfb": ["信息发布设备", "信息发布屏", "信息发布", "信息屏", "发布屏", "发布终端", "显示屏"],
+    "0": ["门禁设备", "门禁", "闸机", "门禁控制器", "门禁通道"],
+    "1": ["道闸设备", "道闸", "车闸", "车牌识别闸机"],
+    "2": ["梯控设备", "梯控", "电梯控制", "电梯"],
+    "3": ["监控设备", "监控", "摄像头", "摄像机", "枪机", "球机", "半球", "视频监控"],
+    "4": ["入侵报警设备", "入侵报警", "周界报警", "报警设备", "红外报警", "报警"],
+    "5": ["广播设备", "广播", "音箱", "喇叭", "广播终端"],
+    "6": ["水表", "智能水表"],
+    "7": ["电表", "智能电表"],
 }
 
 
 def extract_device_type(query: str) -> str:
     """
-    从用户输入中抽取设备类型
+    从用户输入中抽取设备类型（资产库口径的 syncSource）
 
-    使用别名词典做统一映射
-    例如用户说"摄像头"会映射成 deviceType="jk"
+    使用别名词典做统一映射，例如"摄像头"映射成 syncSource="3"。
+
+    多个别名同时命中时取**最长**的那个：查"车牌识别闸机"要判成道闸，
+    不能被里面的"闸机"抢成门禁；"入侵报警"同理不能被"报警"抢走。
+    长度相同时按词典顺序取先出现的。
 
     :param query: 用户输入
-    :return: deviceType 取值（jk/mj/dz/gb/xxfb）；未命中返回空字符串
+    :return: syncSource 取值（0门禁 1道闸 2梯控 3监控 4入侵报警 5广播 6水表 7电表）；
+             未命中返回空字符串
     """
-    for standard, aliases in DEVICE_TYPE_DICT.items():
+    matched_code, matched_len = "", 0
+    for code, aliases in DEVICE_TYPE_DICT.items():
         for alias in aliases:
-            if alias in query:
-                return standard
-    return ""
+            if len(alias) > matched_len and alias in query:
+                matched_code, matched_len = code, len(alias)
+    return matched_code
 
 
 def parse_floor_slot(query: str) -> str:
@@ -1356,6 +1362,14 @@ def parse_floor_slot(query: str) -> str:
     return f"{_parse_chinese_number(m.group(1))}楼"
 
 
+# 设备编号形态（两种，取先命中的）：
+#   ① 多段带分隔符的资产编号：CY-HIK-JK-001-0001 / DEV-A-01
+#   ② 字母 + 数字的短编码：MH-001 / CAM102 / DEV_01
+DEVICE_CODE_RE = re.compile(
+    r"(?:[A-Za-z][A-Za-z0-9]*(?:[-_][A-Za-z0-9]+)+|[A-Za-z]{1,8}[-_]?\d{1,6})"
+)
+
+
 def extract_device_keyword(query: str) -> str:
     """
     从用户输入中抽取设备名称/编码关键字
@@ -1367,8 +1381,10 @@ def extract_device_keyword(query: str) -> str:
     :param query: 用户输入
     :return: 设备名称/编码关键字；未命中返回空字符串
     """
-    # 1. 编码类：字母 + 数字，如 MH-001 / CAM102 / DEV-01
-    m = re.search(r"[A-Za-z]{1,8}[-_]?\d{1,6}", query)
+    # 1. 设备编号：资产库的编号形如 CY-HIK-JK-001-0001（多段带分隔符），
+    #    也有 MH-001 / CAM102 这类短编码。两种都要整串抽出来——
+    #    只认"字母+数字"会把 CY-HIK-JK-001-0001 截成 JK-001
+    m = DEVICE_CODE_RE.search(query)
     if m:
         return m.group(0)
 
@@ -1400,9 +1416,11 @@ def extract_device_query_slots(query: str) -> dict:
     query_type：
       - device_list   设备列表（可按设备类型/区域/楼层筛选）
       - device_detail 设备详情（需要 device_keyword 定位设备）
-    device_type：deviceType 取值，jk/mj/dz/gb/xxfb（必填，缺失时追问）
-    area：区域/楼栋（复用 AREA_DICT），与楼层拼接，如"A栋3楼"
-    device_keyword：设备名称/编码关键字（详情必填；列表可选，用于本地模糊匹配）
+    device_type：设备类型码 syncSource，0门禁 1道闸 2梯控 3监控 4入侵报警 5广播
+                 6水表 7电表（可选筛选：资产库列表接口不传就是全部类型）
+    area：区域/楼栋（复用 AREA_DICT），与楼层拼接，如"A栋3楼"；
+          注意后端列表接口只认 spaceId，这里是位置名，由 graph 侧转成本地过滤
+    device_keyword：设备名称/编号关键字（详情必填；列表可选，用于本地模糊匹配）
 
     :param query: 用户输入
     :return: {"query_type": "...", "device_type": "...", "area": "...", "device_keyword": "..."}

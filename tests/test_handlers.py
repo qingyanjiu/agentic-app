@@ -110,8 +110,8 @@ class TestMissingParams:
             ({}, ["device_type"]),
             ({"query_type": None}, ["device_type"]),
             # 设备类型选定后按台账口径查，不再缺参数
-            ({"query_type": "count", "device_type": "jk"}, []),
-            ({"query_type": "device_list", "device_type": "mj"}, []),
+            ({"query_type": "count", "device_type": "3"}, []),
+            ({"query_type": "device_list", "device_type": "0"}, []),
             # 统计口径的子类型不接反问（与消防/周界同一约定：兜底值才视为缺失）
             ({"query_type": "equip_class"}, []),
             ({"query_type": "mj_online"}, []),
@@ -122,15 +122,18 @@ class TestMissingParams:
         h = handler_of("device_status")
         assert h._get_missing_params(slots) == expected
 
-    def test_device_query_needs_type_and_keyword(self):
-        """设备类型（deviceType）是后端必填，列表/详情都要；详情另需设备名称/编码"""
+    def test_device_query_only_detail_needs_keyword(self):
+        """
+        资产库列表接口的筛选参数全可选 -> 列表不缺参数；
+        详情必须能定位到某一台设备（getDeviceDetail 只认内部 id）-> 缺 device_keyword
+        """
         h = handler_of("device_query")
-        assert h._get_missing_params({"query_type": "device_list"}) == ["device_type"]
-        assert h._get_missing_params({"query_type": "device_list", "device_type": "jk"}) == []
-        assert h._get_missing_params({"query_type": "device_detail"}) == ["device_type", "device_keyword"]
-        assert h._get_missing_params({"query_type": "device_detail", "device_type": "mj"}) == ["device_keyword"]
+        assert h._get_missing_params({"query_type": "device_list"}) == []
+        assert h._get_missing_params({"query_type": "device_list", "device_type": "3"}) == []
+        assert h._get_missing_params({"query_type": "device_detail"}) == ["device_keyword"]
+        assert h._get_missing_params({"query_type": "device_detail", "device_type": "0"}) == ["device_keyword"]
         assert h._get_missing_params(
-            {"query_type": "device_detail", "device_type": "mj", "device_keyword": "MH-001"}
+            {"query_type": "device_detail", "device_type": "0", "device_keyword": "MH-001"}
         ) == []
 
     @pytest.mark.parametrize(
@@ -195,7 +198,7 @@ class TestQuestionConsistency:
             ("twins_inspection", ["query_type"],
              "请问您想查询哪类巡检数据？今日巡检、今日任务列表、巡检统计，还是巡检执行状态？"),
             ("device_status", ["device_type"],
-             "请问您想查询哪类设备？监控、门禁、道闸、广播，还是信息发布设备？"),
+             "请问您想查询哪类设备？门禁、道闸、梯控、监控、入侵报警、广播、水表，还是电表？"),
         ],
     )
     def test_handler_question_matches_graph_ask_param(self, module_key, missing, expected_question):
@@ -410,20 +413,24 @@ class TestFollowupNotOverwriteSubType:
         assert fresh_person["query_type"] == "trace"
         assert fresh_person["person_name"] == "李四"
 
-    def test_device_query_reply_type_keeps_query_type(self):
-        """设备查询缺类型 → 答「监控」→ query_type=device_list 不变、device_type=jk"""
-        state = make_state("device_query", {"query_type": "device_list"}, ["device_type"])
-        result = run(DeviceQueryHandler().handle_reply(state, "监控", llm=None))
-
-        assert result["action"] == "continue"
-        assert state.slots["query_type"] == "device_list"
-        assert state.slots["device_type"] == "jk"
-
-    def test_device_query_reply_code_keeps_device_detail(self):
-        """设备详情缺名称/编码 → 答「MJ-003」→ device_detail 不被兜底口径冲掉"""
+    def test_device_query_reply_type_fills_sync_source(self):
+        """详情追问轮里用户顺手带了设备类型 → 落 syncSource 码，query_type 不被冲掉"""
         state = make_state(
             "device_query",
-            {"query_type": "device_detail", "device_type": "mj"},
+            {"query_type": "device_detail"},
+            ["device_keyword"],
+        )
+        result = run(DeviceQueryHandler().handle_reply(state, "看下摄像头的详情", llm=None))
+
+        assert result["action"] == "continue"
+        assert state.slots["query_type"] == "device_detail"
+        assert state.slots["device_type"] == "3"
+
+    def test_device_query_reply_code_keeps_device_detail(self):
+        """设备详情缺名称/编号 → 答「MJ-003」→ device_detail 不被兜底口径冲掉"""
+        state = make_state(
+            "device_query",
+            {"query_type": "device_detail", "device_type": "0"},
             ["device_keyword"],
         )
         result = run(DeviceQueryHandler().handle_reply(state, "MJ-003", llm=None))
@@ -434,7 +441,7 @@ class TestFollowupNotOverwriteSubType:
 
     @pytest.mark.parametrize(
         "query",
-        ["查下广播设备清单", "信息屏有哪些", "园区有哪些设备", "道闸设备清单"],
+        ["查下广播设备清单", "梯控设备有哪些", "园区有哪些设备", "道闸设备清单"],
     )
     def test_device_query_list_wording_beats_classifier(self, query):
         """明确的列表措辞以正则为纲，不被子类型分类器改判成详情"""
@@ -460,25 +467,27 @@ class TestDeviceStatusHandleReply:
         )
 
     def test_reply_type_word_fills_device_type(self):
-        """用户照反问选项回「监控」→ device_type=jk，口径定为台账列表"""
+        """用户照反问选项回「监控」→ device_type=3（syncSource），口径定为台账列表"""
         state = self._vague_state()
         result = run(DeviceStatusHandler().handle_reply(state, "监控", llm=None))
 
         assert result["action"] == "continue"
-        assert state.slots["device_type"] == "jk"
+        assert state.slots["device_type"] == "3"
         assert state.slots["query_type"] == "device_list"
         assert state.missing_params == []
 
     @pytest.mark.parametrize(
         "reply,expected_type",
         [
-            ("监控", "jk"),
+            ("监控", "3"),
             # 关键回归：「门禁」在设备态势正则里会命中 mj_online（门禁在线率），
-            # 但这一轮是在回答"哪类设备"，必须按设备类型解析
-            ("门禁", "mj"),
-            ("道闸", "dz"),
-            ("广播", "gb"),
-            ("信息发布设备", "xxfb"),
+            # 但这一轮是在回答"哪类设备"，必须按设备类型（syncSource）解析
+            ("门禁", "0"),
+            ("道闸", "1"),
+            ("广播", "5"),
+            ("水表", "6"),
+            ("电表", "7"),
+            ("梯控", "2"),
         ],
     )
     def test_type_words_not_hijacked_by_status_regex(self, reply, expected_type):
