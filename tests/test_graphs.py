@@ -45,7 +45,10 @@ HAPPY_PATH_CASES = [
     ("canteen_status", {"event_type": "dining_count", "date": SPAN_DATE}),
     ("canteen_status", {"event_type": "week_menu", "date": SPAN_DATE}),
     ("vehicle_status", {"query_type": "parking_space"}),
-    ("vehicle_status", {"query_type": "traffic_flow", "date": SPAN_DATE}),
+    # 车辆后端仅支持今日数据：区间查询需带 _confirm_proceed 跳过 confirm_today，
+    # 确认分支本身由 test_vehicle_confirm_today_flow 单独覆盖
+    ("vehicle_status", {"query_type": "traffic_flow", "date": SPAN_DATE,
+                        "_confirm_proceed": True}),
     ("information_status", {"event_type": "info_view", "date": SPAN_DATE}),
     ("information_status", {"event_type": "task_trend", "date": SPAN_DATE}),
     ("energy_status", {"query_type": "overall_energy"}),
@@ -97,6 +100,39 @@ def test_happy_path_answers(domain_graphs, module_key, slots):
     assert "暂不支持" not in content
     assert "工具未加载" not in content
     assert content.strip(), f"{module_key} answer 为空"
+
+
+# ------------------------------------------------------------
+# 1.1 车辆域「非今日查询确认」分支：
+#     后端仅支持今日数据，非今天日期先反问"是否看今日"，
+#     用户同意（_confirm_proceed）后才执行查询
+# ------------------------------------------------------------
+def test_vehicle_confirm_today_flow(domain_graphs):
+    """非今日区间 -> 确认轮追问 -> 同意后 -> 正常查询出答案"""
+    slots = {"query_type": "traffic_flow", "date": SPAN_DATE}
+
+    # 第一轮：非今天日期且未确认 -> 追问确认，流程不结束
+    final = run(domain_graphs("vehicle_status").ainvoke(graph_input(slots)))
+    assert final.get("error") is None
+    assert not final.get("done"), "确认轮不应结束流程"
+    assert final["slots"].get("_pending_confirm") is True
+
+    ask_events = asks_of(final)
+    assert len(ask_events) == 1
+    assert "今日" in ask_events[0]["question"]
+
+    # 第二轮：模拟 handle_reply 同意后的状态回写
+    # （vehicle handler 置 _confirm_proceed、清 _pending_confirm），
+    # 带同一份 slots 重进图 -> 直达工具调用
+    slots = dict(final["slots"])
+    slots["_confirm_proceed"] = True
+    slots.pop("_pending_confirm", None)
+    final = run(domain_graphs("vehicle_status").ainvoke(graph_input(slots)))
+
+    assert final.get("error") is None
+    assert final.get("done") is True
+    assert asks_of(final) == [], "确认后不应再追问"
+    assert answers_of(final), "确认后没有 answer 事件"
 
 
 # ============================================================

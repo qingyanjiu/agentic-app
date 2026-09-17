@@ -222,7 +222,9 @@ class TestSubTypes:
             ("设备详情", "device_detail"),
             ("MH-001的详情", "device_detail"),
             ("看下这台设备的设备信息", "device_detail"),
-            ("信息发布屏的详情", "device_detail"),
+            # 资产库口径：详情语料按 syncSource 八类各铺一条
+            # （原「信息发布屏的详情」已移除——资产库没有信息发布屏这一类）
+            ("这台水表的详情", "device_detail"),
         ]
         for query, expected in cases:
             sub, score = run(classify_device_query_sub_type(query))

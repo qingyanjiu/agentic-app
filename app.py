@@ -108,8 +108,8 @@ except Exception as e:
 
 # 全局模型和工具
 llm_factory = CustomLLMFactory()
-llm = llm_factory.llms['local']
-# llm = llm_factory.llms['sillicon']
+# llm = llm_factory.llms['local']
+llm = llm_factory.llms['silicon']
 @app.on_event("startup")
 async def startup():
     logger.info("[startup] 开始预加载意图识别模型...")

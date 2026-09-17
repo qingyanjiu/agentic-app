@@ -64,8 +64,8 @@ def _query_type_label(query_type: str) -> str:
         "electricity_rank": "用电排名",
         "water_rank": "用水排名",
         "device_status": "能耗设备状态",
-        "realtime_electricity": "实时用电",
-        "realtime_water": "实时用水",
+        "realtime_electricity": "用电周对比",
+        "realtime_water": "用水周对比",
     }.get(query_type, "能源数据")
 
 
@@ -91,8 +91,8 @@ async def _llm_format_energy_result(
             "electricity_rank": "按用电量从高到低列出单位/区域排名；",
             "water_rank": "按用水量从高到低列出单位/区域排名；",
             "device_status": "列出能耗设备在线/离线数量；",
-            "realtime_electricity": "按时间列出今日和昨日用电曲线；",
-            "realtime_water": "按时间列出今日和昨日用水曲线；",
+            "realtime_electricity": "按时间列出本周和上周的用电对比曲线；",
+            "realtime_water": "按时间列出本周和上周的用水对比曲线；",
         }.get(query_type, "把返回数据整理清楚；")
 
         prompt = (
