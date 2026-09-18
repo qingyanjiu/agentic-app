@@ -6,6 +6,7 @@ from typing import Annotated, Any, Optional, TypedDict
 from langgraph.graph import StateGraph, END
 
 from mcp_client.mcp_loader import get_mcp_tools
+from agent.intent.slots import format_query_time
 
 logger = logging.getLogger(__name__)
 
@@ -71,20 +72,32 @@ async def _llm_format_overview_result(
         original_query = state.get("original_query") or query_type
 
         requirement = {
-            "basic_info": "列出园区面积和 IoT 设备总数；",
+            "basic_info": "按用户原话只答对应的部分：问面积只答面积、问设备总数只答设备总数，"
+                          "两者都问到或问得宽泛（如「基本信息/总览/概况」）才一并列出；",
             "device_health": "按设备类别列出健康分、在线率、维修率、寿命率；",
         }.get(query_type, "把返回数据整理清楚；")
+
+        # 省略式追问（如「昨天呢」）时 original_query 仍是上一轮原话，其中的时间词
+        # 不代表本次查询；把 slots 里真实查询时间显式交给 LLM，避免回答被原话带偏
+        _qt = format_query_time(state.get("slots", {}).get("date"))
+        query_time_line = (
+            f"本次查询的时间范围：{_qt}（回答中的时间表述以此为准，不要沿用原话里的时间词）\n"
+            if _qt else ""
+        )
 
         prompt = (
             "你是智慧园区综合态势助手。下面是一次 MCP 工具查询的原始返回，"
             "请根据用户的查询类型，只提取对应的内容，用中文自然、简洁地回答用户。\n\n"
             f"用户查询类型：{query_type}（{label}）\n"
+            f"{query_time_line}"
             f"用户原话：{original_query}\n"
             "MCP 工具返回的原始数据：\n"
             f"{raw_text}\n\n"
             "要求：\n"
             f"1. {requirement}\n"
-            "2. 回答必须基于返回数据，不要编造数字；\n"
+            "2. 回答必须基于返回数据，不要编造数字；只回答用户原话问到的内容，"
+            "返回数据里原话没问到的其他字段/指标不要罗列"
+            "（原话问得宽泛如「总览/概况/统计」才完整列出）；\n"
             "3. 如果返回数据里没有用户要查的信息，只如实说明即可，不要建议查询其他时间段或其他内容；\n"
             "4. 不要向用户提出任何追问、提议或反问，只回答本次查询的结果；\n"
             "5. 回答要简短、口语化。"

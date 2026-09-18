@@ -1,6 +1,7 @@
 # uvicorn app:app --host 0.0.0.0 --port 8000 --reload
 import json
-import os 
+import os
+import re
 from typing import Optional
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File
 from fastapi.staticfiles import StaticFiles
@@ -1423,6 +1424,40 @@ async def asr_ws(websocket: WebSocket, user_id: str, session_id: Optional[str] =
 # 各业务域的 handler / graph 执行器映射
 # 供「追问态新意图接管」复用情况 2 的新意图启动流程
 # ============================================================
+# ============================================================
+# 收尾/告别语识别（排查记录案例 15）
+# 「请问您还有其他问题吗？」→「没有了」这类回复是对开放问题的礼貌收尾，
+# 不是可分类的业务查询：give_up 清空状态后它必然分类成 other，若不拦住
+# 会掉进旧 pipeline 回生硬的「无法解决你的问题」；done 态也会被情况 1.5
+# 拼接上轮问题把已完成的查询重新执行一遍。故在意图分发前整句匹配拦截。
+# 整句匹配 + 长度上限，避免把「没有告警吗」「没有什么新闻」这类真查询误吞。
+# ============================================================
+_CONVERSATION_CLOSE_RE = re.compile(
+    r"^(?:我说|就是|那个|额)*"                       # 口头铺垫（可无）
+    r"(?:"
+    r"没有(?:了|什么|啥|(?:其他|别的)(?:问题|的事?)?)?"   # 没有了/没有其他问题/没什么…
+    r"|没了"
+    r"|不用了?"
+    r"|暂时没有"
+    r"|木有了?"
+    r"|再见"
+    r"|拜拜"
+    r"|谢谢"
+    r"|辛苦了"
+    r"|好的"
+    r")"
+    r"(?:谢谢|多谢|辛苦了)?"                          # 后置致谢（没有了谢谢）
+    r"(?:[吧啦呀哦哈的了~～!！。,，]*)$"
+)
+
+
+def is_conversation_close(query: str) -> bool:
+    """无任务态下，整句命中收尾/告别语时返回 True"""
+    if not query or len(query.strip()) > 12:
+        return False
+    return bool(_CONVERSATION_CLOSE_RE.match(query.strip()))
+
+
 MODULE_HANDLERS = {
     "person_status": PersonStatusHandler,
     "security_status": SecurityStatusHandler,
@@ -1618,10 +1653,17 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
                 if result["action"] == "give_up":
                     # 清空会话状态
                     session_state.clear(user_id, session_id)
-                    
+
                     await websocket.send_text(json.dumps({
                         "event": "custom",
                         "data": {"type": "answer", "content": result["answer"]}
+                    }, ensure_ascii=False))
+                    # answer 之后必须补 done：前端收到 done 才收起加载指示、
+                    # 解锁输入框；只发 answer 会让前端永久转圈且无法继续
+                    # 发消息（排查记录案例 14）
+                    await websocket.send_text(json.dumps({
+                        "event": "custom",
+                        "data": {"type": "done"}
                     }, ensure_ascii=False))
                     continue  # 跳过原有 pipeline
                 
@@ -1711,6 +1753,22 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
 
                     continue  # 跳过原有 pipeline
 
+            # 情况 1.4：无任务态的收尾语（「没有了」「不用了」「拜拜」等）——
+            # 是对「还有其他问题吗」这类开放问题的礼貌回答，不是可分类的查询。
+            # 须排在情况 1.5 之前：done 态下收尾语若落到 1.5，会被拼接上轮
+            # 问题重新分类，把已完成的查询再执行一遍（排查记录案例 15）
+            elif top_intent == "other" and is_conversation_close(query):
+                await websocket.send_text(json.dumps({
+                    "event": "custom",
+                    "data": {"type": "answer", "content": "好的，如需查询园区相关数据随时找我。"}
+                }, ensure_ascii=False))
+                # answer 必配 done，否则前端回合不结束（排查记录案例 14）
+                await websocket.send_text(json.dumps({
+                    "event": "custom",
+                    "data": {"type": "done"}
+                }, ensure_ascii=False))
+                continue
+
             # 情况 1.5：上一轮查询已完成（done=True）且本轮识别不出业务意图（other）
             # → 视为省略式追问（如「昨天呢」「那上周呢」）：
             #   用上一轮原问题拼接本轮输入重新分类；命中业务域则按继承式启动——
@@ -1729,12 +1787,19 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
                     handler = MODULE_HANDLERS[merged_intent]()
                     # ① 槽位只用本轮输入抽取
                     slots = await handler.extract_slots(query)
-                    # ② 同域继承本轮没抽到的实体槽；时间与子类型不继承
+                    # ② 同域继承本轮没抽到的实体槽；时间不继承（必须来自本轮）
                     if merged_intent == active_state.module:
                         for k in ("person_name", "area", "alarm_id", "meal"):
                             if not slots.get(k) and active_state.slots.get(k):
                                 slots[k] = active_state.slots[k]
-                    # ③ original_query 传首轮原话，不回写拼接串
+                        # ③ 子类型继承上轮：能走进省略式追问的输入（「昨天呢」）
+                        # 本身不含子类型信息，fresh 抽取只会落兜底值（能源 count /
+                        # 食堂 week_menu），与上轮查询对不上；与追问态 handle_reply
+                        # 「子类型不变」的语义对齐（排查记录案例 13）
+                        for k in ("query_type", "event_type"):
+                            if active_state.slots.get(k):
+                                slots[k] = active_state.slots[k]
+                    # ④ original_query 传首轮原话，不回写拼接串
                     await start_module_flow(websocket, query, merged_intent, user_id, session_id,
                                             slots=slots, original_query=active_state.original_query)
                     continue  # 跳过原有 pipeline

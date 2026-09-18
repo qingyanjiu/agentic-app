@@ -1,7 +1,7 @@
 import re
 import logging
 from .base import IntentHandler
-from agent.intent.slots import extract_emergency_fire_slots, _parse_chinese_number, parse_ordinal_choice
+from agent.intent.slots import extract_emergency_fire_slots, _parse_chinese_number, parse_ordinal_choice, parse_point_day
 from agent.intent.classifier import classify_fire_sub_type
 from memory.session_state import IntentState
 
@@ -148,6 +148,20 @@ class EmergencyFireHandler(IntentHandler):
                     "action": "give_up",
                     "reason": "用户拒绝确认时间范围",
                     "answer": "好的，已取消查询。请问您还有其他问题吗？"
+                }
+
+            # 澄清选项列的是区间，但用户可能直接答「今天 / 昨天」等具体一天——
+            # 先试点日解析，避免被下面的区间解析漏掉误回「没太理解」
+            point_day = parse_point_day(q)
+            if point_day is not None:
+                state.slots["date"] = point_day
+                del state.slots["_pending_date_clarify"]
+                state.slots.pop("_date_options", None)
+                state.unrelated_count = 0
+                return {
+                    "action": "continue",
+                    "state": state,
+                    "slots": state.slots
                 }
 
             # 先尝试通用解析“近N天 / 前N天 / N天 / 最近N天”

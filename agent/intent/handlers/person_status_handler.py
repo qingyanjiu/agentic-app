@@ -1,7 +1,7 @@
 import re
 import logging
 from .base import IntentHandler
-from agent.intent.slots import extract_person_status_slots, _parse_chinese_number
+from agent.intent.slots import extract_person_status_slots, _parse_chinese_number, parse_point_day
 from agent.intent.classifier import classify_sub_type
 from memory.session_state import IntentState
 
@@ -137,6 +137,20 @@ class PersonStatusHandler(IntentHandler):
                     "answer": "好的，已取消查询。请问您还有其他问题吗？"
                 }
 
+            # 澄清选项列的是区间，但用户可能直接答「今天 / 昨天」等具体一天——
+            # 先试点日解析，避免被下面的区间解析漏掉误回「没太理解」
+            point_day = parse_point_day(q)
+            if point_day is not None:
+                state.slots["date"] = point_day
+                del state.slots["_pending_date_clarify"]
+                state.slots.pop("_date_options", None)
+                state.unrelated_count = 0
+                return {
+                    "action": "continue",
+                    "state": state,
+                    "slots": state.slots
+                }
+
             # 先尝试通用解析“近N天 / 前N天 / N天 / 最近N天”
             m = re.search(r"(近|最近|前|过去)?(\d+|[一二两三四五六七八九十]+)(?:个)?天", q)
             if m:
@@ -189,9 +203,19 @@ class PersonStatusHandler(IntentHandler):
                     "answer": "好的，已取消查询。请问您还有其他问题吗？"
                 }
 
-            # 用户明确同意
+            # 用户明确同意：确认后实际改查的是今日数据，date 必须同步改写为今天，
+            # 否则 slots 与真实查询口径脱节，LLM 整理回答时会按旧 date 说成
+            # 「昨天园区总人数…」（排查记录案例 11 补充修复）
             if any(k in query for k in AGREE_KEYWORDS):
+                now = datetime.now()
+                today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
                 state.slots["_confirm_proceed"] = True
+                state.slots["date"] = {
+                    "time_type": "span",
+                    "start_time": today_start.isoformat(),
+                    "end_time": now.isoformat(),
+                    "raw": "今天"
+                }
                 del state.slots["_pending_confirm"]
                 state.unrelated_count = 0
                 return {

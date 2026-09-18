@@ -1,11 +1,13 @@
 import asyncio
 import logging
 import traceback
+from datetime import datetime
 from typing import Annotated, Any, Optional, TypedDict
 
 from langgraph.graph import StateGraph, END
 
 from mcp_client.mcp_loader import get_mcp_tools
+from agent.intent.slots import format_query_time
 
 logger = logging.getLogger(__name__)
 
@@ -95,10 +97,19 @@ async def _llm_format_energy_result(
             "realtime_water": "按时间列出本周和上周的用水对比曲线；",
         }.get(query_type, "把返回数据整理清楚；")
 
+        # 省略式追问（如「昨天呢」）时 original_query 仍是上一轮原话，其中的时间词
+        # 不代表本次查询；把 slots 里真实查询时间显式交给 LLM，避免回答被原话带偏
+        _qt = format_query_time(state.get("slots", {}).get("date"))
+        query_time_line = (
+            f"本次查询的时间范围：{_qt}（回答中的时间表述以此为准，不要沿用原话里的时间词）\n"
+            if _qt else ""
+        )
+
         prompt = (
             "你是智慧园区能源态势助手。下面是一次 MCP 工具查询的原始返回，"
             "请根据用户的查询类型，只提取对应的内容，用中文自然、简洁地回答用户。\n\n"
             f"用户查询类型：{query_type}（{label}）\n"
+            f"{query_time_line}"
             f"用户原话：{original_query}\n"
             "MCP 工具返回的原始数据：\n"
             f"{raw_text}\n\n"
@@ -271,10 +282,40 @@ def check_date(state: EnergyStatusGraphState) -> dict:
     return {}
 
 
+def _is_supported_energy_date(date_slots: dict) -> bool:
+    """
+    能源后台只有「今天」和「今年」两个统计口径（今日用量/年度累计），
+    其他时间范围（昨天/近N天/上周/上月等）一律不支持
+    """
+    raw = str(date_slots.get("raw") or "")
+    if any(k in raw for k in ("今年", "本年", "年度", "全年")):
+        return True
+
+    start = date_slots.get("start_time")
+    end = date_slots.get("end_time")
+    try:
+        s = datetime.fromisoformat(start)
+        e = datetime.fromisoformat(end)
+    except (TypeError, ValueError):
+        return False
+
+    today = datetime.now().date()
+    # 今天：起止都在今天
+    if s.date() == today and e.date() == today:
+        return True
+    # 今年：起点为当年 1 月 1 日，终点落在当年（jionlp 的「今年」区间）
+    if s.date() == today.replace(month=1, day=1) and e.date().year == today.year:
+        return True
+    return False
+
+
 def route_date_type(state: EnergyStatusGraphState) -> str:
     """
     根据日期类型路由
-    能源态势均基于今日/实时数据，未来日期直接拒绝
+    能源后台只有今天/今年两个统计口径：
+      - 未来时间直接拒绝
+      - 本周/上周对比（realtime_*）由后台固定返回，不做时间校验
+      - 其余类型非今天/今年一律兜底回答，不查询
     """
     date_slots = state["slots"].get("date", {})
     time_type = date_slots.get("time_type")
@@ -283,7 +324,35 @@ def route_date_type(state: EnergyStatusGraphState) -> str:
         return "future_date"
     if time_type == "vague":
         return "vague_date"
+
+    # 本周/上周对比数据的后台接口固定返回本周 vs 上周，与查询时间无关
+    query_type = state["slots"].get("query_type")
+    if query_type in ("realtime_electricity", "realtime_water"):
+        return "call_tool"
+
+    if not _is_supported_energy_date(date_slots):
+        return "unsupported_date"
     return "call_tool"
+
+
+def unsupported_date(state: EnergyStatusGraphState) -> dict:
+    """
+    非今天/今年的查询直接兜底回答，不调用 MCP
+    （后台只有今日用量、年度累计两类数据，其他范围查不到）
+    """
+    return {
+        "done": True,
+        "events": [
+            {
+                "event": "custom",
+                "data": {
+                    "type": "answer",
+                    "content": "当前后台仅支持查询今天或今年的能耗数据，其他时间范围暂时查不到。",
+                },
+            },
+            {"event": "custom", "data": {"type": "done"}},
+        ],
+    }
 
 
 def future_date(state: EnergyStatusGraphState) -> dict:
@@ -427,6 +496,7 @@ def build_energy_status_graph(tools: dict, llm=None) -> StateGraph:
             -> check_date
                 -> future_date (未来时间) -> END
                 -> vague_date (模糊时间) -> END
+                -> unsupported_date (非今天/今年) -> END
                 -> call_tool (调用 MCP，LLM 组织回答) -> finalize -> END
 
     :param tools: MCP 工具字典（工具名 -> 工具）
@@ -442,6 +512,7 @@ def build_energy_status_graph(tools: dict, llm=None) -> StateGraph:
     workflow.add_node("check_date", check_date)
     workflow.add_node("future_date", future_date)
     workflow.add_node("vague_date", vague_date)
+    workflow.add_node("unsupported_date", unsupported_date)
     workflow.add_node("call_tool", make_call_tool_node(tools, llm))
     workflow.add_node("finalize", finalize)
 
@@ -467,6 +538,7 @@ def build_energy_status_graph(tools: dict, llm=None) -> StateGraph:
         {
             "future_date": "future_date",
             "vague_date": "vague_date",
+            "unsupported_date": "unsupported_date",
             "call_tool": "call_tool",
         },
     )
@@ -476,6 +548,7 @@ def build_energy_status_graph(tools: dict, llm=None) -> StateGraph:
     workflow.add_edge("give_up", END)
     workflow.add_edge("future_date", END)
     workflow.add_edge("vague_date", END)
+    workflow.add_edge("unsupported_date", END)
     workflow.add_edge("call_tool", "finalize")
     workflow.add_edge("finalize", END)
 

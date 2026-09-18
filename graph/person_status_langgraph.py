@@ -8,6 +8,7 @@ from typing import Annotated, Any, Optional, TypedDict
 from langgraph.graph import StateGraph, END
 
 from agent.intent.handlers.person_status_handler import PersonStatusHandler
+from agent.intent.slots import format_query_time
 from mcp_client.mcp_loader import get_mcp_tools
 
 logger = logging.getLogger(__name__)
@@ -127,10 +128,19 @@ async def _llm_format_person_status_result(
         label = _query_type_label(query_type)
         original_query = state.get("original_query") or query_type
 
+        # 省略式追问（如「昨天呢」）时 original_query 仍是上一轮原话，其中的时间词
+        # 不代表本次查询；把 slots 里真实查询时间显式交给 LLM，避免回答被原话带偏
+        _qt = format_query_time(state.get("slots", {}).get("date"))
+        query_time_line = (
+            f"本次查询的时间范围：{_qt}（回答中的时间表述以此为准，不要沿用原话里的时间词）\n"
+            if _qt else ""
+        )
+
         prompt = (
             "你是园区人员态势助手。下面是一次 MCP 工具查询的原始返回，"
             "请根据用户的查询类型，只提取对应的内容，用中文自然、简洁地回答用户。\n\n"
             f"用户查询类型：{query_type}（{label}）\n"
+            f"{query_time_line}"
             f"用户原话：{original_query}\n"
             "MCP 工具返回的原始数据：\n"
             f"{raw_text}\n\n"

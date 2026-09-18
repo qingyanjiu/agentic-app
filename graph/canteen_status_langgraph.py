@@ -7,6 +7,7 @@ from typing import Annotated, Any, Optional, TypedDict
 from langgraph.graph import StateGraph, END
 
 from mcp_client.mcp_loader import get_mcp_tools
+from agent.intent.slots import format_query_time
 
 logger = logging.getLogger(__name__)
 
@@ -88,11 +89,20 @@ async def _llm_format_canteen_result(
             "dining_count": "直接告诉用户就餐人数，如果是多个时间段，按时间列出；",
         }.get(event_type, "把返回数据整理清楚；")
 
+        # 省略式追问（如「昨天呢」）时 original_query 仍是上一轮原话，其中的时间词
+        # 不代表本次查询；把 slots 里真实查询时间显式交给 LLM，避免回答被原话带偏
+        _qt = format_query_time(state.get("slots", {}).get("date"))
+        query_time_line = (
+            f"本次查询的时间范围：{_qt}（回答中的时间表述以此为准，不要沿用原话里的时间词）\n"
+            if _qt else ""
+        )
+
         prompt = (
             "你是智慧园区食堂管理助手。下面是一次 MCP 工具查询的原始返回，"
             "请用中文自然、简洁地整理给用户。\n\n"
             f"今天日期：{today_str}\n"
             f"用户查询类型：{event_type}（{label}）\n"
+            f"{query_time_line}"
             f"用户原话：{original_query}\n"
             "MCP 工具返回的原始数据：\n"
             f"{raw_text}\n\n"
