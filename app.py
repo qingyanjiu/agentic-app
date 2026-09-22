@@ -11,6 +11,7 @@ from langchain_core.messages import HumanMessage, SystemMessage, BaseMessage, AI
 from models.llm import CustomLLMFactory
 # from graph.graph_pipeline import LangGraphPipeline
 from graph.reactive_pipeline import InfoDoubleCheckPipeline
+from graph.knowledge_qa_langgraph import KnowledgeQAPipeline
 from graph.gen_doc_pipeline import GenDocPipeline
 from graph.asr_pipeline import TextCorrectorPipeline
 from tools.load_tools import load_tools
@@ -1458,6 +1459,16 @@ def is_conversation_close(query: str) -> bool:
     return bool(_CONVERSATION_CLOSE_RE.match(query.strip()))
 
 
+# 各域抽取器的子类型兜底值（与 slots.py 各 extract_*_slots 的初始值对齐）：
+# 省略式追问（情况 1.5）本轮抽到这些值说明输入本身不含子类型信息
+# （如「昨天呢」），才继承上轮子类型；本轮明确抽出具体子类型
+# （如「出去呢」→ leave）时以本轮为准（排查记录案例 13 / 案例 17）
+_SUBTYPE_FALLBACKS = {
+    "query_type": {"count", "basic_info", "device_list"},
+    "event_type": {"count", "alarm_list", "week_menu", "info_view"},
+}
+
+
 MODULE_HANDLERS = {
     "person_status": PersonStatusHandler,
     "security_status": SecurityStatusHandler,
@@ -1581,6 +1592,16 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
         }))
         await websocket.close()
         return
+
+    # 知识库直连管线：前端切到"知识库问答"模式（payload 带 mode=kb）时使用，
+    # 不走意图识别。创建失败只降级知识库模式，智能体问答不受影响
+    kb_pipeline = None
+    try:
+        # 同步创建、懒握手：sidecar 未就绪不影响创建，只影响知识库模式首次检索
+        kb_pipeline = KnowledgeQAPipeline.create(llm=llm)
+        logging.info("KnowledgeQAPipeline创建成功")
+    except Exception as e:
+        logging.error(f"KnowledgeQAPipeline创建失败（仅知识库模式不可用）: {e}")
  # 持续监听客户端消息（WebSocket长连接循环）
     while True:
         try:
@@ -1589,6 +1610,28 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
             payload = json.loads(data)
             # 从 payload 中获取用户输入
             query = payload.get("query", "")
+
+            # ============================================================
+            # 知识库问答模式：前端切到"知识库问答"后 payload 带 mode=kb，
+            # 跳过下面的意图识别/会话状态，直接走知识库直连管线
+            # ============================================================
+            if payload.get("mode") == "kb" and query:
+                if kb_pipeline is None:
+                    await websocket.send_text(json.dumps({
+                        "event": "custom",
+                        "data": {"type": "error", "content": "知识库服务未就绪，请稍后重试或切回智能体问答。"}
+                    }, ensure_ascii=False))
+                    await websocket.send_text(json.dumps({"status": "done"}))
+                    continue
+
+                async for chunk in kb_pipeline.astream_run(query, user_id, session_id):
+                    text = _safe_serialize(chunk)
+                    # 过滤 token 级事件，与主流程的转发口径一致
+                    if text.get("event") != "token":
+                        await websocket.send_text(json.dumps(text, ensure_ascii=False))
+                await websocket.send_text(json.dumps({"status": "done"}))
+                logging.info(f"kb answer done -- {user_id}-{session_id}")
+                continue
 
             # ============================================================
             # 人员态势 / 安防态势 MVP 分支
@@ -1792,13 +1835,18 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
                         for k in ("person_name", "area", "alarm_id", "meal"):
                             if not slots.get(k) and active_state.slots.get(k):
                                 slots[k] = active_state.slots[k]
-                        # ③ 子类型继承上轮：能走进省略式追问的输入（「昨天呢」）
-                        # 本身不含子类型信息，fresh 抽取只会落兜底值（能源 count /
-                        # 食堂 week_menu），与上轮查询对不上；与追问态 handle_reply
-                        # 「子类型不变」的语义对齐（排查记录案例 13）
+                        # ③ 子类型继承上轮：仅当本轮抽取落到兜底值（输入本身
+                        # 不含子类型信息，如「昨天呢」）才继承；本轮明确抽出
+                        # 具体子类型时以本轮为准——「出去呢」要把子类型从
+                        # 进入切到离开，不能被子类型继承压回上轮
+                        # （案例 13 建立、案例 17 修正边界）
                         for k in ("query_type", "event_type"):
-                            if active_state.slots.get(k):
-                                slots[k] = active_state.slots[k]
+                            prev_subtype = active_state.slots.get(k)
+                            if not prev_subtype:
+                                continue
+                            fresh_subtype = slots.get(k)
+                            if not fresh_subtype or fresh_subtype in _SUBTYPE_FALLBACKS.get(k, ()):
+                                slots[k] = prev_subtype
                     # ④ original_query 传首轮原话，不回写拼接串
                     await start_module_flow(websocket, query, merged_intent, user_id, session_id,
                                             slots=slots, original_query=active_state.original_query)
@@ -2246,6 +2294,13 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
             break
         # except Exception as e:
         #     await websocket.send_text(json.dumps({"error": str(e)}))
+
+    # 会话结束：释放知识库直连客户端的 MCP/HTTP 会话
+    if kb_pipeline is not None:
+        try:
+            await kb_pipeline.aclose()
+        except Exception:
+            logger.warning("KnowledgeQAPipeline 释放失败(忽略)")
 
 
 

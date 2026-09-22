@@ -126,6 +126,24 @@ mcp_servers:
     transport: streamable_http
     url: http://host.docker.internal:2222/mcp/inspection
 
+  # Java MCP Sidecar - 知识库检索模块（/mcp/knowledge，与 Java 侧 KnowledgeMcpServerConfig 一致）
+  # 工具：ragflow:searchKnowledge(question, datasetIds) / ragflow:listDatasets()
+  # 底层是 RAGFlow HTTP API，baseUrl/apiKey/默认检索范围都配在 sidecar 的 application-*.yml，
+  # Python 端不感知 RAGFlow 的地址和密钥。
+  # 注意：本条目不走 langchain_mcp_adapters（direct_client 标记让 get_mcp_tools 跳过它），
+  # 而是由 KnowledgeMcpClient 按 Postman 联调口径直连：
+  #   initialize(protocolVersion 2025-03-26) → 响应头 Mcp-Session-Id →
+  #   notifications/initialized → tools/call ragflow:searchKnowledge
+  # 知识库问答同样不走意图识别：前端切到"知识库问答"模式后 payload 带 mode=kb，
+  # app.py 直接交给 graph/knowledge_qa_langgraph.py 专用管线。
+  # 部署方式与人员态势一致：
+  # - Java 跑在宿主机：url: http://host.docker.internal:2222/mcp/knowledge
+  # - Java 跑在 Docker 且与 Python 同网络：url: http://mcp-sidecar:2222/mcp/knowledge
+  knowledge:
+    transport: streamable_http
+    url: http://host.docker.internal:2222/mcp/knowledge
+    direct_client: true
+
   # 本地 Python 实现的消防态势 mock MCP 服务（fire_server.py）
   # 当前已配置 Java MCP Sidecar（fire），先注释掉；
   # Java 侧未就绪时可临时启用 fire-local 并注释上面的 fire 做自测

@@ -44,6 +44,12 @@ async def get_mcp_tools(yaml_path: str) -> list:
     会导致整体失败、所有域都拿不到工具。
     """
     mcp_dict = load_mcp_config(yaml_path)  # 1. 加载配置
+    # direct_client: true 的条目由专属直连客户端接管（如知识库 KnowledgeMcpClient），
+    # 不走 langchain_mcp_adapters，也避免其工具混进业务图的工具列表
+    mcp_dict = {
+        name: conf for name, conf in mcp_dict.items()
+        if not (isinstance(conf, dict) and conf.get("direct_client"))
+    }
 
     # 2. 并发加载各 server，单个失败不影响其他
     results = await asyncio.gather(
