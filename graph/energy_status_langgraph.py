@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import traceback
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Annotated, Any, Optional, TypedDict
 
 from langgraph.graph import StateGraph, END
@@ -286,25 +286,39 @@ def _is_supported_energy_date(date_slots: dict) -> bool:
     """
     能源后台只有「今天」和「今年」两个统计口径（今日用量/年度累计），
     其他时间范围（昨天/近N天/上周/上月等）一律不支持
+
+    判定按语义、双保险（排查记录案例 16）：
+      1. 原话里直接提到今天/今年类词汇就直接放行——jionlp 分支的 raw
+         存的是整句原话，其解析出的时间跨度形状多变（同一会话里
+         「今天园区能耗情况怎么样？」与「今天的」解析形状不一致，
+         纯日期计算会把前者误判成不支持），原话明确说了今天就不再
+         依赖解析形状
+      2. 纯日期计算兜底：起止落在今天（终点容忍次日零点的区间上界
+         写法）；或当年 1 月 1 日起、终点不越过次年 1 月 1 日
     """
     raw = str(date_slots.get("raw") or "")
     if any(k in raw for k in ("今年", "本年", "年度", "全年")):
+        return True
+    if any(k in raw for k in ("今天", "今日", "当天")):
         return True
 
     start = date_slots.get("start_time")
     end = date_slots.get("end_time")
     try:
-        s = datetime.fromisoformat(start)
-        e = datetime.fromisoformat(end)
+        s = datetime.fromisoformat(str(start))
+        e = datetime.fromisoformat(str(end))
     except (TypeError, ValueError):
         return False
 
     today = datetime.now().date()
-    # 今天：起止都在今天
-    if s.date() == today and e.date() == today:
+    year_start = today.replace(month=1, day=1)
+    next_year_start = year_start.replace(year=today.year + 1)
+
+    # 今天：起点在今天，终点在今天或次日零点（区间可能写成左闭右开）
+    if s.date() == today and e.date() in (today, today + timedelta(days=1)):
         return True
-    # 今年：起点为当年 1 月 1 日，终点落在当年（jionlp 的「今年」区间）
-    if s.date() == today.replace(month=1, day=1) and e.date().year == today.year:
+    # 今年：起点为当年 1 月 1 日，终点不越过次年 1 月 1 日
+    if s.date() == year_start and e.date() <= next_year_start:
         return True
     return False
 

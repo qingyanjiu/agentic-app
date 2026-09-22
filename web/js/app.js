@@ -37,6 +37,11 @@ let sessionId = crypto.randomUUID();
 let ws = null;
 let sendQueue = []; // 连接建立前待发送的消息
 let turnActive = false;
+let manualClose = false; // 新对话主动关闭时不触发自动重连
+let reconnectTimer = null; // 断线重连定时器
+let reconnectAttempts = 0; // 连续重连失败次数
+let reconnectDelay = 1500;
+let sendTimeout = null; // 发送后迟迟连不上后端的兜底提示
 
 // ------------------- DOM -------------------
 const messagesEl = document.getElementById('messages');
@@ -66,13 +71,18 @@ function renderInline(text) {
     return s;
 }
 
+// 对话区随页面整体滚动，这里滚动文档到底部
 function isNearBottom() {
-    return messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 140;
+    const doc = document.documentElement;
+    return doc.scrollHeight - window.scrollY - window.innerHeight < 160;
 }
 
 function scrollToBottom(force = false) {
     if (force || isNearBottom()) {
-        messagesEl.scrollTop = messagesEl.scrollHeight;
+        window.scrollTo({
+            top: document.documentElement.scrollHeight,
+            behavior: force ? 'smooth' : 'auto',
+        });
     }
 }
 
@@ -116,7 +126,7 @@ function ensureAiBubble() {
         removeTypingIndicator();
         currentAiRaw = '';
         const div = document.createElement('div');
-        div.className = 'msg msg-ai';
+        div.className = 'msg msg-ai streaming';
         messagesEl.appendChild(div);
         currentAiBubble = div;
     }
