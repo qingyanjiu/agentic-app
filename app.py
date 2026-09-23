@@ -1459,6 +1459,40 @@ def is_conversation_close(query: str) -> bool:
     return bool(_CONVERSATION_CLOSE_RE.match(query.strip()))
 
 
+# 省略式追问形状白名单（情况 1.5 放行条件，2026-09-23 用户裁定）：
+# other 且上轮 done 的输入，只有「时间词/域动词 + 语气词」这种真正的
+# 省略句才拼接上轮问题重新分类；其余 other（「今天日期」「今天是哪天」
+# 「你好」等）一律直接走 other 兜底，不能被上轮问题拽回业务域把上轮
+# 查询重跑一遍。背景（2026-09-23 冒烟）：车辆查询完成后问「今天是哪天」，
+# 拼接「停车场还有多少空位 今天是哪天」被判回车辆域、停车数据重答一遍。
+_ELLIPSIS_FOLLOWUP_RE = re.compile(
+    r"^(?:那|再|就)?"                              # 指示前缀（那上周呢）
+    r"(?:"
+    # ① 时间词省略：昨天呢 / 那上周呢 / 今天早上呢
+    r"(?:大前天|大后天|前天|后天|今天|明天|昨天|上周|本周|下周|上个月|上月|这个月|本月|下个月|下月|今年|去年|前年|刚才|现在|(?:今天|昨天|明天)?(?:早上|上午|中午|下午|晚上))"
+    r"(?:的时候)?的?(?:呢|吗|么|怎么样|咋样|又如何|再看看|看看|又是多少|有多少)"
+    # ② 域动词省略：出去的呢 / 那走了呢
+    r"|(?:出去|进来|进入|离开|离园|入园|来了?|走了?)(?:的人)?的?(?:呢|人数|有多少|多少)"
+    # ③ 时间+动词：昨天出去的呢 / 上周进来的呢
+    r"|(?:大前天|大后天|前天|后天|今天|明天|昨天|上周|本周|下周|上个月|上月|这个月|本月|下个月|下月|今年|去年|前年|刚才|现在|(?:今天|昨天|明天)?(?:早上|上午|中午|下午|晚上))的?(?:出去|进来|进入|离开|离园|入园|来了?|走了?)(?:的人)?的?(?:呢|人数|有多少|多少)"
+    r")"
+    r"[吧呢吗啊呀]?$"
+)
+
+
+def is_ellipsis_followup(query: str) -> bool:
+    """整句是省略式追问形状（「昨天呢」「那上周呢」「出去的呢」）时返回 True。
+
+    情况 1.5 的放行白名单：other 输入只有长得像省略追问才拼接上轮
+    问题重新分类；其余 other 直接走 other 兜底（用户裁定：所有意图
+    都不包含就直接进 other）。
+    """
+    if not query or len(query.strip()) > 12:
+        return False
+    q = re.sub(r"[\s，,。.!！?？~～]+$", "", query.strip())
+    return bool(_ELLIPSIS_FOLLOWUP_RE.fullmatch(q))
+
+
 # 各域抽取器的子类型兜底值（与 slots.py 各 extract_*_slots 的初始值对齐）：
 # 省略式追问（情况 1.5）本轮抽到这些值说明输入本身不含子类型信息
 # （如「昨天呢」），才继承上轮子类型；本轮明确抽出具体子类型
@@ -1813,14 +1847,21 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
                 continue
 
             # 情况 1.5：上一轮查询已完成（done=True）且本轮识别不出业务意图（other）
-            # → 视为省略式追问（如「昨天呢」「那上周呢」）：
+            # → 仅当输入是省略式追问形状（is_ellipsis_followup 白名单：
+            #   「昨天呢」「那上周呢」「出去的呢」这类时间词/域动词+语气词）
+            #   才视为省略式追问：
             #   用上一轮原问题拼接本轮输入重新分类；命中业务域则按继承式启动——
-            #   拼接串只喂分类器；槽位只用本轮输入抽取（拼接串整体抽槽会把
+            #   拼接串只喂分类器，槽位只用本轮输入抽取（拼接串整体抽槽会把
             #   "那李四呢"的实体查成上轮的张三）；同域继承本轮没抽到的实体槽
             #   （时间不继承，"那上周呢"的时间必须来自本轮）；original_query
             #   保持首轮原话不回写拼接串（连续追问不滚雪球）；
-            #   仍未命中则不 continue，掉到下方原有 pipeline
-            elif top_intent == "other" and active_state is not None and active_state.done:
+            #   仍未命中则不 continue，掉到下方原有 pipeline。
+            #   非省略形状的 other（「今天日期」「你好」等）不再拼接——所有
+            #   意图都不包含就直接走 other 兜底，不能被上轮问题拽回业务域把
+            #   上轮查询重跑一遍（2026-09-23 冒烟：车辆完成后问「今天是哪天」
+            #   被拼成停车查询重答；用户裁定 2026-09-23）
+            elif (top_intent == "other" and active_state is not None
+                  and active_state.done and is_ellipsis_followup(query)):
                 merged_query = f"{active_state.original_query} {query}"
                 merged_intent = (await classify_intent(merged_query))["intent"]
                 if merged_intent in MODULE_HANDLERS:
