@@ -545,3 +545,78 @@ class TestDeviceStatusHandleReply:
         assert result["action"] == "continue"
         assert "device_type" not in state.slots
         assert state.missing_params == []
+
+
+# ============================================================
+# 7. 确认等待态（_pending_confirm）回复分流：
+#    同意=整句白名单（base.is_confirm_agree）；拒绝=give_up；
+#    带业务词的新查询必须 re_ask，不得被子串（「查」「看」）误吞成同意
+#    （2026-09-23 冒烟 T4：确认等待期发「查一下人员位置」被单字「查」
+#    命中当成同意、旧查询照常执行——person/vehicle 同款问题）
+# ============================================================
+_CONFIRM_STATE_QUESTION = "当前平台后端仅支持查询今日数据，是否为您展示今日离开人数？"
+
+
+def _confirm_state(module: str) -> IntentState:
+    """person/vehicle 的确认等待态：非今日 date + _pending_confirm 标记"""
+    state = make_state(
+        module,
+        {
+            "query_type": "leave" if module == "person_status" else "traffic_flow",
+            "date": {"time_type": "span", "raw": "昨天"},
+            "_pending_confirm": True,
+        },
+        [],
+    )
+    state.last_question = _CONFIRM_STATE_QUESTION
+    return state
+
+
+class TestConfirmStateReplyGuard:
+    @pytest.mark.parametrize("module", ["person_status", "vehicle_status"])
+    @pytest.mark.parametrize(
+        "reply",
+        [
+            "查一下人员位置",      # 冒烟 T4 原始翻车句（单字「查」子串）
+            "看下设备状态",        # 单字「看」子串
+            "停车场还有多少空位",   # 跨域新查询（9 字，person is_related 也不相关）
+            "今天用电量是多少",     # 跨域新查询第二样本
+        ],
+    )
+    def test_new_query_not_swallowed_as_agree(self, module, reply):
+        """带业务词的回复必须 re_ask：不改 date、不置 _confirm_proceed、确认态保持"""
+        state = _confirm_state(module)
+        result = run(handler_of(module).handle_reply(state, reply, llm=None))
+
+        assert result["action"] == "re_ask", (
+            f"module={module} reply={reply!r} 被误判为 {result['action']}"
+        )
+        assert result["answer"].startswith("没太理解您的意思")
+        assert state.slots.get("_confirm_proceed") is not True
+        assert state.slots["date"]["raw"] == "昨天", "date 不得被改写成今天"
+        assert state.slots.get("_pending_confirm") is True, "确认等待态必须保持"
+
+    @pytest.mark.parametrize("module", ["person_status", "vehicle_status"])
+    @pytest.mark.parametrize("reply", ["好的", "查一下", "可以", "要得", "OK", "行吧"])
+    def test_short_agree_still_confirms(self, module, reply):
+        """整句确认语照常同意执行：date 改写今天、_confirm_proceed=True、确认标记清除
+
+        注：白名单不收「没问题/没错」——DECLINE_KEYWORDS 含单字「没」且先于
+        同意判定，这类词在生产口径里一直是拒绝分支，不属于同意。
+        """
+        state = _confirm_state(module)
+        result = run(handler_of(module).handle_reply(state, reply, llm=None))
+
+        assert result["action"] == "continue"
+        assert state.slots["_confirm_proceed"] is True
+        assert state.slots["date"]["raw"] == "今天"
+        assert "_pending_confirm" not in state.slots
+        assert state.unrelated_count == 0
+
+    @pytest.mark.parametrize("module", ["person_status", "vehicle_status"])
+    def test_decline_still_gives_up(self, module):
+        """拒绝分支不受护栏影响"""
+        state = _confirm_state(module)
+        result = run(handler_of(module).handle_reply(state, "不用了", llm=None))
+
+        assert result["action"] == "give_up"

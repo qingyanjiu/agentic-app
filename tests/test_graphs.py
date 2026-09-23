@@ -12,6 +12,8 @@ LangGraph 端到端测试（8 个域全覆盖，MCP 工具用 FakeTool 模拟、
 """
 import asyncio
 
+from datetime import datetime
+
 import pytest
 
 from agent.intent.slots import extract_emergency_fire_slots
@@ -229,13 +231,24 @@ class TestDateRoutes:
 # ============================================================
 # 5. call_tool 守卫安全网：非法子类型 -> 「暂不支持」（8 个域都有该分支）
 # ============================================================
+# 能源域专用：route_date_type 排在 call_tool 之前（案例 16 双保险日期校验），
+# date 为空会先落 unsupported_date 分支（「仅支持今天或今年」），守卫轮不到。
+# 生产路径 parse_time_slot 对无时间词的输入兜底默认「今天」，date 永远存在——
+# 这里构造同形状的今天区间，让用例真正走到子类型守卫分支。
+TODAY_DATE = {
+    "time_type": "span",
+    "start_time": datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).isoformat(),
+    "end_time": datetime.now().isoformat(),
+    "raw": "今天",
+}
+
 GUARD_CASES = [
     ("person_status", {"query_type": "no_such_type"}),
     ("security_status", {"event_type": "no_such_type", "date": SPAN_DATE}),
     ("canteen_status", {"event_type": "no_such_type", "date": SPAN_DATE}),
     ("vehicle_status", {"query_type": "no_such_type"}),
     ("information_status", {"event_type": "no_such_type", "date": SPAN_DATE}),
-    ("energy_status", {"query_type": "no_such_type"}),
+    ("energy_status", {"query_type": "no_such_type", "date": TODAY_DATE}),
     ("meeting_status", {"event_type": "no_such_type"}),
     # 注意：fire 的 count 在 check_missing_params 就被反问拦截，到不了守卫；
     # 这里用「非法枚举值」验证守卫分支本身存在

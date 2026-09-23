@@ -155,7 +155,7 @@
 | `_get_missing_params(slots)` | 判断还缺哪些必填参数（人员态势的 location/trace **必须有人名**；安防/食堂**必须有时段**；车辆态势当前不强制） |
 | `generate_question(state)` | 按缺失参数优先级生成追问问题 |
 
-Handler 还内置了确认逻辑：`_pending_confirm`（人员/车辆后端仅支持今日数据时，询问"是否为您展示今日X？"）、`_pending_date_clarify`（模糊时间范围确认），并识别同意（`AGREE_KEYWORDS`）/ 拒绝（`DECLINE_KEYWORDS`）关键词。
+Handler 还内置了确认逻辑：`_pending_confirm`（人员/车辆后端仅支持今日数据时，询问"是否为您展示今日X？"）、`_pending_date_clarify`（模糊时间范围确认），并识别同意 / 拒绝（`DECLINE_KEYWORDS`）关键词。同意判定用整句白名单（`base.is_confirm_agree`，去标点与结尾语气词后须与确认语完全相等），不用子串匹配——确认等待期的「查一下人员位置」这类新查询不能被单字「查」误吞成同意（2026-09-23 冒烟 T4）。
 
 ### 5. 会话状态 IntentState
 

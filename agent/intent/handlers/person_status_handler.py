@@ -1,6 +1,6 @@
 import re
 import logging
-from .base import IntentHandler
+from .base import IntentHandler, is_confirm_agree
 from agent.intent.slots import extract_person_status_slots, _parse_chinese_number, parse_point_day
 from agent.intent.classifier import classify_sub_type
 from memory.session_state import IntentState
@@ -206,7 +206,10 @@ class PersonStatusHandler(IntentHandler):
             # 用户明确同意：确认后实际改查的是今日数据，date 必须同步改写为今天，
             # 否则 slots 与真实查询口径脱节，LLM 整理回答时会按旧 date 说成
             # 「昨天园区总人数…」（排查记录案例 11 补充修复）
-            if any(k in query for k in AGREE_KEYWORDS):
+            # 同意判定用整句白名单（base.is_confirm_agree），不能用 AGREE_KEYWORDS
+            # 子串匹配——确认等待期的新查询（如「查一下人员位置」）会被单字
+            # 「查」误吞成同意（2026-09-23 冒烟 T4）
+            if is_confirm_agree(query):
                 now = datetime.now()
                 today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
                 state.slots["_confirm_proceed"] = True
