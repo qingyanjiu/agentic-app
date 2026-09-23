@@ -278,6 +278,67 @@ def parse_time_slot(query: str) -> dict:
         "raw": "今天"
     }
 
+
+def format_query_time(date_slots: dict) -> str:
+    """
+    把 slots.date 渲染成给 LLM 看的时间范围描述
+    例如：昨天（2026-09-17 周四）/ 近三天（2026-09-16 ~ 2026-09-18）
+
+    场景：省略式追问（「昨天呢」）轮 original_query 仍保留上一轮原话，
+    原话里的时间词不代表本次查询；LLM 组织回答时必须以本函数的输出为准，
+    否则回答会被原话带偏（问昨天答今天）。
+
+    无可解析的起止时间（future/vague 等只有关键词）时返回空串，调用方据此省略对应提示行。
+    """
+    if not date_slots:
+        return ""
+
+    raw = str(date_slots.get("raw") or "").strip()
+    # raw 可能是整句用户输入（jionlp 兜底分支把原话存进 raw），太长就不做前缀
+    if not raw or raw == "None" or len(raw) > 12:
+        raw = ""
+
+    try:
+        start = datetime.fromisoformat(date_slots.get("start_time"))
+        end = datetime.fromisoformat(date_slots.get("end_time"))
+    except (TypeError, ValueError):
+        # future/vague 等没有具体起止时间的，只回原始说法（已截断）
+        return raw
+
+    if start.date() == end.date():
+        week_label = "周" + "一二三四五六日"[start.weekday()]
+        return f"{raw or '当天'}（{start.date()} {week_label}）"
+    return f"{raw or '时间段'}（{start.date()} ~ {end.date()}）"
+
+
+def parse_point_day(query: str) -> "dict | None":
+    """
+    解析「今天/昨天/前天」类具体一天的说法（含 今日/昨日 别称）
+
+    场景：澄清追问（vague date，`_pending_date_clarify`）的解析只认
+    「近N天 / 一周 / 一个月」，用户却常直接答「今天 / 昨天」——
+    澄清选项列的是区间，不代表用户只会按选项回答。
+    各 handler 澄清分支在区间解析前先走本函数；未命中返回 None。
+
+    明天/后天等未来说法不在本函数范围（澄清选项都是历史区间，
+    未来时间由各图 route_date_type 的 future 分支负责拒绝）。
+    """
+    today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    if any(k in query for k in ("今天", "今日", "当天")):
+        start, end, label = today_start, datetime.now(), "今天"
+    elif any(k in query for k in ("昨天", "昨日")):
+        start, end, label = today_start - timedelta(days=1), today_start - timedelta(seconds=1), "昨天"
+    elif "前天" in query:
+        start, end, label = today_start - timedelta(days=2), today_start - timedelta(days=1, seconds=1), "前天"
+    else:
+        return None
+    return {
+        "time_type": "span",
+        "start_time": start.isoformat(),
+        "end_time": end.isoformat(),
+        "raw": label
+    }
+
 def parse_area_slot(query: str) -> str:
     """
     从用户输入中抽取区域参数
@@ -375,7 +436,8 @@ def extract_person_status_slots(query: str) -> dict:
         r"进入人数|进来人数|入园人数|"
         r"进了多少人|来了多少人|入了多少人|进了几人|来了几人|"
         r"进入几个|进来几个|入园几个|来了几个|进了几个|"
-        r"进入多少|进来多少|入园多少|来.*多少|进.*多少|入.*多少", q
+        r"进入多少|进来多少|入园多少|来.*多少|进.*多少|入.*多少|"
+        r"(?:那|再|就)?(?:进入|进来|入园|来了?)[的呢了吧得呀哦嘛]{0,3}$", q
     ):
         slots["query_type"] = "enter"
 
@@ -389,7 +451,8 @@ def extract_person_status_slots(query: str) -> dict:
         r"离开人数|出去人数|离园人数|"
         r"出了多少人|走了多少人|离开几人|出去几人|走了几人|"
         r"出去几个|走了几个|离开几个|"
-        r"离开多少|出去多少|走了多少|出.*多少|走.*多少", q
+        r"离开多少|出去多少|走了多少|出.*多少|走.*多少|"
+        r"(?:那|再|就)?(?:出去|离开|离园|走了?)[的呢了吧得呀哦嘛]{0,3}$", q
     ):
         slots["query_type"] = "leave"
 

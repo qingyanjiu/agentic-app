@@ -1,6 +1,7 @@
 # uvicorn app:app --host 0.0.0.0 --port 8000 --reload
 import json
-import os 
+import os
+import re
 from typing import Optional
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File
 from fastapi.staticfiles import StaticFiles
@@ -10,6 +11,7 @@ from langchain_core.messages import HumanMessage, SystemMessage, BaseMessage, AI
 from models.llm import CustomLLMFactory
 # from graph.graph_pipeline import LangGraphPipeline
 from graph.reactive_pipeline import InfoDoubleCheckPipeline
+from graph.knowledge_qa_langgraph import KnowledgeQAPipeline
 from graph.gen_doc_pipeline import GenDocPipeline
 from graph.asr_pipeline import TextCorrectorPipeline
 from tools.load_tools import load_tools
@@ -1423,6 +1425,50 @@ async def asr_ws(websocket: WebSocket, user_id: str, session_id: Optional[str] =
 # 各业务域的 handler / graph 执行器映射
 # 供「追问态新意图接管」复用情况 2 的新意图启动流程
 # ============================================================
+# ============================================================
+# 收尾/告别语识别（排查记录案例 15）
+# 「请问您还有其他问题吗？」→「没有了」这类回复是对开放问题的礼貌收尾，
+# 不是可分类的业务查询：give_up 清空状态后它必然分类成 other，若不拦住
+# 会掉进旧 pipeline 回生硬的「无法解决你的问题」；done 态也会被情况 1.5
+# 拼接上轮问题把已完成的查询重新执行一遍。故在意图分发前整句匹配拦截。
+# 整句匹配 + 长度上限，避免把「没有告警吗」「没有什么新闻」这类真查询误吞。
+# ============================================================
+_CONVERSATION_CLOSE_RE = re.compile(
+    r"^(?:我说|就是|那个|额)*"                       # 口头铺垫（可无）
+    r"(?:"
+    r"没有(?:了|什么|啥|(?:其他|别的)(?:问题|的事?)?)?"   # 没有了/没有其他问题/没什么…
+    r"|没了"
+    r"|不用了?"
+    r"|暂时没有"
+    r"|木有了?"
+    r"|再见"
+    r"|拜拜"
+    r"|谢谢"
+    r"|辛苦了"
+    r"|好的"
+    r")"
+    r"(?:谢谢|多谢|辛苦了)?"                          # 后置致谢（没有了谢谢）
+    r"(?:[吧啦呀哦哈的了~～!！。,，]*)$"
+)
+
+
+def is_conversation_close(query: str) -> bool:
+    """无任务态下，整句命中收尾/告别语时返回 True"""
+    if not query or len(query.strip()) > 12:
+        return False
+    return bool(_CONVERSATION_CLOSE_RE.match(query.strip()))
+
+
+# 各域抽取器的子类型兜底值（与 slots.py 各 extract_*_slots 的初始值对齐）：
+# 省略式追问（情况 1.5）本轮抽到这些值说明输入本身不含子类型信息
+# （如「昨天呢」），才继承上轮子类型；本轮明确抽出具体子类型
+# （如「出去呢」→ leave）时以本轮为准（排查记录案例 13 / 案例 17）
+_SUBTYPE_FALLBACKS = {
+    "query_type": {"count", "basic_info", "device_list"},
+    "event_type": {"count", "alarm_list", "week_menu", "info_view"},
+}
+
+
 MODULE_HANDLERS = {
     "person_status": PersonStatusHandler,
     "security_status": SecurityStatusHandler,
@@ -1546,6 +1592,16 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
         }))
         await websocket.close()
         return
+
+    # 知识库直连管线：前端切到"知识库问答"模式（payload 带 mode=kb）时使用，
+    # 不走意图识别。创建失败只降级知识库模式，智能体问答不受影响
+    kb_pipeline = None
+    try:
+        # 同步创建、懒握手：sidecar 未就绪不影响创建，只影响知识库模式首次检索
+        kb_pipeline = KnowledgeQAPipeline.create(llm=llm)
+        logging.info("KnowledgeQAPipeline创建成功")
+    except Exception as e:
+        logging.error(f"KnowledgeQAPipeline创建失败（仅知识库模式不可用）: {e}")
  # 持续监听客户端消息（WebSocket长连接循环）
     while True:
         try:
@@ -1554,6 +1610,28 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
             payload = json.loads(data)
             # 从 payload 中获取用户输入
             query = payload.get("query", "")
+
+            # ============================================================
+            # 知识库问答模式：前端切到"知识库问答"后 payload 带 mode=kb，
+            # 跳过下面的意图识别/会话状态，直接走知识库直连管线
+            # ============================================================
+            if payload.get("mode") == "kb" and query:
+                if kb_pipeline is None:
+                    await websocket.send_text(json.dumps({
+                        "event": "custom",
+                        "data": {"type": "error", "content": "知识库服务未就绪，请稍后重试或切回智能体问答。"}
+                    }, ensure_ascii=False))
+                    await websocket.send_text(json.dumps({"status": "done"}))
+                    continue
+
+                async for chunk in kb_pipeline.astream_run(query, user_id, session_id):
+                    text = _safe_serialize(chunk)
+                    # 过滤 token 级事件，与主流程的转发口径一致
+                    if text.get("event") != "token":
+                        await websocket.send_text(json.dumps(text, ensure_ascii=False))
+                await websocket.send_text(json.dumps({"status": "done"}))
+                logging.info(f"kb answer done -- {user_id}-{session_id}")
+                continue
 
             # ============================================================
             # 人员态势 / 安防态势 MVP 分支
@@ -1618,10 +1696,17 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
                 if result["action"] == "give_up":
                     # 清空会话状态
                     session_state.clear(user_id, session_id)
-                    
+
                     await websocket.send_text(json.dumps({
                         "event": "custom",
                         "data": {"type": "answer", "content": result["answer"]}
+                    }, ensure_ascii=False))
+                    # answer 之后必须补 done：前端收到 done 才收起加载指示、
+                    # 解锁输入框；只发 answer 会让前端永久转圈且无法继续
+                    # 发消息（排查记录案例 14）
+                    await websocket.send_text(json.dumps({
+                        "event": "custom",
+                        "data": {"type": "done"}
                     }, ensure_ascii=False))
                     continue  # 跳过原有 pipeline
                 
@@ -1711,6 +1796,22 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
 
                     continue  # 跳过原有 pipeline
 
+            # 情况 1.4：无任务态的收尾语（「没有了」「不用了」「拜拜」等）——
+            # 是对「还有其他问题吗」这类开放问题的礼貌回答，不是可分类的查询。
+            # 须排在情况 1.5 之前：done 态下收尾语若落到 1.5，会被拼接上轮
+            # 问题重新分类，把已完成的查询再执行一遍（排查记录案例 15）
+            elif top_intent == "other" and is_conversation_close(query):
+                await websocket.send_text(json.dumps({
+                    "event": "custom",
+                    "data": {"type": "answer", "content": "好的，如需查询园区相关数据随时找我。"}
+                }, ensure_ascii=False))
+                # answer 必配 done，否则前端回合不结束（排查记录案例 14）
+                await websocket.send_text(json.dumps({
+                    "event": "custom",
+                    "data": {"type": "done"}
+                }, ensure_ascii=False))
+                continue
+
             # 情况 1.5：上一轮查询已完成（done=True）且本轮识别不出业务意图（other）
             # → 视为省略式追问（如「昨天呢」「那上周呢」）：
             #   用上一轮原问题拼接本轮输入重新分类；命中业务域则按继承式启动——
@@ -1729,12 +1830,24 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
                     handler = MODULE_HANDLERS[merged_intent]()
                     # ① 槽位只用本轮输入抽取
                     slots = await handler.extract_slots(query)
-                    # ② 同域继承本轮没抽到的实体槽；时间与子类型不继承
+                    # ② 同域继承本轮没抽到的实体槽；时间不继承（必须来自本轮）
                     if merged_intent == active_state.module:
                         for k in ("person_name", "area", "alarm_id", "meal"):
                             if not slots.get(k) and active_state.slots.get(k):
                                 slots[k] = active_state.slots[k]
-                    # ③ original_query 传首轮原话，不回写拼接串
+                        # ③ 子类型继承上轮：仅当本轮抽取落到兜底值（输入本身
+                        # 不含子类型信息，如「昨天呢」）才继承；本轮明确抽出
+                        # 具体子类型时以本轮为准——「出去呢」要把子类型从
+                        # 进入切到离开，不能被子类型继承压回上轮
+                        # （案例 13 建立、案例 17 修正边界）
+                        for k in ("query_type", "event_type"):
+                            prev_subtype = active_state.slots.get(k)
+                            if not prev_subtype:
+                                continue
+                            fresh_subtype = slots.get(k)
+                            if not fresh_subtype or fresh_subtype in _SUBTYPE_FALLBACKS.get(k, ()):
+                                slots[k] = prev_subtype
+                    # ④ original_query 传首轮原话，不回写拼接串
                     await start_module_flow(websocket, query, merged_intent, user_id, session_id,
                                             slots=slots, original_query=active_state.original_query)
                     continue  # 跳过原有 pipeline
@@ -2181,6 +2294,13 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
             break
         # except Exception as e:
         #     await websocket.send_text(json.dumps({"error": str(e)}))
+
+    # 会话结束：释放知识库直连客户端的 MCP/HTTP 会话
+    if kb_pipeline is not None:
+        try:
+            await kb_pipeline.aclose()
+        except Exception:
+            logger.warning("KnowledgeQAPipeline 释放失败(忽略)")
 
 
 

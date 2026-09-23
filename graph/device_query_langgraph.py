@@ -9,7 +9,7 @@ from langgraph.graph import StateGraph, END
 from mcp_client.mcp_loader import get_mcp_tools
 
 # syncSource 码到中文名的权威映射（只用于拼 LLM 提示语，下发给 Java 的仍是码本身）
-from agent.intent.slots import DEVICE_TYPE_DICT
+from agent.intent.slots import DEVICE_TYPE_DICT, format_query_time
 
 logger = logging.getLogger(__name__)
 
@@ -232,10 +232,19 @@ async def _llm_format_device_query_result(
                 "其余全部丢弃；一台都没匹配上就如实说没找到；\n"
             )
 
+        # 省略式追问（如「昨天呢」）时 original_query 仍是上一轮原话，其中的时间词
+        # 不代表本次查询；把 slots 里真实查询时间显式交给 LLM，避免回答被原话带偏
+        _qt = format_query_time(slots.get("date"))
+        query_time_line = (
+            f"本次查询的时间范围：{_qt}（回答中的时间表述以此为准，不要沿用原话里的时间词）\n"
+            if _qt else ""
+        )
+
         prompt = (
             "你是智慧园区设备台账助手。下面是一次 MCP 工具查询的原始返回，"
             "请根据用户的查询类型，只提取对应的内容，用中文自然、简洁地回答用户。\n\n"
             f"用户查询类型：{query_type}（{label}）\n"
+            f"{query_time_line}"
             f"用户原话：{original_query}\n"
             f"设备筛选条件：设备类型={_device_type_label(slots.get('device_type'))}，"
             f"位置={slots.get('area') or '不限'}，名称/编号关键字={keyword or '不限'}\n"

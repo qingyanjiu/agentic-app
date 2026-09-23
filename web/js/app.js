@@ -37,6 +37,12 @@ let sessionId = crypto.randomUUID();
 let ws = null;
 let sendQueue = []; // 连接建立前待发送的消息
 let turnActive = false;
+let manualClose = false; // 新对话主动关闭时不触发自动重连
+let reconnectTimer = null; // 断线重连定时器
+let reconnectAttempts = 0; // 连续重连失败次数
+let reconnectDelay = 1500;
+let sendTimeout = null; // 发送后迟迟连不上后端的兜底提示
+let kbMode = false; // true 时走知识库直连（payload 带 mode=kb，后端跳过意图）
 
 // ------------------- DOM -------------------
 const messagesEl = document.getElementById('messages');
@@ -48,6 +54,8 @@ const sendBtn = document.getElementById('sendBtn');
 const newChatBtn = document.getElementById('newChatBtn');
 const connDot = document.getElementById('connDot');
 const connText = document.getElementById('connText');
+const modeAgentBtn = document.getElementById('modeAgentBtn');
+const modeKbBtn = document.getElementById('modeKbBtn');
 
 // ------------------- 消息渲染 -------------------
 function escapeHtml(s) {
@@ -66,13 +74,18 @@ function renderInline(text) {
     return s;
 }
 
+// 对话区随页面整体滚动，这里滚动文档到底部
 function isNearBottom() {
-    return messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 140;
+    const doc = document.documentElement;
+    return doc.scrollHeight - window.scrollY - window.innerHeight < 160;
 }
 
 function scrollToBottom(force = false) {
     if (force || isNearBottom()) {
-        messagesEl.scrollTop = messagesEl.scrollHeight;
+        window.scrollTo({
+            top: document.documentElement.scrollHeight,
+            behavior: force ? 'smooth' : 'auto',
+        });
     }
 }
 
@@ -116,7 +129,7 @@ function ensureAiBubble() {
         removeTypingIndicator();
         currentAiRaw = '';
         const div = document.createElement('div');
-        div.className = 'msg msg-ai';
+        div.className = 'msg msg-ai streaming';
         messagesEl.appendChild(div);
         currentAiBubble = div;
     }
@@ -130,6 +143,7 @@ function appendAiText(chunk) {
 }
 
 function finishAiBubble() {
+    if (currentAiBubble) currentAiBubble.classList.remove('streaming');
     currentAiBubble = null;
     currentAiRaw = '';
 }
@@ -163,47 +177,83 @@ function connect() {
     if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
         return;
     }
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+    manualClose = false;
     const url = `${WS_BASE}/chat/${getUserId()}/${sessionId}`;
     setConnState('connecting');
     ws = new WebSocket(url);
 
     ws.onopen = () => {
+        reconnectAttempts = 0;
+        reconnectDelay = 1500;
         setConnState('connected');
-        // 发送连接建立前排队的消息
+        // 发送连接建立前排队的消息（队列里存的是完整 payload 对象）
         while (sendQueue.length && ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ query: sendQueue.shift() }));
+            ws.send(JSON.stringify(sendQueue.shift()));
         }
+        clearTimeout(sendTimeout);
     };
 
     ws.onmessage = (e) => handleWsMessage(e.data);
 
     ws.onclose = () => {
-        setConnState('disconnected');
         ws = null;
+        if (manualClose) return;
         // 若本轮还没结束就断线，结束当前轮，避免输入框被锁死
         if (turnActive) finishTurn();
+        // 连接过就保持红点提示错误，否则显示未连接
+        if (!connDot.classList.contains('error')) {
+            setConnState('disconnected');
+        }
+        scheduleReconnect();
     };
 
     ws.onerror = () => setConnState('error');
+}
+
+// 断线自动重连：指数退避，最多连续 5 次；手动发消息时会清零计数重新尝试
+function scheduleReconnect() {
+    if (manualClose || reconnectTimer) return;
+    if (reconnectAttempts >= 5) return;
+    reconnectAttempts += 1;
+    reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        reconnectDelay = Math.min(reconnectDelay * 2, 15000);
+        connect();
+    }, reconnectDelay);
 }
 
 function sendMessage(text) {
     text = text.trim();
     if (!text || turnActive) return;
 
+    reconnectAttempts = 0; // 用户主动发送时重置重连计数
     connect();
     addUserBubble(text);
     addTypingIndicator();
-    setStatus('正在思考…');
+    setStatus(kbMode ? '正在检索知识库…' : '正在思考…');
     turnActive = true;
     updateComposerState();
     chipsEl.classList.add('hidden');
     scrollToBottom(true);
 
+    // 知识库模式带 mode=kb，后端据此跳过意图分类直连 RAG 管线
+    const payload = kbMode ? { query: text, mode: 'kb' } : { query: text };
     if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ query: text }));
+        ws.send(JSON.stringify(payload));
+        clearTimeout(sendTimeout);
     } else {
-        sendQueue.push(text);
+        sendQueue.push(payload);
+        // 10s 仍没连上后端，给出提示并解锁输入
+        clearTimeout(sendTimeout);
+        sendTimeout = setTimeout(() => {
+            if (turnActive && sendQueue.length) {
+                sendQueue = [];
+                addErrorBubble('连接后端失败，请确认服务已启动后重试');
+                finishTurn();
+            }
+        }, 10000);
     }
 }
 
@@ -249,9 +299,9 @@ function handleWsMessage(raw) {
 function handleCustomEvent(d) {
     switch (d.type) {
         case 'answer':
-            // 流式分块或完整回答
+            // 流式分块或完整回答（有内容输出就收起状态条）
             appendAiText(d.content || '');
-            setStatus('');
+            clearStatus();
             break;
         case 'ask':
             // 多轮追问：作为独立回答气泡展示
@@ -279,6 +329,7 @@ function handleCustomEvent(d) {
 }
 
 function finishTurn() {
+    clearTimeout(sendTimeout);
     finishAiBubble();
     removeTypingIndicator();
     clearStatus();
@@ -289,7 +340,9 @@ function finishTurn() {
 // ------------------- 输入区 -------------------
 function updateComposerState() {
     sendBtn.disabled = turnActive || !inputEl.value.trim();
-    inputEl.placeholder = turnActive ? '助手正在回复…' : '输入你的问题，回车发送';
+    inputEl.placeholder = turnActive
+        ? '助手正在回复…'
+        : (kbMode ? '知识库问答：直接向园区知识库提问' : '输入你的问题，回车发送');
 }
 
 function autoGrow() {
@@ -331,14 +384,35 @@ document.querySelectorAll('.cap-card, .chip').forEach((el) => {
     });
 });
 
+// ------------------- 问答模式切换（智能体 / 知识库直连） -------------------
+function setKbMode(on) {
+    if (kbMode === on) return;
+    kbMode = on;
+    modeAgentBtn.classList.toggle('active', !on);
+    modeKbBtn.classList.toggle('active', on);
+    modeAgentBtn.setAttribute('aria-selected', String(!on));
+    modeKbBtn.setAttribute('aria-selected', String(on));
+    updateComposerState();
+    // 场景 chips 是意图入口，知识库模式下收起
+    if (on) chipsEl.classList.add('hidden');
+    inputEl.focus();
+}
+
+modeAgentBtn.addEventListener('click', () => setKbMode(false));
+modeKbBtn.addEventListener('click', () => setKbMode(true));
+
 // ------------------- 新对话 -------------------
 newChatBtn.addEventListener('click', (e) => {
     e.preventDefault();
     if (ws) {
-        ws.onclose = null; // 主动关闭不触发断线兜底
+        manualClose = true; // 主动关闭不触发断线兜底与自动重连
+        ws.onclose = null;
         ws.close();
         ws = null;
     }
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+    reconnectAttempts = 0;
     sessionId = crypto.randomUUID();
     sendQueue = [];
     finishTurn();
