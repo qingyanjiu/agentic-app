@@ -1359,7 +1359,7 @@ def extract_meeting_status_slots(query: str) -> dict:
 #   device_list   -> 设备列表（可按设备类型、区域/楼栋/楼层筛选）
 #   device_detail -> 设备详情（需要设备名称或编号定位到具体设备）
 #
-# 口径是**资产库**（Java 侧 /mcp/devicequery 的 device_query:listDevice /
+# 口径是**资产库**（Java 侧 /mcp/devicequery 的 device_query:listDeviceOnly /
 # device_query:getDeviceDetail，查平台纳管的设备资产），不是厂商实时设备：
 #   1. 设备类型码是 syncSource（八类，见下），它是**可选**筛选条件——
 #      列表接口所有筛选参数都可选，不传就是全部设备

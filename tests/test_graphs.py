@@ -324,24 +324,25 @@ def test_device_month_tool_without_date():
 # ============================================================
 # 8.1 设备查询（资产库口径）：列表筛选透传 / 详情先拿名称编号换内部 id
 # ============================================================
-# 资产库设备清单：{data:{page:{...}, data:[设备数组]}}
+# 资产库设备清单：listDeviceOnly 不分页，data 直接是设备数组
+# （也没有 deviceTypeName——不翻译，类型名靠 syncSource 对照）
 # 注意 status 是启用状态，空间名是 spaceName 全路径
 _ASSET_ROWS = (
-    '{"code":200,"data":{"page":{"total":2,"size":20,"pages":1,"current":1},"data":['
+    '{"code":200,"data":['
     '{"id":"1001","name":"A栋枪机","code":"CY-HIK-JK-001-0001","syncSource":"3",'
     '"status":"1","spaceName":"园区/A栋/3楼"},'
     '{"id":"1002","name":"A栋球机","code":"CY-HIK-JK-001-0002","syncSource":"3",'
-    '"status":"1","spaceName":"园区/A栋/3楼"}]}}'
+    '"status":"1","spaceName":"园区/A栋/3楼"}]'
 )
 
 
 def test_device_query_list_passes_sync_source():
-    """列表查询：设备类型以 syncSource 下发给 device_query:listDevice（区域不下发）"""
+    """列表查询：设备类型以 syncSource 下发给 device_query:listDeviceOnly（区域不下发）"""
     from conftest import FakeTool
 
     mod = get_graph_module("device_query")
-    tool = FakeTool("device_query:listDevice", '{"code":200,"data":{"data":[]}}')
-    node = mod.make_call_tool_node({"device_query:listDevice": tool})
+    tool = FakeTool("device_query:listDeviceOnly", '{"code":200,"data":[]}')
+    node = mod.make_call_tool_node({"device_query:listDeviceOnly": tool})
 
     out = run(node({
         "slots": {"query_type": "device_list", "device_type": "3"},
@@ -353,12 +354,12 @@ def test_device_query_list_passes_sync_source():
 
 
 def test_device_query_list_area_filters_locally():
-    """位置名后端只认 spaceId，不下发；改为多拉一页回来按 spaceName 本地过滤"""
+    """位置名后端只认 spaceId，不下发；listDeviceOnly 一次给全，按 spaceName 本地过滤"""
     from conftest import FakeTool
 
     mod = get_graph_module("device_query")
-    tool = FakeTool("device_query:listDevice", '{"code":200,"data":{"data":[]}}')
-    node = mod.make_call_tool_node({"device_query:listDevice": tool})
+    tool = FakeTool("device_query:listDeviceOnly", '{"code":200,"data":[]}')
+    node = mod.make_call_tool_node({"device_query:listDeviceOnly": tool})
 
     out = run(node({
         "slots": {"query_type": "device_list", "device_type": "3", "area": "A栋3楼"},
@@ -366,7 +367,7 @@ def test_device_query_list_area_filters_locally():
     }))
 
     assert out.get("error") is None
-    assert tool.calls == [{"syncSource": "3", "pageSize": 200}], f"实际调用参数: {tool.calls}"
+    assert tool.calls == [{"syncSource": "3"}], f"实际调用参数: {tool.calls}"
 
 
 def test_device_query_detail_resolves_id_by_name():
@@ -374,10 +375,10 @@ def test_device_query_detail_resolves_id_by_name():
     from conftest import FakeTool
 
     mod = get_graph_module("device_query")
-    list_tool = FakeTool("device_query:listDevice", _ASSET_ROWS)
+    list_tool = FakeTool("device_query:listDeviceOnly", _ASSET_ROWS)
     detail_tool = FakeTool("device_query:getDeviceDetail", '{"code":200,"data":{}}')
     node = mod.make_call_tool_node({
-        "device_query:listDevice": list_tool,
+        "device_query:listDeviceOnly": list_tool,
         "device_query:getDeviceDetail": detail_tool,
     })
 
@@ -389,7 +390,7 @@ def test_device_query_detail_resolves_id_by_name():
 
     assert out.get("error") is None
     # 名称走模糊匹配查一次就够了（两条数据里"完全相等"的只有 A栋枪机）
-    assert list_tool.calls == [{"name": "A栋枪机", "pageSize": 20}], f"实际调用参数: {list_tool.calls}"
+    assert list_tool.calls == [{"name": "A栋枪机"}], f"实际调用参数: {list_tool.calls}"
     assert detail_tool.calls == [{"id": "1001"}], f"实际调用参数: {detail_tool.calls}"
 
 
@@ -406,12 +407,12 @@ def test_device_query_detail_falls_back_to_code_search():
         async def ainvoke(self, args=None, **kwargs):
             self.calls.append(args)
             if len(self.calls) == 1:
-                return '{"code":200,"data":{"data":[]}}'
+                return '{"code":200,"data":[]}'
             return _ASSET_ROWS
 
-    list_tool = SequenceTool("device_query:listDevice", "")
+    list_tool = SequenceTool("device_query:listDeviceOnly", "")
     node = mod.make_call_tool_node({
-        "device_query:listDevice": list_tool,
+        "device_query:listDeviceOnly": list_tool,
         "device_query:getDeviceDetail": detail_tool,
     })
 
@@ -423,8 +424,8 @@ def test_device_query_detail_falls_back_to_code_search():
 
     assert out.get("error") is None
     assert list_tool.calls == [
-        {"name": "CY-HIK-JK-001-0002", "pageSize": 20},
-        {"code": "CY-HIK-JK-001-0002", "pageSize": 20},
+        {"name": "CY-HIK-JK-001-0002"},
+        {"code": "CY-HIK-JK-001-0002"},
     ], f"实际调用参数: {list_tool.calls}"
     assert detail_tool.calls == [{"id": "1002"}], f"实际调用参数: {detail_tool.calls}"
 
@@ -434,10 +435,10 @@ def test_device_query_detail_not_found():
     from conftest import FakeTool
 
     mod = get_graph_module("device_query")
-    list_tool = FakeTool("device_query:listDevice", '{"code":200,"data":{"data":[]}}')
+    list_tool = FakeTool("device_query:listDeviceOnly", '{"code":200,"data":[]}')
     detail_tool = FakeTool("device_query:getDeviceDetail", '{"code":200,"data":{}}')
     node = mod.make_call_tool_node({
-        "device_query:listDevice": list_tool,
+        "device_query:listDeviceOnly": list_tool,
         "device_query:getDeviceDetail": detail_tool,
     })
 
@@ -457,10 +458,10 @@ def test_device_query_detail_ambiguous_lists_candidates():
     from conftest import FakeTool
 
     mod = get_graph_module("device_query")
-    list_tool = FakeTool("device_query:listDevice", _ASSET_ROWS)
+    list_tool = FakeTool("device_query:listDeviceOnly", _ASSET_ROWS)
     detail_tool = FakeTool("device_query:getDeviceDetail", '{"code":200,"data":{}}')
     node = mod.make_call_tool_node({
-        "device_query:listDevice": list_tool,
+        "device_query:listDeviceOnly": list_tool,
         "device_query:getDeviceDetail": detail_tool,
     })
 
@@ -543,7 +544,7 @@ class TestDeviceStatusFullFlow:
     两轮完整流程：设备态势笼统问法 -> 反问"哪类设备" -> 用户答类型 -> 按台账口径列设备
 
     对照 device_query 的同一场景：设备域只有"设备列表/设备详情"两个台账工具，
-    因此设备态势兜底选定的类型最终落到 device_query:listDevice（资产库口径的 syncSource）。
+    因此设备态势兜底选定的类型最终落到 device_query:listDeviceOnly（资产库口径的 syncSource）。
     """
 
     def test_vague_query_ask_type_then_list(self, domain_graphs):
@@ -593,12 +594,12 @@ class TestDeviceStatusFullFlow:
 
 
 def test_device_status_list_passes_sync_source():
-    """台账分支：设备类型码（syncSource）应作为入参下发给 device_query:listDevice"""
+    """台账分支：设备类型码（syncSource）应作为入参下发给 device_query:listDeviceOnly"""
     from conftest import FakeTool
 
     device_mod = get_graph_module("device_status")
-    tool = FakeTool("device_query:listDevice", '{"code":200,"data":{"data":[]}}')
-    node = device_mod.make_call_tool_node({"device_query:listDevice": tool})
+    tool = FakeTool("device_query:listDeviceOnly", '{"code":200,"data":[]}')
+    node = device_mod.make_call_tool_node({"device_query:listDeviceOnly": tool})
 
     out = run(node({
         "slots": {"query_type": "device_list", "device_type": "0"},

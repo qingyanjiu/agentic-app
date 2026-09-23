@@ -142,13 +142,13 @@
 | `device:getGbOnlinePercentage` | `{}` | `{"code":200,"online":45,"total":50}` |
 | `device:getMjOnlinePercentage` | `{}` | `{"code":200,"online":70,"total":72}` |
 
-注：设备态势的「台账/设备清单」问法会跨端点调 `/mcp/devicequery` 的 `device_query:listDevice`。
+注：设备态势的「台账/设备清单」问法会跨端点调 `/mcp/devicequery` 的 `device_query:listDeviceOnly`。
 
 ### 11. /mcp/devicequery 设备查询·资产库口径（前缀 `device_query:`）
 
 | 工具名 | 入参 | 返回示例 |
 |---|---|---|
-| `device_query:listDevice` | 全部可选：`{"name":"枪机"}`（**模糊**匹配）或 `{"code":"CY-HIK-JK-001-0001"}`（**精确**匹配）或 `{"syncSource":"3"}`（按设备类型码筛）；可带 `pageSize`。Python 侧详情定位流程是：先按 name 搜、搜不到再按 code 搜 | `{"code":200,"data":{"page":{"total":2,"size":100,"pages":1,"current":1},"data":[{"id":"1001","name":"A栋枪机","code":"CY-HIK-JK-001-0001","syncSource":"3","deviceTypeName":"监控设备","status":"1","spaceId":"2001","spaceName":"园区/A栋/3楼","personInChargeName":"张三","orgName":"安防部","maintained":"1"}]}}` |
+| `device_query:listDeviceOnly` | 全部可选：`{"name":"枪机"}`（**模糊**匹配）或 `{"code":"CY-HIK-JK-001-0001"}`（**精确**匹配）或 `{"syncSource":"3"}`（按设备类型码筛）或 `{"status":"1"}`/`{"maintained":"1"}`/`{"spaceId":"2001"}`。**不分页**（没有 `pageCurrent`/`pageSize`）。Python 侧调用口径：列表带 `syncSource`；名称/编号定位时先按 `name` 搜、搜不到再按 `code` 搜 | `{"code":200,"data":[{"id":"1001","name":"A栋枪机","code":"CY-HIK-JK-001-0001","syncSource":"3","status":"1","spaceId":"2001","spaceName":"园区/A栋/3楼","personInChargeName":"张三","orgName":"安防部","maintained":"1"}]}`（`data` 直接是设备数组；**无 `deviceTypeName`**，类型中文名 Python 侧按 `syncSource` 对照） |
 | `device_query:getDeviceDetail` | `{"id":"1001"}`（**只认列表返回的内部 id**） | `{"code":200,"data":{"id":"1001","name":"A栋枪机","code":"CY-HIK-JK-001-0001","syncSource":"3","deviceTypeName":"监控设备","status":"1","spaceId":"2001","spaceName":"园区/A栋/3楼","personInChargeName":"张三","orgName":"安防部","maintained":"1"}}` |
 
 字段口径：
@@ -188,7 +188,7 @@
 | `canteen:getWeekMenu`（周菜谱压缩） | 顶层 `{"data":[...]}`（或直接数组），每项 `{"day":"周一","breakfast":[{"dishName","price","unit"}],"lunch":[...],"dinner":[...]}`；多余长字段（image/elementJson 等）可省 |
 | `fire:getFireAssets`（台账压缩） | `{total,rows:[...]}`；行内保留字段 `assetsName/offLineFlag/faultFlag/usageFlag/hiddenDangerFlag/deviceCode`；压力/液位/电量/倾角放在 `dataMap:[{"monitorName":"压力","monitorValue":0.45,"unit":"MPa"}]` |
 | `fire:getFireAlarmList` / `perimeter:getAlarmOverview`（告警压缩） | `{total,rows:[...]}`；保留字段：消防 `title/alarmTypeName/assetsName/areaName/alarmLevel/handleStatus/nowAlarmTime/alarmReason`；周界 `alarmName/areaName/alarmLevel/handleStatus/alarmTime/alarmReason`。字段名以 `Time` 结尾且为纯数字时按**毫秒时间戳**解析 |
-| `device_query:listDevice`（搜索定位 + 本地过滤） | `{"data":{"page":{...},"data":[...]}}`；行内 `id`（必需）、`name`、`code`、`spaceName`（按位置筛选时本地过滤用） |
+| `device_query:listDeviceOnly`（搜索定位 + 本地过滤） | `{"data":[设备数组]}`（不分页；Python 侧也兼容 `{data:{page:...,data:[...]}}` 这类包装，但按本接口口径返回裸数组即可）；行内 `id`（必需）、`name`、`code`、`spaceName`（按位置筛选时本地过滤用） |
 
 ---
 

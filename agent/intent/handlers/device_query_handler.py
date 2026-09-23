@@ -25,7 +25,7 @@ LIST_WORDING = ("清单", "列表", "有哪些", "哪些", "列出", "所有", "
 # 查设备列表 / 查某台设备的详情
 #
 # 口径是**资产库**（平台纳管的设备资产，Java 侧 /mcp/devicequery 端点的
-# device_query:listDevice / device_query:getDeviceDetail）：
+# device_query:listDeviceOnly / device_query:getDeviceDetail）：
 #   - 设备类型码是 syncSource：0门禁 1道闸 2梯控 3监控 4入侵报警 5广播 6水表 7电表
 #   - status 是启用/停用（0停用 1启用 2维修 3报废），不是在线/离线
 #   - 列表接口筛选参数全可选，因此只有"详情"缺设备名称/编号时才追问

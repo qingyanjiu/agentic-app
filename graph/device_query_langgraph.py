@@ -17,37 +17,40 @@ logger = logging.getLogger(__name__)
 # ============================================================
 # Python query_type 到 Java MCP 工具名的映射
 # 与 Java 侧 PlatformDeviceQueryMcp 对齐（/mcp/devicequery，工具名前缀 device_query:）：
-#   device_list   -> device_query:listDevice
+#   device_list   -> device_query:listDeviceOnly
 #   device_detail -> device_query:getDeviceDetail
 #
 # 口径：**资产库**（平台自有的 VISUAL_DEVICE_INFO 纳管资产），
 # 与同一个端点上的厂商透传工具（device_query:getVendorDeviceList，走 /calldevice/*）
 # 不是一回事：资产库的 status 是启用/停用，厂商的才是实时在线状态。
 #
+# 为什么列表用 listDeviceOnly 而不是 listDevice：后者是**分页**接口
+# （pageCurrent/pageSize，返回 {page:{total,size,pages,current}, data:[...]}），
+# 而列表展示和详情定位都要"全部符合条件的设备"，翻页反而拿不全。
+# 代价是返回体可能很大（Java 侧原话"设备多的时候返回体很大，容易吃掉上下文"），
+# 所以能带的筛选条件尽量带上（尤其 syncSource）。
+#
 # 入参（都取自 Java 侧 @McpToolParam，下发前按工具声明的 schema 过滤）：
-#   listDevice(syncSource 0门禁 1道闸 2梯控 3监控 4入侵报警 5广播 6水表 7电表,
-#              deviceType 设备子类型、一般不传, status 启用状态 0停用 1启用 2维修 3报废,
-#              name 名称模糊匹配, code 编号精确匹配, spaceId 空间ID,
-#              maintained 是否已维护 0否 1是, pageCurrent, pageSize)
+#   listDeviceOnly(syncSource 0门禁 1道闸 2梯控 3监控 4入侵报警 5广播 6水表 7电表,
+#                  deviceType 设备子类型、一般不传, status 启用状态 0停用 1启用 2维修 3报废,
+#                  name 名称模糊匹配, code 编号精确匹配, spaceId 空间ID,
+#                  maintained 是否已维护 0否 1是)
 #   getDeviceDetail(id)   id 取自列表返回的 id 字段，不是设备编号 code
-# 列表接口的筛选参数全是可选的（不传就是全部设备），地区/楼层只有 spaceId 一个口径，
-# 所以 Python 侧的 area（"A栋3楼"这类位置名）不下发，改为拉回来按 spaceName 本地过滤。
+#
+# 两处要与 listDevice 区分的差异（Java 侧描述里写明）：
+#   1. 筛选参数全是可选的（不传就是全部设备），位置只有 spaceId 一个口径，
+#      所以 Python 侧的 area（"A栋3楼"这类位置名）不下发，改为按 spaceName 本地过滤；
+#   2. listDeviceOnly **不翻译**：返回行里没有 deviceTypeName 字段，只有 syncSource 编码，
+#      类型中文名由 Python 侧按 DEVICE_TYPE_DICT 对照（提示词里已交代给 LLM）。
 # ============================================================
 _JAVA_TOOL_MAP = {
-    "device_list": "device_query:listDevice",
+    "device_list": "device_query:listDeviceOnly",
     "device_detail": "device_query:getDeviceDetail",
 }
 
 # 详情查询用来把"设备名称/编号"换成"设备内部 id"的工具
 # （getDeviceDetail 只认 id，而用户报的是名称或编号，平台侧负责匹配）
-_RESOLVE_TOOL = "device_query:listDevice"
-
-# 详情反查：同名设备可能不止一台，多要几条再挑
-_SEARCH_PAGE_SIZE = 20
-
-# 用户按位置筛选时，位置名（"A栋3楼"）没法下发（后端只认 spaceId），
-# 就多拉一些回来按 spaceName 本地过滤
-_AREA_PAGE_SIZE = 200
+_RESOLVE_TOOL = "device_query:listDeviceOnly"
 
 
 def _extract_text(result: Any) -> str:
@@ -78,8 +81,9 @@ def _iter_rows(data: Any) -> list:
     """
     从返回 JSON 里取出设备行列表
 
-    资产库列表接口返回 {code, data:{page:{total,size,pages,current}, data:[设备数组]}}，
-    这里顺着包装往下找，兼容 data/list/rows/records 等常见壳子
+    listDeviceOnly 不分页，按 Java 侧描述是"返回裸数组"（data 直接是设备数组）；
+    这里顺着包装往下找，兼容 data/list/rows/records 等常见壳子——
+    裸数组、{data:[...]}、分页那套 {data:{page:..., data:[...]}} 都能取出来
     """
     if isinstance(data, list):
         return [r for r in data if isinstance(r, dict)]
@@ -213,7 +217,9 @@ async def _llm_format_device_query_result(
             "syncSource：0门禁 1道闸 2梯控 3监控 4入侵报警 5广播 6水表 7电表；"
             "status 是**启用状态**（0停用 1启用 2维修 3报废），不是在线/离线，"
             "不要说成在线状态；maintained：0未维护 1已维护；"
-            "spaceName 是设备所在位置的全路径名（如 园区/北门/门岗）"
+            "spaceName 是设备所在位置的全路径名（如 园区/北门/门岗）；"
+            "列表数据里**没有类型中文名字段**（listDeviceOnly 不翻译），"
+            "设备的类型名称必须按上面的 syncSource 码对照得出，不要直接念编码"
         )
 
         # 位置筛选后端只认 spaceId，这里是按位置名在返回结果里本地过滤
@@ -431,11 +437,11 @@ def make_call_tool_node(tools: dict, llm=None):
     构造调用 MCP 工具的节点
 
     query_type == device_list：
-        直接调 device_query:listDevice（带设备类型筛选）；
+        直接调 device_query:listDeviceOnly（带设备类型筛选，不分页、一次给全）；
         用户报了名称/编号时交给后端按名称模糊搜（搜不到再按编号精确搜），
-        位置筛选（area）后端只认 spaceId，改为多拉一些回来按 spaceName 本地过滤
+        位置筛选（area）后端只认 spaceId，改为拿回来按 spaceName 本地过滤
     query_type == device_detail：
-        先用 device_query:listDevice 按名称/编号把设备搜出来，取它的 id，
+        先用 device_query:listDeviceOnly 按名称/编号把设备搜出来，取它的 id，
         再调 device_query:getDeviceDetail；搜不到就如实说没找到，
         匹配到多台又都不完全相等时不猜，把候选列给用户
     """
@@ -467,18 +473,19 @@ def make_call_tool_node(tools: dict, llm=None):
 
         平台侧 name 是模糊匹配、code 是精确匹配：先按名称搜，
         名称搜不到（用户报的是编号）再按编号搜一次。
+        listDeviceOnly 不分页，搜到什么就是什么，不需要指定条数。
 
         :return: (原始返回文本, 解析出的设备行列表)
         """
         raw_text = await _call(
             _RESOLVE_TOOL,
-            {"name": keyword, "pageSize": _SEARCH_PAGE_SIZE, **extra},
+            {"name": keyword, **extra},
         )
         rows = _rows_of(raw_text)
         if not rows:
             raw_text = await _call(
                 _RESOLVE_TOOL,
-                {"code": keyword, "pageSize": _SEARCH_PAGE_SIZE, **extra},
+                {"code": keyword, **extra},
             )
             rows = _rows_of(raw_text)
         return raw_text, rows
@@ -515,11 +522,9 @@ def make_call_tool_node(tools: dict, llm=None):
                             f"没有找到名称或编号为「{keyword}」的设备，请确认一下名称或编号。"
                         )
                 else:
-                    args = {"syncSource": device_type}
-                    if area:
-                        # 位置名下发不了（只认 spaceId），多拉一些回来按 spaceName 本地过滤
-                        args["pageSize"] = _AREA_PAGE_SIZE
-                    raw_text = await _call(java_tool_name, args)
+                    # 位置名下发不了（只认 spaceId），拿回来按 spaceName 本地过滤：
+                    # listDeviceOnly 不分页，本来就是全量，不需要额外放大页码
+                    raw_text = await _call(java_tool_name, {"syncSource": device_type})
 
                 answer_text = await _llm_format_device_query_result(
                     llm, query_type, state, raw_text
