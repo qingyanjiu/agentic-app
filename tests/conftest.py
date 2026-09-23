@@ -69,6 +69,24 @@ class FakeTool:
         return self.result
 
 
+class FakeLLM:
+    """
+    模拟 LLM：把收到的提示词记在 prompts 里，固定回一句文案。
+
+    正常路径的图都用 llm=None（走原样返回），只有专门断言"提示词口径"的
+    用例才需要它——例如能源域的单位口径（电→千瓦时、水→吨）写在提示词里，
+    只有拿到提示词才能验证它没被改掉。
+    """
+
+    def __init__(self, reply: str = "（模拟回答）"):
+        self.reply = reply
+        self.prompts = []
+
+    async def ainvoke(self, prompt, **kwargs):
+        self.prompts.append(prompt)
+        return type("FakeLLMResp", (), {"content": self.reply})()
+
+
 def make_tools(results_by_tool: dict, delay: float = 0.0) -> dict:
     """
     按时 {java工具名: 返回文本} 构造 {java工具名: FakeTool}

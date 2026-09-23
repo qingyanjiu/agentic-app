@@ -19,9 +19,11 @@ import pytest
 from agent.intent.slots import extract_emergency_fire_slots
 from conftest import (
     SPAN_DATE,
+    FakeLLM,
     answers_of,
     asks_of,
     build_graph,
+    default_tools,
     domain_graphs,  # noqa: F401  fixture
     events_of,
     graph_input,
@@ -660,3 +662,81 @@ class TestCase2FullFlow:
         assert "暂不支持" not in answer_list[-1]
         assert "烟感火警" in answer_list[-1], "答案应来自 mock 的告警 rows 数据"
         assert r2.get("done") is True
+
+
+# ============================================================
+# 9. 能源域：数值单位口径必须进提示词
+# ------------------------------------------------------------
+# Java 侧能源工具只回裸数字（{"electricity":12000,"water":3000}），返回结构里
+# 没有任何单位字段，单位全靠提示词里定死（电→千瓦时、水→吨）。这里断言的是
+# 「口径进了提示词」，不是「LLM 照做了」——后者只有真实模型能验。作用是把口径
+# 锁住：谁把 _ENERGY_UNIT_RULE 从提示词里拿掉，用例立刻红。
+# ============================================================
+ENERGY_UNIT_CASES = [
+    # 用电口径
+    ("overall_energy", '{"code":200,"data":{"electricity":{"annual":12000,"today":320},'
+                       '"water":{"annual":3000,"today":80}}}'),
+    ("electricity_rank", '{"code":200,"rows":[{"area":"A栋","value":500}]}'),
+    ("realtime_electricity", '{"code":200,"rows":[{"timeLabel":"08:00","todayValue":120}]}'),
+    # 用水口径
+    ("water_rank", '{"code":200,"rows":[{"area":"A栋","value":200}]}'),
+    ("realtime_water", '{"code":200,"rows":[{"timeLabel":"08:00","todayValue":30}]}'),
+]
+
+
+@pytest.mark.parametrize("query_type,raw", ENERGY_UNIT_CASES)
+def test_energy_prompt_carries_unit_rule(query_type, raw):
+    """每种能耗查询的提示词里都必须带上「电→千瓦时、水→吨」口径"""
+    mod = get_graph_module("energy_status")
+    llm = FakeLLM()
+    state = {"slots": {"query_type": query_type, "date": TODAY_DATE},
+             "original_query": "今天园区能耗情况怎么样？"}
+
+    run(mod._llm_format_energy_result(llm, query_type, state, raw))
+
+    assert llm.prompts, "应把 MCP 原始返回交给 LLM 组织回答"
+    prompt = llm.prompts[0]
+    assert "千瓦时" in prompt, f"{query_type} 提示词缺电量单位口径（千瓦时）"
+    assert "吨" in prompt, f"{query_type} 提示词缺水量单位口径（吨）"
+    assert raw in prompt, "原始返回应原样带进提示词（口径基于真实数据生效）"
+
+
+@pytest.mark.parametrize("query_type", ["metering_equipment", "device_status"])
+def test_energy_prompt_counts_are_not_energy_amounts(query_type):
+    """
+    计数类查询（表具数量 / 设备在线离线台数）不能被要求带千瓦时/吨——
+    getMeteringEquipment 回的是电表水表**数量**，跟着电量口径写「千瓦时」
+    就是错的。提示词里必须有这条排除说明。
+    """
+    mod = get_graph_module("energy_status")
+    llm = FakeLLM()
+    state = {"slots": {"query_type": query_type, "date": TODAY_DATE},
+             "original_query": "能耗设备有多少？"}
+
+    run(mod._llm_format_energy_result(llm, query_type, state, '{"code":200,"data":{}}'))
+
+    prompt = llm.prompts[0]
+    assert "计数" in prompt and "台" in prompt, (
+        f"{query_type} 提示词没说明计数用「台/个」、不加能耗单位"
+    )
+
+
+def test_energy_graph_wires_unit_rule_end_to_end():
+    """
+    端到端：能源图把带单位口径的提示词交给 LLM，并把 LLM 输出作为 answer 事件返回。
+    （happy path 用例统一 llm=None 走原样返回，这条补上 llm 真实接线的覆盖）
+    """
+    mod = get_graph_module("energy_status")
+    llm = FakeLLM(reply="A栋用电 500 千瓦时领先。")
+    graph = mod.build_energy_status_graph(default_tools("energy_status"), llm=llm)
+
+    final = run(graph.ainvoke(graph_input(
+        {"query_type": "electricity_rank", "date": TODAY_DATE}
+    )))
+
+    assert final.get("error") is None, f"出错: {final.get('error')}"
+    assert answers_of(final) == ["A栋用电 500 千瓦时领先。"], (
+        f"answer 事件应原样采用 LLM 输出: {answers_of(final)}"
+    )
+    assert "千瓦时" in llm.prompts[0], "端到端路径同样要带单位口径"
+    assert final.get("done") is True
