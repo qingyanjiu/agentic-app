@@ -23,7 +23,7 @@ import asyncio
 
 # 新增：人员态势/安防态势/食堂管理/车辆态势/信息发布/能源态势/会议管理意图识别相关导入
 # classify_security_sub_type：安防态势子类型（event_type）判定，供安防 handler 追问/兜底使用
-from agent.intent import classify_intent, classify_security_sub_type, PersonStatusHandler, SecurityStatusHandler, CanteenStatusHandler, VehicleStatusHandler, InformationStatusHandler, EnergyStatusHandler, MeetingStatusHandler, EmergencyFireHandler, EmergencyPerimeterHandler, DeviceStatusHandler, CompositiveOverviewHandler, TwinsInspectionHandler, DeviceQueryHandler
+from agent.intent import is_scene_control_intent, has_strong_scene_cue, classify_intent_with_scene, should_route_scene, classify_intent, classify_security_sub_type, PersonStatusHandler, SecurityStatusHandler, CanteenStatusHandler, VehicleStatusHandler, InformationStatusHandler, EnergyStatusHandler, MeetingStatusHandler, EmergencyFireHandler, EmergencyPerimeterHandler, DeviceStatusHandler, CompositiveOverviewHandler, TwinsInspectionHandler, DeviceQueryHandler
 from graph.person_status_langgraph import build_person_status_graph, load_person_status_tools
 from graph.security_status_langgraph import build_security_status_graph, load_security_tools
 from graph.canteen_status_langgraph import build_canteen_status_graph, load_canteen_tools
@@ -37,6 +37,10 @@ from graph.device_status_langgraph import build_device_status_graph, load_device
 from graph.compositive_overview_langgraph import build_compositive_overview_graph, load_compositive_overview_tools
 from graph.device_query_langgraph import build_device_query_graph, load_device_query_tools
 from graph.twins_inspection_langgraph import build_twins_inspection_graph, load_twins_inspection_tools
+# UE 3D 场景控制：sidecar 的 /mcp/scene 是 direct_client（逐请求注入 X-Session-Id），
+# 不走 langchain_mcp_adapters，由 SceneMcpClient 直连
+from mcp_client.scene_mcp_client import SceneMcpClient
+from graph.scene_control_langgraph import build_scene_control_graph
 from memory.session_state import session_state, IntentState
 # from asr.voice_asr import get_recognizer, VoiceRecognizer
 # from asr.text_corrector import get_corrector, TextCorrector
@@ -118,6 +122,20 @@ async def startup():
     from agent.intent import get_classifier
     await get_classifier()
     logger.info("[startup] 意图识别模型预加载完成")
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    """进程退出时释放场景 MCP 直连的 HTTP 会话（全局单例，不能按连接关闭）"""
+    global _scene_client, _scene_graph
+    if _scene_client is not None:
+        try:
+            await _scene_client.aclose()
+        except Exception:
+            logger.warning("SceneMcpClient 释放失败(忽略)")
+        _scene_client = None
+        _scene_graph = None
+
 
 def _safe_serialize(obj):
     """递归将 BaseMessage 转为 dict（解决WebSocket传输序列化问题）"""
@@ -1188,7 +1206,12 @@ async def get_device_query_graph():
     if _device_query_graph is None:
         tools = await load_device_query_tools()
         # 传入 llm，让 call_tool 节点用 LLM 组织 MCP 返回生成回答
-        _device_query_graph = build_device_query_graph(tools, llm=llm)
+        graph = build_device_query_graph(tools, llm=llm)
+        # 工具没加载到（sidecar 未启动/地址不可达/超时）时不要把空工具图缓存下来，
+        # 否则 sidecar 恢复后进程内仍然一直报「工具未加载」；下次查询会重新加载
+        if tools:
+            _device_query_graph = graph
+        return graph
     return _device_query_graph
 
 
@@ -1535,6 +1558,9 @@ MODULE_RUNNERS = {
     "twins_inspection": run_twins_inspection_graph,
 }
 
+# 业务域模块名（场景控制不在其中，走独立通道）
+BUSINESS_MODULES = tuple(MODULE_HANDLERS)
+
 
 async def start_module_flow(websocket, query: str, module: str, user_id: str, session_id,
                             slots: dict = None, original_query: str = None) -> None:
@@ -1566,6 +1592,149 @@ async def start_module_flow(websocket, query: str, module: str, user_id: str, se
     session_state.set(user_id, session_id, state)
 
     await MODULE_RUNNERS[module](websocket, state, user_id, session_id)
+
+
+# ============================================================
+# UE 3D 场景控制（MCP sidecar /mcp/scene）
+# ------------------------------------------------------------
+# 链路：前端 WS hello 声明 scene session → 聊天请求 payload 带上该 id
+#       → app.py 取出 → SceneMcpClient 以 X-Session-Id 头逐请求调用
+#       → sidecar 通过自己的 WS 把动作帧推给对应场景页面。
+# 红线：X-Session-Id 只能来自前端/会话状态，绝不能让 LLM 生成或补全。
+# ============================================================
+_scene_client = None
+_scene_graph = None
+
+
+def _extract_scene_session_id(payload: dict) -> Optional[str]:
+    """从前端 payload 里取场景页面会话 id（即业务路由头 X-Session-Id 的值）。
+
+    前端字段命名未完全统一，这里兼容常见几种驼峰/下划线写法；
+    取不到返回 None，sidecar 会走单场景会话兜底。
+    """
+    for key in (
+        "scene_session_id", "sceneSessionId", "sceneId", "scene_id",
+        "X-Session-Id", "x_session_id",
+    ):
+        value = payload.get(key)
+        if value:
+            return str(value)
+    return None
+
+
+_scene_url_cache = None
+
+
+def _scene_mcp_url() -> str:
+    """场景服务地址：优先环境变量，其次 mcp_server_config.yaml 的 scene 条目
+
+    结果缓存：场景控制现在参与每轮意图分流，避免每条消息都读一遍 yaml。
+    没配置时返回空串，分流逻辑据此关闭场景自动识别。
+    """
+    global _scene_url_cache
+    if _scene_url_cache is not None:
+        return _scene_url_cache
+    url = os.getenv("SCENE_MCP_URL")
+    if not url:
+        try:
+            from mcp_client.mcp_loader import load_mcp_config
+            conf = load_mcp_config(os.path.join(BASE_DIR, "mcp_client", "mcp_server_config.yaml"))
+            url = ((conf.get("scene") or {}).get("url")) or ""
+        except Exception as e:
+            logger.warning(f"读取 scene MCP 配置失败(仅场景控制不可用): {e}")
+            url = ""
+    _scene_url_cache = url
+    return url
+
+
+async def get_scene_graph():
+    """懒加载场景控制图（懒握手：sidecar 未就绪不影响服务启动）"""
+    global _scene_graph, _scene_client
+    if _scene_graph is None:
+        url = _scene_mcp_url()
+        if not url:
+            logger.warning("未配置 scene MCP 地址，场景控制不可用")
+            return None
+        _scene_client = SceneMcpClient(url)
+        _scene_graph = build_scene_control_graph(_scene_client, llm=llm)
+        logger.info(f"SceneControlGraph创建成功: {url}")
+    return _scene_graph
+
+
+async def run_scene_control_graph(websocket, query: str, user_id: str, session_id,
+                                  scene_session_id: Optional[str] = None) -> None:
+    """
+    执行一轮 UE 场景控制。
+
+    :param query: 本轮要规划的话术（追问轮由调用方把上一轮原话拼进来）
+    :param scene_session_id: 前端声明的场景页面会话，逐请求注入 X-Session-Id
+    """
+    graph = await get_scene_graph()
+    if graph is None:
+        await websocket.send_text(json.dumps({
+            "event": "custom",
+            "data": {"type": "error", "content": "场景服务未配置或不可用，请稍后重试。"},
+        }, ensure_ascii=False))
+        await websocket.send_text(json.dumps({
+            "event": "custom", "data": {"type": "done"},
+        }, ensure_ascii=False))
+        return
+
+    # 追问态：继承上一轮的首问原话（拼接串回写会滚雪球）和追问次数
+    prev = session_state.get(user_id, session_id)
+    ask_count = 0
+    persist_query = query
+    last_question = ""
+    if prev is not None and prev.module == "scene_control" and not prev.done:
+        ask_count = prev.ask_count
+        persist_query = prev.original_query or query
+        last_question = prev.last_question
+        if not scene_session_id:
+            scene_session_id = (prev.slots or {}).get("scene_session_id")
+
+    graph_input = {
+        "slots": {"scene_session_id": scene_session_id} if scene_session_id else {},
+        "missing_params": [],
+        "ask_count": ask_count,
+        "unrelated_count": 0,
+        "last_question": last_question,
+        "original_query": query,
+        "answer": None,
+        "error": None,
+        "done": False,
+        "events": [],
+        "scene_session_id": scene_session_id,
+        "scene_state_text": None,
+        "plan": None,
+        "tool_result": None,
+    }
+    print(f"[SCENE GRAPH INPUT] user={user_id}, session={session_id}, scene_session={scene_session_id}")
+    print(json.dumps(graph_input, ensure_ascii=False, default=str))
+
+    final_state = await graph.ainvoke(graph_input)
+
+    print(f"[SCENE GRAPH OUTPUT] user={user_id}, session={session_id}")
+    print(json.dumps(final_state, ensure_ascii=False, default=str))
+
+    # 发事件；出现 ask 说明在追问，保留状态等用户补充，否则标记 done 留作上下文
+    keep_state = False
+    for chunk in final_state.get("events", []):
+        text = _safe_serialize(chunk)
+        await websocket.send_text(json.dumps(text, ensure_ascii=False))
+        if chunk.get("event") == "custom" and chunk.get("data", {}).get("type") == "ask":
+            keep_state = True
+
+    new_state = IntentState(
+        module="scene_control",
+        slots={"scene_session_id": scene_session_id} if scene_session_id else {},
+        missing_params=[],
+        ask_count=final_state.get("ask_count") or 0,
+        unrelated_count=0,
+        last_question=final_state.get("last_question") or "",
+        original_query=persist_query,
+        done=not keep_state,
+    )
+    session_state.set(user_id, session_id, new_state)
 
 
 # 上传图片接口
@@ -1668,6 +1837,91 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
                 continue
 
             # ============================================================
+            # UE 3D 场景控制（MCP sidecar /mcp/scene）
+            # 场景指令和业务查询共用同一个聊天入口，自动识别（先于业务状态机）：
+            #   ① payload.mode == "scene"：显式模式，保留给前端/脚本强制走场景；
+            #   ② 上一轮场景指令正在等参数（追问态）；
+            #   ③ 本轮同时判业务意图与场景意图，命中场景就分流：
+            #      · 业务意图为 other → 直接走场景；
+            #      · 业务域也命中时，只有出现明确场景操作词、或场景分比业务分
+            #        高出 SCENE_ROUTE_MARGIN 才走场景，避免「摄像头在线率」
+            #        「各防区告警统计」这类问法被场景通道抢走；
+            #   ④ 未配置 scene.url 时自动识别自动关闭，只保留显式 mode=scene。
+            # ============================================================
+            scene_session_id = _extract_scene_session_id(payload)
+            scene_prev = session_state.get(user_id, session_id)
+            # 同一场景页面的会话在 300s 内稳定：payload 没带时沿用上轮记录的
+            if not scene_session_id and scene_prev and scene_prev.module == "scene_control":
+                scene_session_id = (scene_prev.slots or {}).get("scene_session_id")
+            scene_waiting = bool(
+                scene_prev and scene_prev.module == "scene_control" and not scene_prev.done
+            )
+            route_to_scene = False
+            scene_query = query
+            # 自动识别时顺带算出的业务意图，供下面复用，避免重复编码
+            precomputed_top_intent = None
+
+            if query and payload.get("mode") == "scene":
+                route_to_scene = True
+            elif query and scene_waiting:
+                # 追问轮：拼上一轮首问原话再判意图，避免单看参数值（如「3 楼」）判不出来
+                merged_query = f"{scene_prev.original_query} {query}"
+                try:
+                    route_to_scene = await is_scene_control_intent(merged_query)
+                except Exception as e:
+                    logging.warning(f"[场景分流] 意图判定失败，维持追问: {e}")
+                    route_to_scene = True  # 判定失败时仍按追问处理，由场景图兜底
+
+                if not route_to_scene and len(query) <= 12:
+                    # 短回答（「3楼」「A-01」「第二个」）大概率是在补参数：
+                    # 只要没明确落到别的业务域，就继续交给场景图（它内部会再确认）
+                    try:
+                        other_intent = (await classify_intent(query))["intent"]
+                    except Exception:
+                        other_intent = "other"
+                    route_to_scene = other_intent not in MODULE_HANDLERS
+
+                if route_to_scene:
+                    scene_query = merged_query
+                else:
+                    # 用户跑题去问别的业务域了：放弃场景追问，交回主流程
+                    session_state.clear(user_id, session_id)
+            elif query:
+                # 无显式模式/无场景追问：业务查询与场景指令混在一起，自动分流
+                business_waiting = bool(
+                    scene_prev and not scene_prev.done
+                    and scene_prev.module in BUSINESS_MODULES
+                )
+                intent_info = None
+                try:
+                    intent_info = await classify_intent_with_scene(query)
+                except Exception as e:
+                    logging.warning(f"[场景分流] 意图判定失败，按业务问答处理: {e}")
+
+                if intent_info is not None:
+                    precomputed_top_intent = intent_info["intent"]
+                    scene_available = bool(_scene_mcp_url())
+                    if should_route_scene(intent_info, query) and scene_available:
+                        # 业务追问中的简短补参（「3楼」「A-01」）不被场景截胡，
+                        # 除非本轮是明确的场景操作（切到3楼/重置视角…）
+                        if business_waiting and len(query.strip()) <= 6 \
+                                and not has_strong_scene_cue(query):
+                            route_to_scene = False
+                        else:
+                            route_to_scene = True
+                    logging.info(
+                        f"[场景分流] query={query}, business={intent_info['intent']}"
+                        f"({intent_info['score']:.4f}), scene={intent_info['scene_score']:.4f},"
+                        f" matched={intent_info['scene_matched']}, route={route_to_scene}"
+                    )
+
+            if route_to_scene:
+                await run_scene_control_graph(
+                    websocket, scene_query, user_id, session_id, scene_session_id
+                )
+                continue
+
+            # ============================================================
             # 人员态势 / 安防态势 MVP 分支
             # 先判断是否有正在进行的追问状态
             # 再判断是否为新的人员/安防态势意图
@@ -1681,13 +1935,16 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
             #              → 不进追问分支，仅在情况 1.5 里充当省略式追问的上下文
             is_waiting = bool(
                 active_state and not active_state.done
-                and active_state.module in ("person_status", "security_status", "canteen_status", "vehicle_status", "information_status", "energy_status", "meeting_status", "emergency_fire", "emergency_perimeter", "device_status", "compositive_overview", "twins_inspection", "device_query")
+                and active_state.module in BUSINESS_MODULES
             )
 
             # 预计算顶层意图（人员态势 / 安防态势 / 食堂管理 / 车辆态势 / 信息发布 / 能源态势 / 会议管理 / 消防态势 / other），只算一次
-            # 有进行中任务时不调用模型，避免追问轮重复编码
+            # 有进行中任务时不调用模型，避免追问轮重复编码；
+            # 场景分流时已经算过业务意图的话直接复用，不重复 encode
             if is_waiting:
                 top_intent = None
+            elif precomputed_top_intent is not None:
+                top_intent = precomputed_top_intent
             else:
                 top_intent = (await classify_intent(query))["intent"]
 

@@ -67,3 +67,51 @@ async def get_mcp_tools(yaml_path: str) -> list:
         tools.extend(result)
 
     return tools
+
+
+async def get_mcp_tools_for_server(
+    yaml_path: str,
+    server_name: str,
+    timeout: float = 15.0,
+) -> list:
+    """只连接 YAML 里指定的一个 server 并返回它的工具列表。
+
+    单个业务域（如设备查询）只需要自己的端点时用它：
+    - 不会被其它 server 的连接/超时拖垮（get_mcp_tools 是全部加载后
+      统一 wait_for，任何一个慢端点都会让整个结果超时、本域工具为空）；
+    - 失败时能打出具体是哪个 URL，便于定位 sidecar 地址/网络问题。
+
+    :param yaml_path: MCP 配置文件
+    :param server_name: `mcp_servers` 下的 key
+    :param timeout: 连接 + tools/list 的总超时
+    :return: 工具列表；配置缺失/直连条目/失败/超时都返回 []
+    """
+    mcp_dict = load_mcp_config(yaml_path)
+    conf = mcp_dict.get(server_name)
+    if not isinstance(conf, dict):
+        logger.error(f"MCP 配置中不存在 server [{server_name}]：{yaml_path}")
+        return []
+    if conf.get("direct_client"):
+        logger.warning(f"MCP server [{server_name}] 由专属直连客户端接管，跳过")
+        return []
+
+    try:
+        tools = await asyncio.wait_for(
+            _load_server_tools(server_name, conf),
+            timeout=timeout,
+        )
+    except asyncio.TimeoutError:
+        logger.error(
+            f"MCP server [{server_name}] 工具加载超时（>{timeout}s）："
+            f"{conf.get('url')}，请检查 sidecar 是否启动、地址是否可达"
+        )
+        return []
+    except Exception as e:
+        logger.error(
+            f"MCP server [{server_name}] 工具加载失败：{conf.get('url')}: {e}",
+            exc_info=True,
+        )
+        return []
+
+    logger.info(f"MCP server [{server_name}] 加载到 {len(tools)} 个工具")
+    return tools

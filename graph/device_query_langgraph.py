@@ -1,15 +1,19 @@
-import asyncio
 import json
 import logging
+import re
 import traceback
 from typing import Annotated, Any, Optional, TypedDict
 
 from langgraph.graph import StateGraph, END
 
-from mcp_client.mcp_loader import get_mcp_tools
+from mcp_client.mcp_loader import get_mcp_tools_for_server
 
 # syncSource 码到中文名的权威映射（只用于拼 LLM 提示语，下发给 Java 的仍是码本身）
-from agent.intent.slots import DEVICE_TYPE_DICT, format_query_time
+from agent.intent.slots import (
+    DEVICE_TYPE_DICT,
+    format_query_time,
+    normalize_area_text,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +109,37 @@ def _rows_of(raw_text: str) -> list:
     return _iter_rows(data)
 
 
+def _area_matches(space_name: Any, area: str) -> bool:
+    """
+    判断设备的 spaceName 是否属于用户说的位置。
+
+    系统里楼层写作「1F/3F」，用户说的是「1楼/一楼/3楼」，
+    两边都归一化成「数字+f」再比（见 normalize_area_text）。
+    spaceName 常是「园区/A栋/3F」这种带分隔符的路径，比较前把
+    `/ - _` 和空格去掉，避免「A栋3楼」匹配不上「园区/A栋/3楼」。
+    数字两侧要求不是数字，避免「1f」误匹配「11F/21F」。
+    """
+    target = _area_key(area)
+    if not target:
+        return True
+    source = _area_key(space_name)
+    pattern = r"(?<![0-9])" + re.escape(target) + r"(?![0-9])"
+    return re.search(pattern, source) is not None
+
+
+_COMPARE_STRIP_RE = re.compile(r"[\s/\-_]+")
+
+
+def _area_key(text: Any) -> str:
+    """位置名归一化后去掉路径分隔符，用于包含匹配"""
+    return _COMPARE_STRIP_RE.sub("", normalize_area_text(text))
+
+
+def _filter_rows_by_area(rows: list, area: str) -> list:
+    """按 spaceName 本地过滤设备行（后端列表接口只认 spaceId，位置名传不下去）"""
+    return [r for r in rows if _area_matches(r.get("spaceName"), area)]
+
+
 def _pick_device(rows: list, keyword: str) -> tuple:
     """
     从列表返回里挑出用户要的那台设备
@@ -190,10 +225,14 @@ def _device_type_label(device_type: str) -> str:
 
 
 async def _llm_format_device_query_result(
-    llm: Any, query_type: str, state: dict, raw_text: str
+    llm: Any, query_type: str, state: dict, raw_text: str,
+    area_filtered: bool = False,
 ) -> str:
     """
     根据 query_type 让 LLM 分析 MCP 工具返回，生成对应的中文回答。
+
+    area_filtered=True 表示 Python 侧已经按位置过滤过（1楼==1F），
+    提示词里不能再让 LLM 按字面量二次过滤，否则「1楼」会把「1F」全丢掉。
 
     任何异常（LLM 未配置 / 调用失败 / 返回为空）都降级为原样返回，
     保证流程不断。
@@ -225,10 +264,18 @@ async def _llm_format_device_query_result(
         # 位置筛选后端只认 spaceId，这里是按位置名在返回结果里本地过滤
         area_rule = ""
         if query_type == "device_list" and slots.get("area"):
-            area_rule = (
-                f"4. 只保留 spaceName 里包含「{slots['area']}」的设备，"
-                "其余全部丢弃；一台都没匹配上就如实说这个位置没查到设备；\n"
-            )
+            if area_filtered:
+                area_rule = (
+                    f"4. 数据已按位置「{slots['area']}」在本地过滤过"
+                    "（系统里楼层写作 1F/3F，与「1楼/3楼」等价），"
+                    "直接列出即可，不要再按位置字符串筛选；\n"
+                )
+            else:
+                area_rule = (
+                    f"4. 只保留 spaceName 里包含「{slots['area']}」的设备，"
+                    "注意系统里的楼层写作 1F/3F（与「1楼/3楼」等价），"
+                    "其余全部丢弃；一台都没匹配上就如实说这个位置没查到设备；\n"
+                )
 
         # 用户报的是名称/编号时，列表口径下也再确认一遍关键字
         keyword_rule = ""
@@ -525,9 +572,26 @@ def make_call_tool_node(tools: dict, llm=None):
                     # 位置名下发不了（只认 spaceId），拿回来按 spaceName 本地过滤：
                     # listDeviceOnly 不分页，本来就是全量，不需要额外放大页码
                     raw_text = await _call(java_tool_name, {"syncSource": device_type})
+                    rows = _rows_of(raw_text)
+
+                # 先拿全量，再按位置在 Python 侧过滤（系统里「1楼」写作「1F」，
+                # 交给 LLM 按字面量筛会全部落空）
+                area_filtered = False
+                if area and rows:
+                    matched = _filter_rows_by_area(rows, area)
+                    logger.info(
+                        f"[device_query] 位置过滤 area={area}，"
+                        f"匹配 {len(matched)}/{len(rows)} 台"
+                    )
+                    if not matched:
+                        return _answer(
+                            f"没有查到：位置「{area}」没有匹配的设备。"
+                        )
+                    raw_text = json.dumps(matched, ensure_ascii=False)
+                    area_filtered = True
 
                 answer_text = await _llm_format_device_query_result(
-                    llm, query_type, state, raw_text
+                    llm, query_type, state, raw_text, area_filtered=area_filtered
                 )
                 return _answer(answer_text)
 
@@ -560,11 +624,13 @@ def make_call_tool_node(tools: dict, llm=None):
         except Exception as e:
             tb = traceback.format_exc()
             logger.error(f"调用设备查询工具失败: {e}\n{tb}")
+            # 发给前端的只放简短原因，traceback 只进日志，避免把内部堆栈暴露给用户
+            user_message = f"查询失败: {str(e)}"
             return {
-                "error": f"查询失败: {str(e)}\n{tb}",
+                "error": f"{user_message}\n{tb}",
                 "events": [{
                     "event": "custom",
-                    "data": {"type": "error", "content": f"查询失败: {str(e)}\n{tb}"},
+                    "data": {"type": "error", "content": user_message},
                 }],
             }
 
@@ -638,24 +704,25 @@ async def load_device_query_tools() -> dict:
     """
     从 MCP 配置加载设备查询工具，并以工具名为 key 返回
     （详情查询要先拿列表把名称/编号换算成内部 id，所以列表工具也要一起加载）
-    类级缓存由调用方维护
+
+    只加载 `devicequery` 这一个 server：设备查询只需要 /mcp/devicequery，
+    不跟着其它业务端点一起等（之前整份配置一起加载，任一 server 慢/不可达
+    都会让 15s 总超时生效，本域工具直接变空，报「工具未加载」）。
+    类级缓存由调用方维护。
     """
     java_tool_names = set(_JAVA_TOOL_MAP.values()) | {_RESOLVE_TOOL}
 
-    try:
-        tools = await asyncio.wait_for(
-            get_mcp_tools("mcp_client/mcp_server_config.yaml"),
-            timeout=15.0,
-        )
-    except asyncio.TimeoutError:
-        logger.error("加载 MCP 设备查询工具超时")
-        return {}
-    except Exception as e:
-        logger.error(f"加载 MCP 设备查询工具失败: {e}", exc_info=True)
-        return {}
+    tools = await get_mcp_tools_for_server(
+        "mcp_client/mcp_server_config.yaml",
+        "devicequery",
+        timeout=15.0,
+    )
 
     filtered = [t for t in tools if t.name in java_tool_names]
     if not filtered:
-        logger.warning(f"未找到任何设备查询 MCP 工具，期望 {java_tool_names}")
+        logger.warning(
+            f"未找到任何设备查询 MCP 工具，期望 {sorted(java_tool_names)}，"
+            f"实际返回 {sorted(t.name for t in tools)}"
+        )
 
     return {t.name: t for t in filtered}

@@ -10,6 +10,7 @@ import pytest
 
 from agent.intent.slots import (
     parse_time_slot,
+    normalize_area_text,
     extract_person_status_slots,
     extract_security_status_slots,
     extract_canteen_status_slots,
@@ -517,3 +518,23 @@ class TestTimeSlot:
         slots = parse_time_slot("实时告警")
         assert slots["time_type"] == "span"
         assert slots["raw"] == "今天"
+
+
+# ============================================================
+# 位置名楼层归一化（设备 spaceName 里写作 1F，用户口语是 1楼）
+# ============================================================
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("1楼", "1f"),
+        ("一楼", "1f"),
+        ("1层", "1f"),
+        ("1F", "1f"),
+        ("A栋3楼", "a栋3f"),
+        ("园区/A栋/三楼", "园区/a栋/3f"),
+        ("食堂", "食堂"),
+        ("", ""),
+    ],
+)
+def test_normalize_area_text(text, expected):
+    assert normalize_area_text(text) == expected

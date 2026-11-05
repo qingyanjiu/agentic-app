@@ -41,6 +41,138 @@ DEVICE_STATUS_THRESHOLD = 0.65
 COMPOSITIVE_OVERVIEW_STATUS_THRESHOLD = 0.65
 DEVICE_QUERY_THRESHOLD = 0.65
 TWINS_INSPECTION_STATUS_THRESHOLD = 0.65
+# 场景控制靠"前端声明了 scene session"做门禁，阈值可略低于业务域
+SCENE_CONTROL_THRESHOLD = 0.60
+
+# ============================================================
+# 场景控制 vs 业务查询 分流策略
+# ------------------------------------------------------------
+# 场景指令和业务查询混在同一个聊天入口里，必须自动识别：
+#   1. 业务意图没命中（other）→ 场景命中就走场景；
+#   2. 业务域也命中时，只有出现明确的场景操作词，或场景分明显高于
+#      业务分（>= 业务分 + SCENE_ROUTE_MARGIN），才分流给场景；
+#   3. 否则维持业务查询，避免「摄像头在线率」「各防区告警统计」
+#      这类问法被场景通道抢走；
+#   4. 业务查询句式优先（2026-11-04 口径）：
+#      「查询/查看 xx 情况、xx 数据、xx 统计」以及问句一律归业务；
+#      「查看 xx 设备 / 查看 xx」「转到 / 切到 / 换成 / 换到」归场景交互。
+#      问法必须交回业务侧 —— 场景图里只有动作工具，数据问法进去只能被
+#      规划成"显示点位"（2026-11-04 线上案例）。
+# ============================================================
+SCENE_ROUTE_MARGIN = 0.05
+
+# 明确的场景操作词：命中即可盖过较弱的业务域命中
+_SCENE_STRONG_CUES = re.compile(
+    r"场景|视角|弹窗|融合|聚焦|镜头|"
+    r"(切到|切换到|转到|换到|换成|回到|返回).{0,4}(楼|层|B1|负一)|"
+    r"(重置|复位).{0,3}(视角|画面)|"
+    r"(清场|全部关掉|都关掉|回到初始)|"
+    r"(显示|展示|打开|调出|隐藏|关掉|关闭).{0,6}(点位|标记)|"
+    r"(显示|展示|打开|调出).{0,6}(轨迹|路线|位置|总览)|"
+    r"(显示|展示|打开|调出).{0,8}(会议室|食堂|巡检|防区)|"
+    r"(查看|打开|调出|看|看下|显示|展示).{0,4}(监控|摄像头|画面).{0,4}"
+    r"[A-Za-z0-9][A-Za-z0-9_\-]{2,}|"
+    r"(显示|展示|打开|调出|查看|看|看下).{0,4}(这个|这台|该).{0,6}(摄像头|监控|画面|设备)|"
+    r"(显示|展示|打开|调出|查看|看|看下).{0,6}"
+    r"([0-9一二三四五六七八九十]+楼|B1|负一|[A-Za-z][A-Za-z0-9_\-]{2,}).{0,6}(摄像头|监控|画面)|"
+    r"(改成|切换成|调成|换成).{0,4}(白天|傍晚|夜晚|晴天|下雨|下雪|多云|阴天)"
+)
+
+
+# 明确的数据/查询词：出现即说明用户在问数据，不是要改场景。
+# 2026-11-04 口径：查询/查看 xx 情况、xx 数据、xx 统计 → 一律业务。
+_DATA_QUERY_CUES = re.compile(
+    r"数据|统计|数量|多少|在线率|占比|排名|趋势|报表|明细|清单|列表|"
+    r"情况|记录|日志|台账"
+)
+
+# 问句：用户在问信息，不是下令改场景 → 业务
+_QUESTION_CUES = re.compile(
+    r"[？?]|吗|呢|什么|怎么|怎样|如何|哪些|哪个|哪里|哪儿|在哪|是否|有没有|"
+    r"为什么|多少|几楼|第几|几[场条次位点台间]|多久|多大|多远|没有|没$"
+)
+
+# 场景状态类问句例外（「场景在第几层」「当前楼层是几楼」问的就是场景自身）
+_SCENE_STATE_QUERY = re.compile(
+    r"(场景|视角|镜头|楼层).{0,8}(状态|第几|几楼|哪一?层|什么情况)|"
+    r"第几层|当前楼层"
+)
+
+# 「查询/查看 + 数据词」：即使句子里同时有场景动作，也按业务数据处理
+# （「显示三楼的监控数据」没有查询/查看动词，仍走场景展示）
+_QUERY_VERB_DATA = re.compile(
+    r"(查询|查看|查一下|查下).{0,10}"
+    r"(数据|统计|情况|在线率|数量|多少|占比|排名|趋势|报表|明细|清单|列表|记录|日志|台账)"
+)
+
+# 「查看/看 + 对象」：场景展示口径（数据/问句由 is_business_query 先否决）
+_SCENE_VIEW_CUES = re.compile(
+    r"(查看|看|看下|看一下).{0,4}"
+    r"(设备|摄像头|监控|画面|点位|标记|弹窗|场景|会议室|食堂|防区|巡检|轨迹|路线|总览)"
+)
+
+
+def has_strong_scene_cue(query: str) -> bool:
+    """本轮是否带明确的场景操作词（「切到3楼」「重置视角」「场景里…」）"""
+    return bool(_SCENE_STRONG_CUES.search(query or ""))
+
+
+def is_business_query(query: str) -> bool:
+    """是否属于业务查询（问数据/问信息），而不是场景交互。
+
+    2026-11-04 用户口径：
+    - 「查询/查看 + 情况/数据/统计…」→ 业务；
+    - 问句（吗/呢/？/什么/多少/哪些/第几…）→ 业务；
+    - 「显示/切到/打开/换到…」这类明确场景动作优先于问句
+      （「能显示三楼的摄像头吗？」仍按场景处理），但「查询/查看 + 数据词」
+      会把它压回业务；
+    - 「查看 xx 设备 / 查看监控画面」等查看场景对象的句子归场景，
+      但带问句语气（「查看设备吗」）时仍归业务；
+    - 问场景自身状态的句子（「场景在第几层」）不算业务。
+    """
+    text = query or ""
+    if _SCENE_STATE_QUERY.search(text):
+        return False
+    # 「查询/查看 + 数据词」最高优先级，压过一切场景动作
+    if _QUERY_VERB_DATA.search(text):
+        return True
+    # 明确场景动作优先于问句（用户常给指令也带问号）
+    if _SCENE_STRONG_CUES.search(text):
+        return False
+    # 查看场景对象：无问句语气 → 场景；带问句语气 → 业务
+    if _SCENE_VIEW_CUES.search(text):
+        return bool(_QUESTION_CUES.search(text))
+    return bool(_DATA_QUERY_CUES.search(text) or _QUESTION_CUES.search(text))
+
+
+def should_route_scene(info: dict, query: str) -> bool:
+    """判断本轮是否分流给 UE 场景控制（纯函数，便于单测）。
+
+    优先级：场景状态问句 > 业务查询句式 > 明确场景动作 > 场景意图分。
+
+    :param info: classify_top_intent_with_scene() 的返回值
+    :param query: 用户本轮原话
+    """
+    if not info:
+        return False
+
+    text = query or ""
+    # 问场景自身状态（「场景在第几层」「当前楼层是几楼」）仍走场景
+    if _SCENE_STATE_QUERY.search(text):
+        return True
+    # 数据/问句优先交回业务，避免场景分过线就被抢走
+    if is_business_query(text):
+        return False
+    # 明确场景动作 / 查看场景对象 → 场景（不要求场景分过阈值）
+    if _SCENE_STRONG_CUES.search(text) or _SCENE_VIEW_CUES.search(text):
+        return True
+    if not info.get("scene_matched"):
+        return False
+    if (info.get("intent") or "other") == "other":
+        return True
+    return float(info.get("scene_score", 0.0)) >= (
+        float(info.get("score", 0.0)) + SCENE_ROUTE_MARGIN
+    )
 
 
 # ============================================================
@@ -3028,6 +3160,15 @@ DEVICE_QUERY_EXAMPLES = {
         "查下B栋的设备",
         "A栋的设备列表看一下",
         "帮我查查A栋有什么设备",
+        # 2026-11-04：「查询一楼监控数据」域分 0.6407<0.65 掉 other，
+        # scene_score 0.6309 被场景通道抢走（误下发 scene_show_device_category）。
+        # 补楼层+监控+数据口径的台账变体，把域中心拉回设备查询。
+        "查询一楼监控数据",
+        "一楼的监控数据",
+        "一楼监控数据",
+        "查询一楼的监控数据",
+        "一楼的监控设备数据",
+        "统计一楼监控数据",
     ],
 
     # 设备详情（device_detail）
@@ -3069,6 +3210,83 @@ DEVICE_QUERY_EXAMPLES = {
         "查一下道闸设备的详细信息",
     ],
 }
+
+
+# ============================================================
+# UE 3D 场景控制意图语料（scene_control）
+# ------------------------------------------------------------
+# 用途：判断用户这句话是不是「操作 3D 场景页面」的指令，供 app.py 在
+#      **前端已声明场景会话（scene_session_id）** 时分流到场景图。
+#
+# 与其他域的关系：
+#   1. 本意图**不进入 classify_top_intent**，不参与多意图竞争——
+#      场景控制是"前端在场景页里说话"的专用通道，靠 scene session 为门禁，
+#      避免「打开监控」「3 楼」这类词把正常态势查询抢走；
+#   2. is_action_query 的操作类拦截规则对场景指令不适用（场景指令本身就是操作）。
+# ============================================================
+SCENE_CONTROL_EXAMPLES = [
+    # 楼层/视角
+    "切换到3楼",
+    "切到三楼看看",
+    "看下B1层",
+    "去五楼",
+    "回到整栋楼视角",
+    "切换到整栋楼",
+    "重置视角",
+    "把视角复位",
+    "恢复上一个视角",
+    "退回刚才那个视角",
+    "关闭详情弹窗",
+    "把弹窗关掉",
+    "清空场景",
+    "把刚才打开的都关掉",
+    "回到初始状态",
+    # 楼层上的业务对象展示
+    "显示3楼的摄像头",
+    "把三楼的监控调出来",
+    "看一下A栋的访客轨迹",
+    "显示访客轨迹",
+    "看下巡检路线",
+    "展示巡检点位",
+    "把巡检任务显示在场景里",
+    "显示三楼会议室",
+    "看下食堂在场景里的位置",
+    "展示周界防区总览",
+    "显示所有烟感点位",
+    "显示门禁点位",
+    "把点位都显示出来",
+    # 具体对象操作
+    "看CY-HIK-JK-001的监控",
+    "查看监控 jk_zl_1f_0000",
+    "查看监控CY-HIK-JK-001",
+    "看下监控 jk_zl_1f_0000",
+    "打开监控 1F-咖啡厅向西",
+    "调出摄像头 jk_zl_1f_0000 的画面",
+    "打开这个摄像头的画面",
+    "聚焦到这台设备",
+    "把镜头拉近一点",
+    "显示这个点位",
+    "隐藏这个标记",
+    "把这个对象藏起来",
+    "把设备融合到场景里",
+    "做虚实融合",
+    # 环境效果
+    "改成傍晚",
+    "让场景下雨",
+    "切换成晴天",
+    "把场景调成夜间",
+    "场景里下点雪",
+    # 防区/巡检任务状态（破坏性）
+    "把A-01防区撤防",
+    "对防区布防",
+    "开始巡检任务A",
+    "暂停巡检",
+    "结束巡检任务",
+    # 场景状态
+    "现在场景在第几层",
+    "当前楼层是几楼",
+    "场景现在是什么状态",
+]
 
 
 # ============================================================
@@ -3316,6 +3534,17 @@ class PersonStatusClassifier:
             center = np.mean(all_inspection, axis=0)
             self.inspection_center = center / np.linalg.norm(center)
 
+        # 15. UE 场景控制整体中心向量（单类型，不做子类型）
+        #     注意：只用于 app.py 在场景会话已声明时的分流判断，
+        #     不参与 classify_top_intent 的多意图竞争。
+        self.scene_control_center = None
+        if SCENE_CONTROL_EXAMPLES:
+            vecs = self.model.encode(
+                SCENE_CONTROL_EXAMPLES, convert_to_numpy=True, normalize_embeddings=True
+            )
+            center = np.mean(vecs, axis=0)
+            self.scene_control_center = center / np.linalg.norm(center)
+
         logger.info("[classifier] 意图识别模型加载完成")
 
     def _encode(self, query: str) -> np.ndarray:
@@ -3444,18 +3673,23 @@ class PersonStatusClassifier:
         logger.info(f"[classifier] query={query}, inspection_score={score:.4f}")
         return score >= threshold, score
 
-    def classify_top_intent(self, query: str) -> tuple:
-        """
-        多意图判定：一次编码，分别算两个意图中心相似度，
-        取最高分；只有最高分超过该意图阈值才命中，否则 other
-        """
-        # 操作类话术前置拦截：命中即判 other，不做向量计算
-        # （「帮我预定会议室」「把告警处理掉」等口径见 _ACTION_BLOCK_PATTERNS 注释）
-        if is_action_query(query):
-            return "other", 0.0
+    def is_scene_control(self, query: str, threshold: float = SCENE_CONTROL_THRESHOLD) -> tuple:
+        """判断用户输入是否属于 UE 场景控制指令。
 
+        与其它 is_* 不同，本意图不参与 classify_top_intent：app.py 只在前端
+        声明了场景会话（scene_session_id）或 mode=scene 时才调用它，
+        避免「打开监控」「3 楼」这类词把正常的态势查询抢到场景通道。
+        """
+        if self.scene_control_center is None:
+            return False, 0.0
         query_vec = self._encode(query)
-        scores = {
+        score = float(np.dot(query_vec, self.scene_control_center))
+        logger.info(f"[classifier] query={query}, scene_control_score={score:.4f}")
+        return score >= threshold, score
+
+    def _intent_scores(self, query_vec: np.ndarray) -> dict:
+        """一次编码后计算各业务域中心相似度（不含场景控制）"""
+        return {
             "person_status": float(np.dot(query_vec, self.center)),
             "security_status": float(np.dot(query_vec, self.security_center))
             if self.security_center is not None else -1.0,
@@ -3482,6 +3716,9 @@ class PersonStatusClassifier:
             "twins_inspection": float(np.dot(query_vec, self.inspection_center))
             if self.inspection_center is not None else -1.0,
         }
+
+    def _resolve_intent(self, scores: dict) -> tuple:
+        """取最高分并按对应阈值判定；不达阈值返回 other"""
         best = max(scores, key=scores.get)
         best_score = scores[best]
         threshold = {
@@ -3502,6 +3739,50 @@ class PersonStatusClassifier:
         if best_score >= threshold:
             return best, best_score
         return "other", best_score
+
+    def classify_top_intent(self, query: str) -> tuple:
+        """
+        多意图判定：一次编码，分别算两个意图中心相似度，
+        取最高分；只有最高分超过该意图阈值才命中，否则 other
+        """
+        # 操作类话术前置拦截：命中即判 other，不做向量计算
+        # （「帮我预定会议室」「把告警处理掉」等口径见 _ACTION_BLOCK_PATTERNS 注释）
+        if is_action_query(query):
+            return "other", 0.0
+
+        query_vec = self._encode(query)
+        return self._resolve_intent(self._intent_scores(query_vec))
+
+    def classify_top_intent_with_scene(self, query: str) -> dict:
+        """一次编码同时给出业务意图判定与场景控制判定。
+
+        场景控制与业务查询共用同一个聊天入口，需要放在一起比较：
+        返回 {"intent", "score", "scene_matched", "scene_score", "action_blocked"}，
+        由 app.py 的 should_route_scene() 决定最终分流。
+        """
+        action_blocked = is_action_query(query)
+        query_vec = self._encode(query)
+        if action_blocked:
+            # 动作话术被业务域拦截 → 业务侧按 other 处理，但场景指令仍需判定
+            intent, score = "other", 0.0
+        else:
+            intent, score = self._resolve_intent(self._intent_scores(query_vec))
+
+        scene_score = -1.0
+        if self.scene_control_center is not None:
+            scene_score = float(np.dot(query_vec, self.scene_control_center))
+        info = {
+            "intent": intent,
+            "score": score,
+            "scene_score": scene_score,
+            "scene_matched": scene_score >= SCENE_CONTROL_THRESHOLD,
+            "action_blocked": action_blocked,
+        }
+        logger.info(
+            f"[classifier] query={query}, intent={intent}, score={score:.4f}, "
+            f"scene_score={scene_score:.4f}, scene_matched={info['scene_matched']}"
+        )
+        return info
 
 
     def classify_security_sub_type(self, query: str) -> tuple:
@@ -3713,6 +3994,33 @@ async def classify_intent(query: str) -> dict:
         "intent": intent,
         "score": score
     }
+
+
+async def classify_intent_with_scene(query: str) -> dict:
+    """
+    统一意图识别入口（业务域 + 场景控制一起判）。
+
+    场景控制与业务查询共用一个聊天入口，app.py 用它做自动分流：
+    一次编码同时得到业务意图和场景控制分。
+
+    :return: {"intent": str, "score": float, "scene_matched": bool,
+              "scene_score": float, "action_blocked": bool}
+    """
+    classifier = await get_classifier()
+
+    loop = asyncio.get_event_loop()
+    info = await loop.run_in_executor(
+        None,
+        classifier.classify_top_intent_with_scene,
+        query
+    )
+
+    logger.info(
+        f"[classify_intent_with_scene] query={query}, intent={info['intent']}, "
+        f"score={info['score']:.4f}, scene_score={info['scene_score']:.4f}, "
+        f"scene_matched={info['scene_matched']}"
+    )
+    return info
 
 
 async def classify_sub_type(query: str) -> tuple:
@@ -3934,3 +4242,21 @@ async def classify_inspection_sub_type(query: str) -> tuple:
         classifier.classify_inspection_sub_type,
         query
     )
+
+
+async def is_scene_control_intent(query: str) -> bool:
+    """
+    异步判断用户输入是否属于 UE 场景控制指令。
+
+    供 app.py 在「前端已声明场景会话（scene_session_id）」时做分流；
+    该意图不参与 classify_intent / classify_top_intent。
+    """
+    classifier = await get_classifier()
+
+    loop = asyncio.get_event_loop()
+    matched, _score = await loop.run_in_executor(
+        None,
+        classifier.is_scene_control,
+        query
+    )
+    return matched

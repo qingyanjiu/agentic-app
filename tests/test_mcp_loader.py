@@ -160,3 +160,71 @@ class TestDomainToolLoading:
 
     # 说明：15s 加载超时由 asyncio.wait_for（标准库）保证，返回 {} 分支
     # 与 test_load_error_returns_empty_dict 相同，不重复用例（避免用例本身等 15s）。
+
+
+# ============================================================
+# 4. 单 server 定向加载：get_mcp_tools_for_server
+#    2026-11-04 线上：设备查询 15s 超时后报「device_query:listDeviceOnly 工具未加载」。
+#    根因是 get_mcp_tools 把全部 server 一起加载后统一 wait_for，
+#    任一 server 慢/不可达就整组超时；设备查询只需要 /mcp/devicequery。
+# ============================================================
+class TestPerServerLoading:
+    PATH = "mcp_client/mcp_server_config.yaml"
+
+    def test_loads_only_named_server(self, monkeypatch):
+        """只连接指定的 server，不碰其它端点"""
+        calls = []
+
+        async def fake_load(name, conf):
+            calls.append(name)
+            return _person_tools() if name == "local" else []
+
+        monkeypatch.setattr(mcp_loader, "_load_server_tools", fake_load)
+        tools = run(mcp_loader.get_mcp_tools_for_server(self.PATH, "local"))
+
+        assert calls == ["local"]
+        assert {t.name for t in tools} == {"person_status:getTodayPersonnelAffairs"}
+
+    def test_timeout_returns_empty_and_logs_url(self, fake_client, caplog):
+        """单个 server 超时 -> 返回空列表并打 ERROR（含 URL，方便定位 sidecar）"""
+        fake_client.slow_servers = {"local": 0.2}
+
+        with caplog.at_level("ERROR", logger="mcp_client.mcp_loader"):
+            tools = run(
+                mcp_loader.get_mcp_tools_for_server(self.PATH, "local", timeout=0.01)
+            )
+
+        assert tools == []
+        errors = [r.message for r in caplog.records if r.levelno == 40]
+        assert any("加载超时" in m and "personStatus" in m for m in errors)
+
+    def test_unknown_server_returns_empty(self, caplog):
+        with caplog.at_level("ERROR", logger="mcp_client.mcp_loader"):
+            assert run(mcp_loader.get_mcp_tools_for_server(self.PATH, "nope")) == []
+        assert any("不存在" in r.message for r in caplog.records)
+
+    def test_direct_client_server_skipped(self):
+        """direct_client 条目（scene/knowledge）由专属客户端接管，这里直接跳过"""
+        assert run(mcp_loader.get_mcp_tools_for_server(self.PATH, "scene")) == []
+
+    def test_device_query_loader_uses_devicequery_only(self, monkeypatch):
+        """设备查询只加载 devicequery 端点，并过滤出两个 Java 工具"""
+        dq = get_graph_module("device_query")
+        calls = []
+
+        async def fake_tools(yaml_path, server_name, timeout=15.0):
+            calls.append(server_name)
+            return [
+                FakeTool("device_query:listDeviceOnly", "[]"),
+                FakeTool("device_query:getDeviceDetail", "{}"),
+                FakeTool("canteen:getWeekMenu", "{}"),
+            ]
+
+        monkeypatch.setattr(dq, "get_mcp_tools_for_server", fake_tools)
+        tools = run(dq.load_device_query_tools())
+
+        assert calls == ["devicequery"]
+        assert set(tools) == {
+            "device_query:listDeviceOnly",
+            "device_query:getDeviceDetail",
+        }

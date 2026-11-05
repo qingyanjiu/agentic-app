@@ -1425,6 +1425,31 @@ def parse_floor_slot(query: str) -> str:
     return f"{_parse_chinese_number(m.group(1))}楼"
 
 
+# 位置名里的楼层写法：3楼 / 三楼 / 3层 / 3F
+_FLOOR_TEXT_RE = re.compile(r"([0-9]+|[一二三四五六七八九十]+)\s*(?:楼|层|[fF])")
+
+
+def normalize_area_text(text: str) -> str:
+    """
+    把位置/楼层写法统一成系统口径，便于和 spaceName 比对。
+
+    系统里楼层名写作「1F」，用户口语是「1楼/一楼/1层」，直接按字符串
+    包含匹配会全部落空。统一成小写「数字+f」：
+        "1楼" / "一楼" / "1层" / "1F" -> "1f"
+        "A栋3楼" -> "a栋3f"
+    非楼层位置（食堂、园区…）只做小写和去空格。
+
+    :param text: 位置名或 spaceName
+    :return: 归一化后的文本
+    """
+    if not text:
+        return ""
+    s = str(text).lower().replace(" ", "")
+    return _FLOOR_TEXT_RE.sub(
+        lambda m: f"{_parse_chinese_number(m.group(1))}f", s
+    )
+
+
 # 设备编号形态（两种，取先命中的）：
 #   ① 多段带分隔符的资产编号：CY-HIK-JK-001-0001 / DEV-A-01
 #   ② 字母 + 数字的短编码：MH-001 / CAM102 / DEV_01

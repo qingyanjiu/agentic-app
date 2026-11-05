@@ -372,6 +372,81 @@ def test_device_query_list_area_filters_locally():
     assert tool.calls == [{"syncSource": "3"}], f"实际调用参数: {tool.calls}"
 
 
+def test_area_matches_floor_aliases():
+    """「1楼/一楼/1F」是同一层；楼栋路径分隔符不影响匹配；11F 不能被 1F 命中"""
+    mod = get_graph_module("device_query")
+
+    assert mod._area_matches("园区/1F/咖啡厅", "1楼")
+    assert mod._area_matches("园区/1F/咖啡厅", "一楼")
+    assert mod._area_matches("园区/A栋/3F", "A栋3楼")
+    assert mod._area_matches("园区/A栋/3楼", "A栋3F")
+    assert mod._area_matches("园区/B1/车库", "B1")
+    assert mod._area_matches("园区/1F/食堂", "食堂")
+
+    assert not mod._area_matches("园区/11F/走廊", "1楼")
+    assert not mod._area_matches("园区/21F/走廊", "1楼")
+    assert not mod._area_matches("园区/2F/走廊", "1楼")
+    assert not mod._area_matches("园区/A栋/3F", "B栋3楼")
+
+
+def test_device_query_area_1f_is_filtered_locally():
+    """2026-11-04 线上：系统里 1 楼叫 1F，按「1楼」字面量过滤会全部落空。
+
+    修复后：先拿全量，再按 spaceName 归一化过滤（1楼 == 1F）。
+    """
+    from conftest import FakeTool
+
+    rows = (
+        '{"code":200,"data":['
+        '{"id":"1","name":"咖啡厅向西","code":"JK-1","syncSource":"3",'
+        '"status":"1","spaceName":"园区/1F/咖啡厅"},'
+        '{"id":"2","name":"二楼枪机","code":"JK-2","syncSource":"3",'
+        '"status":"1","spaceName":"园区/2F/走廊"},'
+        '{"id":"3","name":"负一枪机","code":"JK-3","syncSource":"3",'
+        '"status":"1","spaceName":"园区/B1/车库"}]}'
+    )
+
+    mod = get_graph_module("device_query")
+    tool = FakeTool("device_query:listDeviceOnly", rows)
+    node = mod.make_call_tool_node({"device_query:listDeviceOnly": tool})
+
+    out = run(node({
+        "slots": {"query_type": "device_list", "device_type": "3", "area": "1楼"},
+        "original_query": "查询一楼监控数据",
+    }))
+
+    assert out.get("error") is None
+    answer = out["answer"]
+    assert "咖啡厅向西" in answer
+    assert "JK-2" not in answer and "JK-3" not in answer
+    # 全量查询，不把 area 下发给后端
+    assert tool.calls == [{"syncSource": "3"}], f"实际调用参数: {tool.calls}"
+
+
+def test_device_query_area_no_match_mentions_area():
+    """位置过滤后一台不剩时，明确回报位置，不再让 LLM 说「spaceName 不包含 1楼」"""
+    from conftest import FakeTool
+
+    rows = (
+        '{"code":200,"data":['
+        '{"id":"2","name":"二楼枪机","code":"JK-2","syncSource":"3",'
+        '"status":"1","spaceName":"园区/2F/走廊"}]}'
+    )
+
+    mod = get_graph_module("device_query")
+    tool = FakeTool("device_query:listDeviceOnly", rows)
+    node = mod.make_call_tool_node({"device_query:listDeviceOnly": tool})
+
+    out = run(node({
+        "slots": {"query_type": "device_list", "device_type": "3", "area": "1楼"},
+        "original_query": "查询一楼监控数据",
+    }))
+
+    assert out.get("error") is None
+    assert "没有查到" in out["answer"]
+    assert "1楼" in out["answer"]
+
+
 def test_device_query_detail_resolves_id_by_name():
     """详情查询：用户报名称时，先用列表搜出设备，再拿内部 id 调详情"""
     from conftest import FakeTool

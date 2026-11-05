@@ -175,7 +175,24 @@
                 <button class="chip" data-query="消防告警">消防态势</button>
             </div>
 
-            <!-- 问答模式切换：智能体意图问答 / 知识库直连 -->
+            <!-- 场景控制预置指令：与业务查询共用同一个入口，后端自动识别 -->
+            <div class="chips" id="sceneChips">
+                <button class="chip" data-query="切到3楼">切到 3 楼</button>
+                <button class="chip" data-query="回到整栋楼">整栋楼</button>
+                <button class="chip" data-query="重置视角">重置视角</button>
+                <button class="chip" data-query="看CY-HIK-JK-001的监控">看监控</button>
+                <button class="chip" data-query="显示三楼的摄像头">三楼摄像头</button>
+                <button class="chip" data-query="显示访客轨迹">访客轨迹</button>
+                <button class="chip" data-query="显示巡检路线">巡检路线</button>
+                <button class="chip" data-query="显示三楼的会议室">会议室</button>
+                <button class="chip" data-query="显示食堂位置">食堂</button>
+                <button class="chip" data-query="显示周界防区总览">周界防区</button>
+                <button class="chip" data-query="改成傍晚">改成傍晚</button>
+                <button class="chip" data-query="改成下雨">下雨</button>
+                <button class="chip" data-query="当前场景状态">场景状态</button>
+            </div>
+
+            <!-- 问答模式切换：智能体意图问答（含自动场景控制）/ 知识库直连 -->
             <div class="mode-switch" id="modeSwitch">
                 <button class="mode-btn active" id="modeAgentBtn" type="button" aria-selected="true">智能体问答</button>
                 <button class="mode-btn" id="modeKbBtn" type="button" aria-selected="false">知识库问答</button>
