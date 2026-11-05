@@ -1912,6 +1912,7 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
                     logging.info(
                         f"[场景分流] query={query}, business={intent_info['intent']}"
                         f"({intent_info['score']:.4f}), scene={intent_info['scene_score']:.4f},"
+                        f" biz_center={intent_info.get('business_query_score', -1.0):.4f},"
                         f" matched={intent_info['scene_matched']}, route={route_to_scene}"
                     )
 

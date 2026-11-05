@@ -53,13 +53,23 @@ SCENE_CONTROL_THRESHOLD = 0.60
 #      业务分（>= 业务分 + SCENE_ROUTE_MARGIN），才分流给场景；
 #   3. 否则维持业务查询，避免「摄像头在线率」「各防区告警统计」
 #      这类问法被场景通道抢走；
-#   4. 业务查询句式优先（2026-11-04 口径）：
+#   4. 正则都不命中时走向量兜底（should_route_scene_by_vector）：
+#      场景分与「业务查询中心分」比较，需明显领先才分流；
+#   5. 业务查询句式优先（2026-11-04 口径）：
 #      「查询/查看 xx 情况、xx 数据、xx 统计」以及问句一律归业务；
 #      「查看 xx 设备 / 查看 xx」「转到 / 切到 / 换成 / 换到」归场景交互。
 #      问法必须交回业务侧 —— 场景图里只有动作工具，数据问法进去只能被
 #      规划成"显示点位"（2026-11-04 线上案例）。
 # ============================================================
 SCENE_ROUTE_MARGIN = 0.05
+
+# 向量兜底（正则都没命中时）：
+#   业务侧参照分 = 业务查询中心向量分（intent=other 时）或命中的业务域分；
+#   - 场景分 >= SCENE_CONTROL_THRESHOLD 且高出参照分 SCENE_ROUTE_MARGIN → 场景；
+#   - 场景分略低于阈值（>= 0.55）但高出参照分 SCENE_VECTOR_WEAK_MARGIN → 场景，
+#     兜住正则没覆盖到的新说法（「切到晴天」补语料前的场景分只有 0.5839）。
+SCENE_VECTOR_WEAK_THRESHOLD = 0.55
+SCENE_VECTOR_WEAK_MARGIN = 0.08
 
 # 明确的场景操作词：命中即可盖过较弱的业务域命中
 _SCENE_STRONG_CUES = re.compile(
@@ -75,7 +85,12 @@ _SCENE_STRONG_CUES = re.compile(
     r"(显示|展示|打开|调出|查看|看|看下).{0,4}(这个|这台|该).{0,6}(摄像头|监控|画面|设备)|"
     r"(显示|展示|打开|调出|查看|看|看下).{0,6}"
     r"([0-9一二三四五六七八九十]+楼|B1|负一|[A-Za-z][A-Za-z0-9_\-]{2,}).{0,6}(摄像头|监控|画面)|"
-    r"(改成|切换成|调成|换成).{0,4}(白天|傍晚|夜晚|晴天|下雨|下雪|多云|阴天)"
+    r"(改成|改为|切换成|切换到|调成|调到|换成|换到|切到|转到|变成|设成|设置成|设置为|转为).{0,4}"
+    r"(晴天|多云|阴天|小雨|中雨|大雨|暴雨|雷阵雨|雾|小雪|中雪|大雪|暴雪|雨夹雪|"
+    r"白天|傍晚|夜晚|夜间|下雨|下雪|放晴|天晴)|"
+    # 单独回一个天气词（场景追问/指令）：「晴天」「下雨」
+    r"^\s*(晴天|多云|阴天|小雨|中雨|大雨|暴雨|雷阵雨|雾|小雪|中雪|大雪|暴雪|"
+    r"雨夹雪|白天|傍晚|夜晚|夜间|下雨|下雪)\s*[。！!]?\s*$"
 )
 
 
@@ -89,6 +104,7 @@ _DATA_QUERY_CUES = re.compile(
 # 问句：用户在问信息，不是下令改场景 → 业务
 _QUESTION_CUES = re.compile(
     r"[？?]|吗|呢|什么|怎么|怎样|如何|哪些|哪个|哪里|哪儿|在哪|是否|有没有|"
+    r"会不会|能不能|可不可以|要不要|是不是|"
     r"为什么|多少|几楼|第几|几[场条次位点台间]|多久|多大|多远|没有|没$"
 )
 
@@ -145,10 +161,45 @@ def is_business_query(query: str) -> bool:
     return bool(_DATA_QUERY_CUES.search(text) or _QUESTION_CUES.search(text))
 
 
+def should_route_scene_by_vector(info: dict) -> bool:
+    """向量兜底：正则都没命中时，用业务/场景中心向量分做最终裁决（纯函数）。
+
+    - 业务域命中（intent != other）：参照分用该业务域分 scene `score`；
+    - 业务域未命中（intent == other）：参照分用业务查询中心分
+      `business_query_score`（旧版只有 info 时退化为 `score`）。
+    场景分要**明显**高出参照分才分流，避免业务问法被场景通道截胡。
+    """
+    if not info:
+        return False
+
+    scene = float(info.get("scene_score", -1.0))
+    if scene < 0:
+        # 场景向量未加载（scene.url 未配置时也会走到这里）
+        return False
+
+    if (info.get("intent") or "other") == "other":
+        business = info.get("business_query_score")
+        if business is None:
+            business = info.get("score", 0.0)
+    else:
+        business = info.get("score", 0.0)
+    business = float(business)
+
+    # 场景分过阈值，且明显领先业务参照分
+    if scene >= SCENE_CONTROL_THRESHOLD and scene >= business + SCENE_ROUTE_MARGIN:
+        return True
+    # 略低于阈值，但领先幅度更大（兜住正则没覆盖的新说法）
+    return (
+        scene >= SCENE_VECTOR_WEAK_THRESHOLD
+        and scene >= business + SCENE_VECTOR_WEAK_MARGIN
+    )
+
+
 def should_route_scene(info: dict, query: str) -> bool:
     """判断本轮是否分流给 UE 场景控制（纯函数，便于单测）。
 
-    优先级：场景状态问句 > 业务查询句式 > 明确场景动作 > 场景意图分。
+    优先级：场景状态问句 > 业务查询句式 > 明确场景动作 > 向量兜底
+    （should_route_scene_by_vector）。
 
     :param info: classify_top_intent_with_scene() 的返回值
     :param query: 用户本轮原话
@@ -166,13 +217,7 @@ def should_route_scene(info: dict, query: str) -> bool:
     # 明确场景动作 / 查看场景对象 → 场景（不要求场景分过阈值）
     if _SCENE_STRONG_CUES.search(text) or _SCENE_VIEW_CUES.search(text):
         return True
-    if not info.get("scene_matched"):
-        return False
-    if (info.get("intent") or "other") == "other":
-        return True
-    return float(info.get("scene_score", 0.0)) >= (
-        float(info.get("score", 0.0)) + SCENE_ROUTE_MARGIN
-    )
+    return should_route_scene_by_vector(info)
 
 
 # ============================================================
@@ -3274,8 +3319,13 @@ SCENE_CONTROL_EXAMPLES = [
     "改成傍晚",
     "让场景下雨",
     "切换成晴天",
+    "切换到晴天",
+    "切到晴天",
+    "换成晴天",
     "把场景调成夜间",
     "场景里下点雪",
+    "晴天",
+    "下雨",
     # 防区/巡检任务状态（破坏性）
     "把A-01防区撤防",
     "对防区布防",
@@ -3545,6 +3595,23 @@ class PersonStatusClassifier:
             center = np.mean(vecs, axis=0)
             self.scene_control_center = center / np.linalg.norm(center)
 
+        # 16. 业务查询整体中心向量（「业务 vs 场景」向量兜底）
+        #     各业务域中心等权平均，避免示例多的域在二分类上话语权过大；
+        #     仅用于 should_route_scene_by_vector，不参与多意图竞争。
+        self.business_query_center = None
+        business_centers = [
+            c for c in (
+                self.center, self.security_center, self.canteen_center,
+                self.vehicle_center, self.information_center, self.energy_center,
+                self.meeting_center, self.fire_center, self.perimeter_center,
+                self.device_center, self.overview_center, self.device_query_center,
+                self.inspection_center,
+            ) if c is not None
+        ]
+        if business_centers:
+            center = np.mean(np.stack(business_centers), axis=0)
+            self.business_query_center = center / np.linalg.norm(center)
+
         logger.info("[classifier] 意图识别模型加载完成")
 
     def _encode(self, query: str) -> np.ndarray:
@@ -3771,16 +3838,23 @@ class PersonStatusClassifier:
         scene_score = -1.0
         if self.scene_control_center is not None:
             scene_score = float(np.dot(query_vec, self.scene_control_center))
+
+        business_query_score = -1.0
+        if self.business_query_center is not None:
+            business_query_score = float(np.dot(query_vec, self.business_query_center))
+
         info = {
             "intent": intent,
             "score": score,
             "scene_score": scene_score,
             "scene_matched": scene_score >= SCENE_CONTROL_THRESHOLD,
+            "business_query_score": business_query_score,
             "action_blocked": action_blocked,
         }
         logger.info(
             f"[classifier] query={query}, intent={intent}, score={score:.4f}, "
-            f"scene_score={scene_score:.4f}, scene_matched={info['scene_matched']}"
+            f"scene_score={scene_score:.4f}, scene_matched={info['scene_matched']}, "
+            f"business_query_score={business_query_score:.4f}"
         )
         return info
 
@@ -4018,6 +4092,7 @@ async def classify_intent_with_scene(query: str) -> dict:
     logger.info(
         f"[classify_intent_with_scene] query={query}, intent={info['intent']}, "
         f"score={info['score']:.4f}, scene_score={info['scene_score']:.4f}, "
+        f"business_query_score={info.get('business_query_score', -1.0):.4f}, "
         f"scene_matched={info['scene_matched']}"
     )
     return info

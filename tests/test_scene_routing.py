@@ -14,16 +14,21 @@ from agent.intent.classifier import (
     has_strong_scene_cue,
     is_business_query,
     should_route_scene,
+    should_route_scene_by_vector,
 )
 
 
-def _info(intent="other", score=0.0, scene_score=0.70, scene_matched=None):
-    return {
+def _info(intent="other", score=0.0, scene_score=0.70, scene_matched=None,
+          business_query_score=None):
+    info = {
         "intent": intent,
         "score": score,
         "scene_score": scene_score,
         "scene_matched": (scene_score >= 0.60 if scene_matched is None else scene_matched),
     }
+    if business_query_score is not None:
+        info["business_query_score"] = business_query_score
+    return info
 
 
 def test_route_when_business_is_other():
@@ -198,4 +203,104 @@ def test_explicit_action_wins_over_question_mark():
     assert not should_route_scene(_info("other", 0.50, 0.70), "查看三楼的监控数据")
     # 「显示 + 数据词」不是查询/查看句式，仍按场景展示
     assert not is_business_query("显示三楼的监控数据")
+
+
+def test_weather_switch_phrasings_are_scene():
+    """2026-11-05 线上：「切到晴天」场景分 0.5839 没过阈值、又没命中动作词，
+    被业务兜底拒绝；「切换到晴天」靠 0.6428 侥幸过了阈值。"""
+    low = _info("other", 0.46, 0.50, scene_matched=False)
+    for query in (
+        "切到晴天",
+        "切换到晴天",
+        "换成晴天",
+        "改成晴天",
+        "改为晴天",
+        "调到晴天",
+        "变成晴天",
+        "设成晴天",
+        "切到下雨",
+        "切换到小雨",
+        "把天气改成暴雨",
+        "调到夜间",
+    ):
+        assert has_strong_scene_cue(query), query
+        assert should_route_scene(low, query), query
+
+
+def test_bare_weather_word_is_scene_command():
+    """用户只回一个天气词（场景追问/指令）也按场景处理，场景分不用过阈值"""
+    low = _info("other", 0.42, 0.47, scene_matched=False)
+    for query in ("晴天", "下雨", "傍晚", "多云", "小雨", "晴天！"):
+        assert should_route_scene(low, query), query
+
+
+def test_weather_questions_stay_business():
+    for query in ("今天晴天吗", "今天天气怎么样", "明天会不会下雨"):
+        assert is_business_query(query), query
+        assert not should_route_scene(_info("other", 0.51, 0.45), query), query
+    # 不是整句天气词（「晴天霹雳」）不触发场景
+    assert not has_strong_scene_cue("晴天霹雳")
+
+
+# ------------------------------------------------------------------
+# 2026-11-05 向量兜底：正则都没命中时，业务查询中心 vs 场景中心裁决
+#   （业务域未命中 intent=other 时参照 business_query_score）
+# ------------------------------------------------------------------
+
+def test_vector_fallback_prefers_scene_only_when_clearly_ahead():
+    # 场景 0.62 领先业务中心 0.55 → 场景
+    assert should_route_scene_by_vector(
+        _info("other", 0.40, 0.62, business_query_score=0.55)
+    )
+    # 场景 0.62 但业务中心 0.60，领先不足 SCENE_ROUTE_MARGIN → 维持业务
+    assert not should_route_scene_by_vector(
+        _info("other", 0.40, 0.62, business_query_score=0.60)
+    )
+
+
+def test_vector_fallback_weak_rescue_below_threshold():
+    # 「切到晴天」补语料前：场景分 0.5839 低于 0.60，但业务中心只有 0.49
+    assert should_route_scene_by_vector(
+        _info("other", 0.4594, 0.5839, scene_matched=False,
+              business_query_score=0.49)
+    )
+    # 与业务中心差距不足 0.08 → 不放行
+    assert not should_route_scene_by_vector(
+        _info("other", 0.50, 0.5839, scene_matched=False,
+              business_query_score=0.52)
+    )
+    # 再低（< 0.55）即使差距大也不放行
+    assert not should_route_scene_by_vector(
+        _info("other", 0.30, 0.54, scene_matched=False,
+              business_query_score=0.40)
+    )
+
+
+def test_vector_fallback_uses_domain_score_when_intent_matched():
+    # 业务域命中时参照命中的业务分，business_query_score 不参与
+    assert should_route_scene_by_vector(
+        _info("security_status", 0.66, 0.72, business_query_score=0.30)
+    )
+    assert not should_route_scene_by_vector(
+        _info("security_status", 0.70, 0.72, business_query_score=0.30)
+    )
+
+
+def test_vector_fallback_requires_scene_vector():
+    # 场景中心未加载（scene.url 未配置）→ scene_score=-1，不分流
+    assert not should_route_scene_by_vector(_info("other", 0.0, -1.0))
+    assert not should_route_scene_by_vector({})
+
+
+def test_business_center_blocks_ambiguous_other_query():
+    # 业务域没命中（other），正则也不命中；业务中心分和场景分接近 → 不抢
+    assert not should_route_scene(
+        _info("other", 0.63, 0.64, business_query_score=0.65),
+        "三楼",
+    )
+    # 场景明显领先才分流
+    assert should_route_scene(
+        _info("other", 0.40, 0.64, business_query_score=0.55),
+        "三楼",
+    )
 
