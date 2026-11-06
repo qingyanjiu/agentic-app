@@ -227,6 +227,20 @@ def test_weather_switch_phrasings_are_scene():
         assert should_route_scene(low, query), query
 
 
+def test_time_setting_phrasings_are_scene():
+    """2026-11-06：场景 env_time 改成 HH:MM:SS，用户说“下午一点”也要能进场景"""
+    low = _info("other", 0.46, 0.50, scene_matched=False)
+    for query in (
+        "时间切到早上9点",
+        "把时间改成下午一点",
+        "时间调到13:00",
+        "设置成晚上7点半",
+        "时间改成12:00:00",
+    ):
+        assert has_strong_scene_cue(query), query
+        assert should_route_scene(low, query), query
+
+
 def test_bare_weather_word_is_scene_command():
     """用户只回一个天气词（场景追问/指令）也按场景处理，场景分不用过阈值"""
     low = _info("other", 0.42, 0.47, scene_matched=False)

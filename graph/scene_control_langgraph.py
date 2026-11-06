@@ -100,27 +100,56 @@ _ENV_WEATHER_ALIASES = (
     ("晴", "晴天"),
 )
 
-# 时间口语说法 → 枚举值
-_ENV_TIME_ALIASES = (
-    ("傍晚", "傍晚"),
-    ("黄昏", "傍晚"),
-    ("晚上", "夜晚"),
-    ("夜里", "夜晚"),
-    ("夜晚", "夜晚"),
-    ("天黑", "夜晚"),
-    ("深夜", "夜晚"),
-    ("白天", "白天"),
-    ("早上", "白天"),
-    ("上午", "白天"),
-    ("中午", "白天"),
+# 场景时间：sidecar 的 env_time 是 "HH:MM:SS" 字符串（例如 12:00:00）。
+# 用户口语（下午一点 / 早上9点 / 傍晚）在 Python 侧统一换算成 24 小时制，
+# 不能把“中午/白天/傍晚”这类词直接下发给 sidecar。
+_ENV_TIME_DEFAULTS = (
+    ("凌晨", "01:00:00"),
+    ("清晨", "06:00:00"),
+    ("早上", "08:00:00"),
+    ("上午", "09:00:00"),
+    ("中午", "12:00:00"),
+    ("下午", "14:00:00"),
+    ("傍晚", "18:00:00"),
+    ("黄昏", "18:00:00"),
+    ("晚上", "20:00:00"),
+    ("夜晚", "20:00:00"),
+    ("夜里", "20:00:00"),
+    ("夜间", "20:00:00"),
+    ("天黑", "20:00:00"),
+    ("深夜", "23:00:00"),
+    ("白天", "12:00:00"),
 )
 
-# sidecar 枚举里没有目标值时，同义组内的候选顺序（夜晚→傍晚 是兼容旧口径）
-_ENV_TIME_FALLBACK = {
-    "白天": ("白天", "早上", "上午", "中午"),
-    "傍晚": ("傍晚", "黄昏"),
-    "夜晚": ("夜晚", "晚上", "夜里", "天黑", "深夜", "傍晚"),
+_ENV_TIME_PERIOD_RE = re.compile(
+    r"凌晨|清晨|早上|上午|中午|下午|傍晚|黄昏|晚上|夜晚|夜里|夜间|天黑|深夜|白天"
+)
+
+_CN_TIME_DIGITS = {
+    "零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
+    "五": 5, "六": 6, "七": 7, "八": 8, "九": 9,
 }
+
+# 明确带“点/时”的时刻：9点、下午一点半、晚上7点15分
+_ENV_TIME_UNIT_RE = re.compile(
+    rf"(?:(凌晨|清晨|早上|上午|中午|下午|傍晚|黄昏|晚上|夜晚|夜里|夜间|天黑|深夜|白天)\s*)?"
+    rf"([0-9]{{1,2}}|[零〇一二两三四五六七八九十]{{1,3}})(?!\d)\s*(?:点|时)"
+    rf"(?:\s*([0-9]{{1,2}}|[零〇一二两三四五六七八九十]{{1,3}})(?!\d)(?!\s*刻)\s*分?)?"
+    rf"\s*(半|一刻|三刻)?"
+)
+
+# 只给时段+数字、省略“点”的口语：下午一点、早上9
+_ENV_TIME_PERIOD_BARE_RE = re.compile(
+    rf"(凌晨|清晨|早上|上午|中午|下午|傍晚|黄昏|晚上|夜晚|夜里|夜间|天黑|深夜|白天)\s*"
+    rf"([0-9]{{1,2}}|[零〇一二两三四五六七八九十]{{1,3}})(?!\d)"
+    rf"(?!\s*(?:楼|层|F|f|个|人|台|位|次|天|月|年|元|分|秒))"
+)
+
+# 24 小时制：12:00、9:30:00
+_ENV_TIME_CLOCK_RE = re.compile(
+    r"(?<!\d)([01]?\d|2[0-3])\s*[:：]\s*([0-5]?\d)"
+    r"(?:\s*[:：]\s*([0-5]?\d))?(?!\d)"
+)
 
 
 # ============================================================
@@ -296,28 +325,122 @@ def _match_env_weather(text: str, allowed: Optional[tuple] = None) -> Optional[s
     return None
 
 
-def _match_env_time(text: str, allowed: tuple) -> Optional[str]:
-    """把时间口语收敛到 env_time 枚举；allowed 为空时原样返回"""
-    q = str(text or "").strip()
-    if not q:
+def _parse_cn_time_number(raw: str) -> Optional[int]:
+    """解析 0~99 的中文/阿拉伯数字；失败返回 None（不能用默认值兜底）"""
+    text = str(raw or "").strip()
+    if not text:
         return None
-    allowed = tuple(allowed or ())
-    if not allowed:
-        return q
-    if q in allowed:
-        return q
-    for keyword, target in _ENV_TIME_ALIASES:
-        if keyword not in q:
-            continue
-        for item in _ENV_TIME_FALLBACK.get(target, (target,)):
-            if item in allowed:
-                return item
-        return None
+    if text.isdigit():
+        return int(text)
+    text = text.replace("两", "二").replace("〇", "零")
+    if text in _CN_TIME_DIGITS:
+        return _CN_TIME_DIGITS[text]
+    if "十" in text:
+        left, _, right = text.partition("十")
+        if left and left not in _CN_TIME_DIGITS:
+            return None
+        if right and right not in _CN_TIME_DIGITS:
+            return None
+        tens = _CN_TIME_DIGITS[left] if left else 1
+        ones = _CN_TIME_DIGITS[right] if right else 0
+        return tens * 10 + ones
+    if all(ch in _CN_TIME_DIGITS for ch in text):
+        return int("".join(str(_CN_TIME_DIGITS[ch]) for ch in text))
     return None
 
 
-def _normalize_env_args(tool: dict, arguments: dict) -> dict:
-    """scene_set_env 的两个参数是枚举，统一收敛；无法识别的值直接丢弃"""
+def _apply_period(hour: int, period: Optional[str]) -> Optional[int]:
+    """把“下午/晚上”等时段套到小时上；返回 None 表示不是合法小时"""
+    if period in ("下午", "傍晚", "黄昏"):
+        if 1 <= hour < 12:
+            hour += 12
+    elif period == "晚上":
+        # “晚上1点”是凌晨 01:00，“晚上5点/7点”才是 17:00/19:00
+        if 5 <= hour < 12:
+            hour += 12
+        elif hour == 12:
+            hour = 0
+    elif period in ("夜晚", "夜里", "夜间", "天黑"):
+        # “夜里1点/5点”仍按凌晨算，不能加 12
+        if 6 <= hour < 12:
+            hour += 12
+        elif hour == 12:
+            hour = 0
+    elif period == "中午":
+        if 1 <= hour <= 3:
+            hour += 12
+    elif period in ("凌晨", "深夜"):
+        if hour == 12:
+            hour = 0
+    return hour if 0 <= hour <= 23 else None
+
+
+def _format_clock(hour: int, minute: int = 0, second: int = 0) -> Optional[str]:
+    if not (0 <= hour <= 23 and 0 <= minute <= 59 and 0 <= second <= 59):
+        return None
+    return f"{hour:02d}:{minute:02d}:{second:02d}"
+
+
+def _parse_scene_time(text: str) -> Optional[str]:
+    """把用户时间口语换算成 sidecar 需要的 HH:MM:SS；解析不到返回 None。
+
+    支持：
+      12:00 / 12:00:00 / 下午1:30
+      下午一点 / 早上9点 / 晚上7点15分 / 下午一点半 / 下午三点一刻
+      改成傍晚（只说时段 → 该时段默认时刻）
+    """
+    q = str(text or "").strip()
+    if not q:
+        return None
+    q = q.translate(str.maketrans("０１２３４５６７８９：", "0123456789:"))
+
+    period_match = _ENV_TIME_PERIOD_RE.search(q)
+    period = period_match.group(0) if period_match else None
+
+    m = _ENV_TIME_CLOCK_RE.search(q)
+    if m:
+        hour = int(m.group(1))
+        minute = int(m.group(2))
+        second = int(m.group(3) or 0)
+        hour = _apply_period(hour, period)
+        if hour is None:
+            return None
+        return _format_clock(hour, minute, second)
+
+    m = _ENV_TIME_UNIT_RE.search(q)
+    if m:
+        period, hour_raw, minute_raw, suffix = m.groups()
+        hour = _parse_cn_time_number(hour_raw)
+        if hour is None:
+            return None
+        minute = _parse_cn_time_number(minute_raw) if minute_raw else 0
+        if minute is None:
+            return None
+        if not minute_raw:
+            minute = {"半": 30, "一刻": 15, "三刻": 45}.get(suffix, 0)
+        hour = _apply_period(hour, period)
+        if hour is None:
+            return None
+        return _format_clock(hour, minute, 0)
+
+    m = _ENV_TIME_PERIOD_BARE_RE.search(q)
+    if m:
+        period, hour_raw = m.groups()
+        hour = _parse_cn_time_number(hour_raw)
+        if hour is None:
+            return None
+        hour = _apply_period(hour, period)
+        if hour is None:
+            return None
+        return _format_clock(hour, 0, 0)
+
+    if period:
+        return dict(_ENV_TIME_DEFAULTS).get(period)
+    return None
+
+
+def _normalize_env_args(tool: dict, arguments: dict, query: str = "") -> dict:
+    """scene_set_env 参数归一化：时间统一 HH:MM:SS，天气收敛到枚举。"""
     arguments = dict(arguments or {})
     allowed_weather = _allowed_enum(tool, "env_weather") or _ENV_WEATHER_VALUES
     if arguments.get("env_weather") not in (None, ""):
@@ -331,17 +454,16 @@ def _normalize_env_args(tool: dict, arguments: dict) -> dict:
             )
             arguments.pop("env_weather", None)
 
-    allowed_time = _allowed_enum(tool, "env_time")
-    if allowed_time and arguments.get("env_time") not in (None, ""):
-        normalized = _match_env_time(arguments["env_time"], allowed_time)
-        if normalized:
-            arguments["env_time"] = normalized
-        else:
-            logger.warning(
-                f"env_time 不在枚举内，已丢弃: {arguments.get('env_time')!r}，"
-                f"可选: {allowed_time}"
-            )
-            arguments.pop("env_time", None)
+    # 用户原话里的时间优先于 LLM 给的 env_time，避免模型把“下午一点”写成“中午”。
+    raw_time = arguments.get("env_time")
+    normalized_time = _parse_scene_time(query)
+    if not normalized_time and raw_time not in (None, ""):
+        normalized_time = _parse_scene_time(str(raw_time))
+    if normalized_time:
+        arguments["env_time"] = normalized_time
+    elif raw_time not in (None, ""):
+        logger.warning(f"env_time 无法解析为 HH:MM:SS，已丢弃: {raw_time!r}")
+        arguments.pop("env_time", None)
     return arguments
 
 
@@ -473,24 +595,15 @@ def _rule_based_plan(query: str, tool_map: dict) -> Optional[dict]:
                     "question": "请告诉我聚焦对象的标识（tag）。"}
         return {"tool": "scene_focus_actor",
                 "arguments": {"actorType": "POI", "type": "JIANKONG", "tag": tag}}
-    if re.search(
-        r"天气|下雨|下雪|雨夹雪|雷阵雨|暴雨|大雨|中雨|阵雨|小雪|中雪|大雪|暴雪"
-        r"|雾|晴|多云|阴天|傍晚|黄昏|晚上|夜里|夜晚|天黑|深夜|白天|环境",
-        q,
-    ):
-        env_time = None
-        # 只产出 sidecar 认可的枚举值，不能直接传"雨""雪""晴"
-        env_weather = _match_env_weather(q)
-        if re.search(r"傍晚|黄昏", q):
-            env_time = "傍晚"
-        elif re.search(r"晚上|夜里|夜晚|天黑|深夜", q):
-            env_time = "夜晚"
-        elif re.search(r"白天|早上|上午|中午", q):
-            env_time = "白天"
+    # 环境：时间口语先换算成 HH:MM:SS，天气收敛到 sidecar 枚举
+    env_time = _parse_scene_time(q)
+    env_weather = _match_env_weather(q)
+    if env_time or env_weather or re.search(r"环境|天气", q):
         args = {k: v for k, v in (("env_time", env_time), ("env_weather", env_weather)) if v}
         if not args:
             return {"need_clarify": True,
-                    "question": "请告诉我想要的环境效果，例如“改成傍晚”或“下雨”。"}
+                    "question": "请告诉我想要的环境效果，时间可以说“下午一点”，"
+                                "天气可以说“晴天/下雨”。"}
         return {"tool": "scene_set_env", "arguments": args}
 
     if floor is not None:
@@ -596,7 +709,9 @@ def build_scene_control_graph(client: Any, llm: Any = None) -> StateGraph:
                 "1. 只能从工具清单里选，工具名必须逐字一致；\n"
                 "2. 参数严格按 schema 的类型、必填要求和枚举取值；楼层语义：-1=B1，"
                 "1~N=具体楼层，11/99=整栋楼；带“取值:”的字段必须原样使用其中的值，"
-                "例如 env_weather 只能填“晴天/小雨/小雪”等枚举值，不能填“雨”“雪”“晴”；\n"
+                "例如 env_weather 只能填“晴天/小雨/小雪”等枚举值，不能填“雨”“雪”“晴”；"
+                "env_time 必须是 24 小时制 HH:MM:SS，例如“下午一点”填“13:00:00”，"
+                "不能填“中午/白天/傍晚”这类口语词；\n"
                 "3. 不要编造 tag、设备编码；用户没给且无法从场景状态推断时，"
                 "返回 need_clarify 追问；\n"
                 "4. 需要连续执行多个动作时，只选用户本次最主要的一个；\n"
@@ -634,17 +749,24 @@ def build_scene_control_graph(client: Any, llm: Any = None) -> StateGraph:
                          "question": f"没有找到“{tool_name}”这个场景操作，请换个说法。"},
             }
 
-        arguments = _coerce_args(tool, plan.get("arguments") or {})
+        raw_arguments = plan.get("arguments") or {}
+        arguments = _coerce_args(tool, raw_arguments)
         if tool_name == "scene_set_env":
-            # 模型/规则可能给“雨”“晴”这类口语值，先收敛到枚举再下发
-            arguments = _normalize_env_args(tool, arguments)
+            # 模型/规则可能给“雨”“晴”“中午”“下午一点”这类口语值，
+            # 天气收敛到枚举、时间统一换算成 HH:MM:SS 再下发
+            arguments = _normalize_env_args(tool, arguments, query)
             if not arguments:
-                allowed = _allowed_enum(tool, "env_weather") or _ENV_WEATHER_VALUES
-                return {
-                    "plan": {"need_clarify": True,
-                             "question": "想要什么环境效果？天气可选："
-                                         + " / ".join(allowed)},
-                }
+                had_time = bool(raw_arguments.get("env_time")) or bool(
+                    _ENV_TIME_PERIOD_RE.search(query)
+                    or re.search(r"[0-9]+\s*(?:点|时)", query)
+                )
+                if had_time:
+                    question = "时间没识别出来，请说具体时刻，例如“下午一点”或“13:00”。"
+                else:
+                    allowed = _allowed_enum(tool, "env_weather") or _ENV_WEATHER_VALUES
+                    question = ("想要什么环境效果？时间可以说“下午一点”，天气可选："
+                                + " / ".join(allowed))
+                return {"plan": {"need_clarify": True, "question": question}}
         missing = _missing_required_args(tool_name, tool, arguments)
         if missing:
             labels = "、".join(_ARG_LABELS.get(k, k) for k in missing)

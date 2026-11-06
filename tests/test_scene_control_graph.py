@@ -67,7 +67,8 @@ SCENE_TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "env_time": {"type": "string", "enum": ["白天", "傍晚", "夜晚"]},
+                # 与 sidecar 实际契约一致：24 小时制时间字符串
+                "env_time": {"type": "string", "description": "场景时间，格式 HH:MM:SS"},
                 # 与 sidecar tools/list 一致：天气只接受这些枚举值
                 "env_weather": {"type": "string", "enum": ENV_WEATHER_ENUM},
             },
@@ -286,9 +287,15 @@ def test_rule_fallback_weather_maps_to_enum_values():
 
 def test_rule_fallback_env_time_values():
     cases = (
-        ("改成傍晚", "傍晚"),
-        ("改成晚上", "夜晚"),
-        ("改成白天", "白天"),
+        ("改成傍晚", "18:00:00"),
+        ("改成晚上", "20:00:00"),
+        ("改成白天", "12:00:00"),
+        ("改成下午一点", "13:00:00"),
+        ("时间切到早上9点", "09:00:00"),
+        ("时间切到12:00:00", "12:00:00"),
+        ("时间切到下午一点半", "13:30:00"),
+        ("时间切到晚上7点15分", "19:15:00"),
+        ("时间切到晚上十二点", "00:00:00"),
     )
     for query, expected in cases:
         client = FakeSceneClient(action_result="已下发动作 scene_set_env。")
@@ -323,11 +330,54 @@ def test_llm_unrecognized_weather_asks_instead_of_calling():
     assert "小雨" in question and "冰雹" not in question
 
 
-def test_llm_env_time_normalized_when_enum_present():
+def test_llm_env_time_normalized_to_clock():
+    cases = (
+        ("改成晚上", "晚上", "20:00:00"),
+        ("改成下午一点", "下午一点", "13:00:00"),
+        ("改成中午", "中午", "12:00:00"),
+        ("改成12:00:00", "12:00:00", "12:00:00"),
+    )
+    for query, llm_time, expected in cases:
+        client = FakeSceneClient(action_result="已下发动作 scene_set_env。")
+        llm = FakeLLM(
+            '{"tool": "scene_set_env", "arguments": {"env_time": "%s"}}' % llm_time
+        )
+        graph = build_scene_control_graph(client, llm=llm)
+
+        run(graph.ainvoke(_input(query)))
+
+        assert _env_args(client)["env_time"] == expected, query
+
+
+def test_query_time_wins_over_llm_time():
+    """用户原话是“下午一点”时，不能被 LLM 的“中午”覆盖"""
     client = FakeSceneClient(action_result="已下发动作 scene_set_env。")
-    llm = FakeLLM('{"tool": "scene_set_env", "arguments": {"env_time": "晚上"}}')
+    llm = FakeLLM('{"tool": "scene_set_env", "arguments": {"env_time": "12:00:00"}}')
     graph = build_scene_control_graph(client, llm=llm)
 
-    run(graph.ainvoke(_input("改成晚上")))
+    run(graph.ainvoke(_input("改成下午一点")))
 
-    assert _env_args(client)["env_time"] == "夜晚"
+    assert _env_args(client)["env_time"] == "13:00:00"
+
+
+def test_weather_only_does_not_add_env_time():
+    client = FakeSceneClient(action_result="已下发动作 scene_set_env。")
+    llm = FakeLLM('{"tool": "scene_set_env", "arguments": {"env_weather": "晴天"}}')
+    graph = build_scene_control_graph(client, llm=llm)
+
+    run(graph.ainvoke(_input("改成晴天")))
+
+    args = _env_args(client)
+    assert args == {"env_weather": "晴天"}
+
+
+def test_llm_invalid_time_asks_instead_of_calling():
+    client = FakeSceneClient()
+    llm = FakeLLM('{"tool": "scene_set_env", "arguments": {"env_time": "25点"}}')
+    graph = build_scene_control_graph(client, llm=llm)
+
+    final = run(graph.ainvoke(_input("改个时间")))
+
+    assert _action_calls(client) == []
+    question = asks_of(final)[0]["question"]
+    assert "下午一点" in question
