@@ -1846,7 +1846,6 @@ async def run_scene_control_graph(websocket, query: str, user_id: str, session_i
         "done": False,
         "events": [],
         "scene_session_id": scene_session_id,
-        "scene_state_text": None,
         "plan": None,
         "tool_result": None,
     }

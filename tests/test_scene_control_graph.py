@@ -10,7 +10,6 @@
   5. 破坏性动作（防区/巡检任务）额外提示"会改变现场状态"
 """
 from conftest import FakeLLM, answers_of, asks_of, events_of, run
-import graph.scene_control_langgraph as scene_mod
 from graph.scene_control_langgraph import build_scene_control_graph
 
 
@@ -155,11 +154,12 @@ def test_llm_plan_calls_tool_with_scene_session():
     assert "已完成" not in answer
     assert len(events_of(final, "done")) == 1
 
-    # 规划提示词里必须带工具清单和场景快照
+    # 规划提示词只带工具清单；不再为规划预取场景快照
     prompt = llm.prompts[0]
     assert "scene_switch_floor" in prompt
     assert "scene_show_camera" in prompt
-    assert '"floor": 1' in prompt
+    assert "当前场景状态" not in prompt
+    assert all(c[0] != "get_scene_state" for c in client.calls)
 
 
 def test_llm_need_clarify_asks_without_action():
@@ -208,7 +208,7 @@ def test_rule_fallback_reset_view():
 # ------------------------------------------------------------
 # 规则快通道：确定性指令不调 LLM、不读场景快照
 # ------------------------------------------------------------
-def test_fast_path_skips_llm_and_scene_snapshot():
+def test_fast_path_skips_llm():
     client = FakeSceneClient()
     llm = FakeLLM('{"tool": "scene_reset_view", "arguments": {}}')
     graph = build_scene_control_graph(client, llm=llm)
@@ -230,7 +230,7 @@ def test_fast_path_disabled_for_compound_command():
     run(graph.ainvoke(_input("切到3楼，再重置视角")))
 
     assert llm.prompts                       # 复合句仍交给 LLM
-    assert any(c[0] == "get_scene_state" for c in client.calls)
+    assert all(c[0] != "get_scene_state" for c in client.calls)
 
 
 def test_fast_path_disabled_on_followup():
@@ -244,18 +244,18 @@ def test_fast_path_disabled_on_followup():
     run(graph.ainvoke(data))
 
     assert llm.prompts                       # 追问轮不能拿拼接串走规则
-    assert any(c[0] == "get_scene_state" for c in client.calls)
+    assert all(c[0] != "get_scene_state" for c in client.calls)
 
 
-def test_scene_state_timeout_does_not_block_planning(monkeypatch):
-    monkeypatch.setattr(scene_mod, "_SCENE_STATE_TIMEOUT", 0.01)
-    client = FakeSceneClient(state_delay=0.2)
+def test_status_query_calls_get_scene_state_once():
+    """只有“查状态”这一种意图才调用 get_scene_state，且只调一次。"""
+    client = FakeSceneClient()
     graph = build_scene_control_graph(client, llm=None)
 
-    final = run(graph.ainvoke(_input("看下监控")))
+    run(graph.ainvoke(_input("现在场景在第几层")))
 
-    # 快照超时被忽略，图照常进入规则规划并追问 tag
-    assert "tag" in asks_of(final)[0]["question"]
+    state_calls = [c for c in client.calls if c[0] == "get_scene_state"]
+    assert len(state_calls) == 1
 
 
 def test_rule_fallback_missing_tag_asks():

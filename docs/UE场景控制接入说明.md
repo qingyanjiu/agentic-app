@@ -262,7 +262,7 @@ query_vec
 | 巡检任务 | 开始 / 暂停 / 结束巡检任务 A | `scene_set_inspection_state`（破坏性，默认服务端禁用） |
 | 查状态 | 现在场景在第几层 | `get_scene_state` |
 
-每条指令都会先调一次 `get_scene_state` 拿场景快照，作为 LLM 规划上下文。
+只有“查状态”类指令才会调用 `get_scene_state`；其他指令不再为规划预取场景快照。
 
 > `scene_set_env` 的 `env_weather` 是**枚举参数**，只接受
 > `晴天|多云|阴天|小雨|中雨|大雨|暴雨|雷阵雨|雾|小雪|中雪|大雪|暴雪|雨夹雪`。
@@ -371,17 +371,17 @@ pytest tests/test_scene_routing.py tests/test_scene_mcp_client.py tests/test_sce
 
 ---
 
-## 8. 延迟优化：快通道、快照超时、启动预热
+## 8. 延迟优化：快通道、取消快照预取、启动预热
 
-场景指令的耗时主要在两次等待：读场景快照（`get_scene_state`）和 LLM 规划。对应三项优化：
+场景指令的耗时主要来自 LLM 规划。对应两项优化：确定性指令走规则快通道；其余指令
+也不再为规划预取 `get_scene_state` 快照。
 
 ### 8.1 规则快通道（确定性指令不调 LLM）
 
-`fetch_scene_state` 在规划前先用规则判断能不能直接出计划；命中则：
+`plan_action` 在调 LLM 前先用规则判断能不能直接出计划；命中则：
 
-- **不读场景快照**（省一次 MCP 往返）；
 - **不调 LLM 规划**（省一次大模型调用）；
-- 计划写入 `plan` 并置 `fast_path=True`，`plan_action` 直接复用。
+- 计划直接作为本次 `plan`，不再经过 LLM。
 
 只有同时满足以下条件才走快通道：
 
@@ -402,11 +402,18 @@ pytest tests/test_scene_routing.py tests/test_scene_mcp_client.py tests/test_sce
 [SCENE FAST PATH] 跳过 LLM 规划: tool=scene_switch_floor
 ```
 
-### 8.2 场景快照超时
+### 8.2 取消规划前快照预取
 
-`get_scene_state` 只作为规划上下文，页面没连上或响应慢不能拖住整轮回答。现在包了
-1.5s 超时（`_SCENE_STATE_TIMEOUT`）：超时只打告警、快照置空，继续正常规划；
-LLM/规则仍能基于用户原话出计划。原来最坏要等客户端 25s 超时 + 重试。
+`get_scene_state` 本身是一个普通工具，只有用户问“现在在第几层 / 当前场景状态”时才需要。
+以前每条场景指令都会先拉一次快照塞进 LLM prompt，页面没连上时最坏要等客户端 25s
+超时 + 重试；实际上切楼层、重置视角、设置环境等指令并不需要快照。
+
+现在删除了规划前的 `fetch_scene_state` 节点：
+
+- 非查状态指令**一次都不调** `get_scene_state`，规划只依赖用户原话 + 工具清单；
+- 查状态指令由规则/LLM 选中 `get_scene_state` 工具后，在 `call_tool` 里**只调一次**；
+- LLM 遇到“这层 / 这个设备”等指代且无法从原话确定参数时，直接 `need_clarify`
+  追问，不再猜测。
 
 ### 8.3 启动预热
 

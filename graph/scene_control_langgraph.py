@@ -1,4 +1,3 @@
-import asyncio
 import json
 import logging
 import re
@@ -15,8 +14,9 @@ logger = logging.getLogger(__name__)
 UE 场景控制 LangGraph 管线（MCP sidecar /mcp/scene）。
 
 链路：
-    用户指令 → 拉取场景状态(get_scene_state) → LLM 从 20 个工具里选一个并给参数
+    用户指令 → 规则/LLM 从 20 个工具里选一个并给参数
              → 注入 X-Session-Id 调 tools/call → 把 sidecar 返回整理成回答
+    （只有用户在问“场景当前状态”时才选中 get_scene_state 工具，不做规划前预取）
 
 设计要点（与 docs 里《UE 场景 MCP 服务说明》对齐）：
     1. X-Session-Id 由 app.py 从聊天入口透传进 state，**绝不由 LLM 生成**；
@@ -90,9 +90,6 @@ _FAST_PATH_TOOLS = {
 
 # 复合句（“切到3楼，再重置视角”）不走快通道，仍交给 LLM 做取舍。
 _COMPOUND_COMMAND_RE = re.compile(r"然后|再|并且|同时|顺便|之后|，|,|；|;")
-
-# 场景快照只作为规划上下文，页面没连上/响应慢不能拖住整轮回答。
-_SCENE_STATE_TIMEOUT = 1.5
 
 # scene_set_env.env_weather 的合法枚举（运行时优先取 sidecar tools/list 里的 enum，
 # 这里只是兜底，避免 LLM/规则把"雨""雪""晴"这类口语值直接传给 sidecar 被拒）
@@ -656,12 +653,8 @@ class SceneControlGraphState(TypedDict):
     events: Annotated[list, _merge_lists]
     # 场景页面会话 id（前端 WS hello 声明），逐请求注入 X-Session-Id
     scene_session_id: Optional[str]
-    # get_scene_state 返回的快照文本，作为规划上下文
-    scene_state_text: Optional[str]
     # LLM/规则产出的执行计划 {"tool":..., "arguments":...} 或 {"need_clarify":...}
     plan: Optional[dict]
-    # True 表示 plan 来自规则快通道（已跳过 LLM 和场景快照）
-    fast_path: Optional[bool]
     # 工具原始返回（调试用）
     tool_result: Optional[str]
 
@@ -713,46 +706,8 @@ def build_scene_control_graph(client: Any, llm: Any = None) -> StateGraph:
             return None
         return plan
 
-    async def fetch_scene_state(state: SceneControlGraphState) -> dict:
-        """读场景快照作为规划上下文；页面未连接/失败都不阻断主流程。
-
-        快通道：切楼层、视角、环境等确定性指令不需要场景快照，也不调 LLM，
-        这里直接产出计划，省掉一次 MCP 往返和一次大模型调用。
-        """
-        query = state.get("original_query") or ""
-
-        # 追问轮 query 是“上一轮原话 + 本轮补充”，此时规则容易误判，禁用快通道
-        if not (state.get("ask_count") or state.get("last_question")):
-            try:
-                _, tool_map = await _load_catalog()
-            except Exception as e:
-                logger.warning(f"快通道加载工具清单失败，回退正常规划: {e}")
-                tool_map = {}
-            fast_plan = _fast_plan(query, tool_map)
-            if fast_plan:
-                logger.info(f"[SCENE FAST PATH] query={query}, tool={fast_plan.get('tool')}")
-                return {
-                    "plan": fast_plan,
-                    "fast_path": True,
-                    "scene_state_text": "",
-                }
-
-        sid = state.get("scene_session_id")
-        try:
-            text = await asyncio.wait_for(
-                client.get_scene_state(sid), timeout=_SCENE_STATE_TIMEOUT
-            )
-        except asyncio.TimeoutError:
-            logger.warning(f"读取场景状态超时(>{_SCENE_STATE_TIMEOUT}s)，跳过快照继续规划")
-            text = ""
-        except Exception as e:
-            logger.warning(f"读取场景状态失败(忽略，继续规划): {e}")
-            text = ""
-        return {"scene_state_text": text}
-
     async def plan_action(state: SceneControlGraphState) -> dict:
         query = state.get("original_query") or ""
-        scene_state_text = state.get("scene_state_text") or ""
 
         try:
             catalog_text, tool_map = await _load_catalog()
@@ -769,14 +724,20 @@ def build_scene_control_graph(client: Any, llm: Any = None) -> StateGraph:
                 }],
             }
 
-        plan = state.get("plan") if state.get("fast_path") else None
+        plan = None
+        # 快通道：确定性指令直接用规则出计划，不调 LLM。
+        # 追问轮 query 是“上一轮原话 + 本轮补充”，规则容易误判，禁用快通道。
+        if not (state.get("ask_count") or state.get("last_question")):
+            fast_plan = _fast_plan(query, tool_map)
+            if fast_plan:
+                logger.info(f"[SCENE FAST PATH] query={query}, tool={fast_plan.get('tool')}")
+                plan = fast_plan
         if plan is not None:
             logger.info(f"[SCENE FAST PATH] 跳过 LLM 规划: tool={plan.get('tool')}")
         if plan is None and llm is not None and catalog_text:
             prompt = (
                 "你是智慧园区 3D 场景控制助手。根据用户指令，从下面的工具清单里"
                 "选择最合适的一个工具，并给出调用参数。\n\n"
-                f"当前场景状态（可能为空）：\n{scene_state_text or '（未知）'}\n\n"
                 f"用户指令：{query}\n\n"
                 f"可用工具：\n{catalog_text}\n\n"
                 "规则：\n"
@@ -786,8 +747,8 @@ def build_scene_control_graph(client: Any, llm: Any = None) -> StateGraph:
                 "例如 env_weather 只能填“晴天/小雨/小雪”等枚举值，不能填“雨”“雪”“晴”；"
                 "env_time 必须是 24 小时制 HH:MM:SS，例如“下午一点”填“13:00:00”，"
                 "不能填“中午/白天/傍晚”这类口语词；\n"
-                "3. 不要编造 tag、设备编码；用户没给且无法从场景状态推断时，"
-                "返回 need_clarify 追问；\n"
+                "3. 不要编造 tag、设备编码；用户没给时返回 need_clarify 追问，"
+                "不要从“这层/这个设备”等指代里猜；\n"
                 "4. 需要连续执行多个动作时，只选用户本次最主要的一个；\n"
                 "5. 只输出 JSON，不要解释、不要代码围栏。\n\n"
                 "输出格式（二选一）：\n"
@@ -938,7 +899,6 @@ def build_scene_control_graph(client: Any, llm: Any = None) -> StateGraph:
 
     workflow = StateGraph(SceneControlGraphState)
     workflow.add_node("init", init_state)
-    workflow.add_node("fetch_scene_state", fetch_scene_state)
     workflow.add_node("plan_action", plan_action)
     workflow.add_node("ask_param", ask_param)
     workflow.add_node("give_up", give_up)
@@ -946,8 +906,7 @@ def build_scene_control_graph(client: Any, llm: Any = None) -> StateGraph:
     workflow.add_node("finalize", finalize)
 
     workflow.set_entry_point("init")
-    workflow.add_edge("init", "fetch_scene_state")
-    workflow.add_edge("fetch_scene_state", "plan_action")
+    workflow.add_edge("init", "plan_action")
     workflow.add_conditional_edges(
         "plan_action",
         route_plan,
