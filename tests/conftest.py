@@ -86,6 +86,11 @@ class FakeLLM:
         self.prompts.append(prompt)
         return type("FakeLLMResp", (), {"content": self.reply})()
 
+    async def astream(self, prompt, **kwargs):
+        """业务图回答节点改成流式后，FakeLLM 也要能吐 chunk"""
+        self.prompts.append(prompt)
+        yield type("FakeLLMChunk", (), {"content": self.reply})()
+
 
 def make_tools(results_by_tool: dict, delay: float = 0.0) -> dict:
     """

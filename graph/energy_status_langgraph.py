@@ -6,6 +6,8 @@ from typing import Annotated, Any, Optional, TypedDict
 
 from langgraph.graph import StateGraph, END
 
+from graph.stream_utils import stream_llm_text
+
 from mcp_client.mcp_loader import get_mcp_tools
 from agent.intent.slots import format_query_time
 
@@ -141,18 +143,7 @@ async def _llm_format_energy_result(
             "6. 回答要简短、口语化。"
         )
 
-        resp = await llm.ainvoke(prompt)
-        content = getattr(resp, "content", None)
-        if isinstance(content, str):
-            text = content
-        elif isinstance(content, list):
-            text = "".join(
-                b.get("text", "") if isinstance(b, dict) else str(b)
-                for b in content
-            )
-        else:
-            text = str(resp)
-        text = text.strip().strip('"\n')
+        text = await stream_llm_text(llm, prompt)
         if text:
             return text
     except Exception as e:

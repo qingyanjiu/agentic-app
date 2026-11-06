@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import re
@@ -66,6 +67,32 @@ _ARG_LABELS = {
 
 # 破坏性动作：即使 sidecar 已放行，回答里也要提示"改变了现场状态"
 _DESTRUCTIVE_TOOLS = {"scene_set_area_state", "scene_set_inspection_state"}
+
+# 规则可确定规划、无需 LLM 的工具白名单。
+# 只收“一眼能看出工具和参数”的指令；带 tag 的（监控/融合/聚焦/防区/巡检任务）
+# 仍交给 LLM，避免正则从中文里抠错对象标识。
+_FAST_PATH_TOOLS = {
+    "get_scene_state",
+    "scene_switch_floor",
+    "scene_reset_view",
+    "scene_recover_view",
+    "scene_close_detail",
+    "scene_reset_all",
+    "scene_set_env",
+    "scene_show_visitor_track",
+    "scene_show_inspection",
+    "scene_show_meeting_rooms",
+    "scene_show_dining",
+    "scene_show_area_overview",
+    "scene_show_device_category",
+    "scene_set_poi_visible",
+}
+
+# 复合句（“切到3楼，再重置视角”）不走快通道，仍交给 LLM 做取舍。
+_COMPOUND_COMMAND_RE = re.compile(r"然后|再|并且|同时|顺便|之后|，|,|；|;")
+
+# 场景快照只作为规划上下文，页面没连上/响应慢不能拖住整轮回答。
+_SCENE_STATE_TIMEOUT = 1.5
 
 # scene_set_env.env_weather 的合法枚举（运行时优先取 sidecar tools/list 里的 enum，
 # 这里只是兜底，避免 LLM/规则把"雨""雪""晴"这类口语值直接传给 sidecar 被拒）
@@ -633,6 +660,8 @@ class SceneControlGraphState(TypedDict):
     scene_state_text: Optional[str]
     # LLM/规则产出的执行计划 {"tool":..., "arguments":...} 或 {"need_clarify":...}
     plan: Optional[dict]
+    # True 表示 plan 来自规则快通道（已跳过 LLM 和场景快照）
+    fast_path: Optional[bool]
     # 工具原始返回（调试用）
     tool_result: Optional[str]
 
@@ -668,11 +697,54 @@ def build_scene_control_graph(client: Any, llm: Any = None) -> StateGraph:
             "done": bool(state.get("done")),
         }
 
+    def _fast_plan(query: str, tool_map: dict) -> Optional[dict]:
+        """确定性指令直接用规则出计划；返回 None 表示仍需 LLM。"""
+        if not query or _COMPOUND_COMMAND_RE.search(query):
+            return None
+        plan = _rule_based_plan(query, tool_map)
+        if not plan or plan.get("need_clarify"):
+            return None
+        if plan.get("tool") not in _FAST_PATH_TOOLS:
+            return None
+        # “打开三楼的摄像头”规则会落到设备类目，但用户可能指某一路监控；
+        # 这种歧义交给 LLM，避免快通道选错工具。
+        if plan.get("tool") == "scene_show_device_category" \
+                and re.search(r"监控|摄像头", query):
+            return None
+        return plan
+
     async def fetch_scene_state(state: SceneControlGraphState) -> dict:
-        """读场景快照作为规划上下文；页面未连接/失败都不阻断主流程"""
+        """读场景快照作为规划上下文；页面未连接/失败都不阻断主流程。
+
+        快通道：切楼层、视角、环境等确定性指令不需要场景快照，也不调 LLM，
+        这里直接产出计划，省掉一次 MCP 往返和一次大模型调用。
+        """
+        query = state.get("original_query") or ""
+
+        # 追问轮 query 是“上一轮原话 + 本轮补充”，此时规则容易误判，禁用快通道
+        if not (state.get("ask_count") or state.get("last_question")):
+            try:
+                _, tool_map = await _load_catalog()
+            except Exception as e:
+                logger.warning(f"快通道加载工具清单失败，回退正常规划: {e}")
+                tool_map = {}
+            fast_plan = _fast_plan(query, tool_map)
+            if fast_plan:
+                logger.info(f"[SCENE FAST PATH] query={query}, tool={fast_plan.get('tool')}")
+                return {
+                    "plan": fast_plan,
+                    "fast_path": True,
+                    "scene_state_text": "",
+                }
+
         sid = state.get("scene_session_id")
         try:
-            text = await client.get_scene_state(sid)
+            text = await asyncio.wait_for(
+                client.get_scene_state(sid), timeout=_SCENE_STATE_TIMEOUT
+            )
+        except asyncio.TimeoutError:
+            logger.warning(f"读取场景状态超时(>{_SCENE_STATE_TIMEOUT}s)，跳过快照继续规划")
+            text = ""
         except Exception as e:
             logger.warning(f"读取场景状态失败(忽略，继续规划): {e}")
             text = ""
@@ -697,8 +769,10 @@ def build_scene_control_graph(client: Any, llm: Any = None) -> StateGraph:
                 }],
             }
 
-        plan = None
-        if llm is not None and catalog_text:
+        plan = state.get("plan") if state.get("fast_path") else None
+        if plan is not None:
+            logger.info(f"[SCENE FAST PATH] 跳过 LLM 规划: tool={plan.get('tool')}")
+        if plan is None and llm is not None and catalog_text:
             prompt = (
                 "你是智慧园区 3D 场景控制助手。根据用户指令，从下面的工具清单里"
                 "选择最合适的一个工具，并给出调用参数。\n\n"

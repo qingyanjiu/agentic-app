@@ -6,6 +6,8 @@ from typing import Annotated, Any, Optional, TypedDict
 
 from langgraph.graph import StateGraph, END
 
+from graph.stream_utils import stream_llm_text
+
 from agent.intent.handlers.vehicle_status_handler import VehicleStatusHandler
 from agent.intent.slots import format_query_time
 from mcp_client.mcp_loader import get_mcp_tools
@@ -120,18 +122,7 @@ async def _llm_format_vehicle_status_result(
             "5. 回答要简短、口语化。"
         )
 
-        resp = await llm.ainvoke(prompt)
-        content = getattr(resp, "content", None)
-        if isinstance(content, str):
-            text = content
-        elif isinstance(content, list):
-            text = "".join(
-                b.get("text", "") if isinstance(b, dict) else str(b)
-                for b in content
-            )
-        else:
-            text = str(resp)
-        text = text.strip().strip('"\n')
+        text = await stream_llm_text(llm, prompt)
         if text:
             return text
     except Exception as e:

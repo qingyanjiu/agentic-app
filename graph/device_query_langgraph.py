@@ -6,6 +6,8 @@ from typing import Annotated, Any, Optional, TypedDict
 
 from langgraph.graph import StateGraph, END
 
+from graph.stream_utils import stream_llm_text
+
 from mcp_client.mcp_loader import get_mcp_tools_for_server
 
 # syncSource 码到中文名的权威映射（只用于拼 LLM 提示语，下发给 Java 的仍是码本身）
@@ -314,18 +316,7 @@ async def _llm_format_device_query_result(
             f"8. 字段含义（照此翻译枚举值，不要直接念数字、不要把编码当名称）：{code_rule}。"
         )
 
-        resp = await llm.ainvoke(prompt)
-        content = getattr(resp, "content", None)
-        if isinstance(content, str):
-            text = content
-        elif isinstance(content, list):
-            text = "".join(
-                b.get("text", "") if isinstance(b, dict) else str(b)
-                for b in content
-            )
-        else:
-            text = str(resp)
-        text = text.strip().strip('"\n')
+        text = await stream_llm_text(llm, prompt)
         if text:
             return text
     except Exception as e:

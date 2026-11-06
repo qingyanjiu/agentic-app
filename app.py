@@ -122,6 +122,8 @@ async def startup():
     from agent.intent import get_classifier
     await get_classifier()
     logger.info("[startup] 意图识别模型预加载完成")
+    # 后台预热场景 MCP / 各业务域图，避免第一个用户承担握手和工具加载时间
+    _start_prewarm()
 
 
 @app.on_event("shutdown")
@@ -147,6 +149,35 @@ def _safe_serialize(obj):
         return {k: _safe_serialize(v) for k, v in obj.items()}
     else:
         return obj
+
+
+async def _stream_graph_to_ws(websocket, graph, graph_input):
+    """流式执行业务图，把 LLM 回答分块即时推给前端。
+
+    业务图的回答节点通过 graph.stream_utils.stream_llm_text 走 LangGraph 的
+    custom 通道；这里收到一个 chunk 就转发一个，首字不必等整段生成完。
+    返回 (final_state, streamed_answer)：streamed_answer 为 True 时，调用方
+    转发最终 events 要跳过完整 answer，避免前端把同一段回答显示两遍。
+    """
+    final_state = dict(graph_input)
+    streamed_answer = False
+
+    async for mode, chunk in graph.astream(
+        graph_input, stream_mode=["custom", "values"]
+    ):
+        if mode == "custom":
+            if not isinstance(chunk, dict) or chunk.get("type") != "answer":
+                continue
+            if not chunk.get("content"):
+                continue
+            streamed_answer = True
+            event = _safe_serialize({"event": "custom", "data": chunk})
+            await websocket.send_text(json.dumps(event, ensure_ascii=False))
+        elif mode == "values":
+            # values 是节点执行后的完整状态快照，最后一个就是 final_state
+            final_state = chunk
+
+    return final_state, streamed_answer
 
 # ============================================================
 # 人员态势 LangGraph 执行助手
@@ -205,7 +236,7 @@ async def run_person_status_graph(websocket, state, user_id, session_id):
     print(f"[GRAPH INPUT] user={user_id}, session={session_id}")
     print(json.dumps(graph_input, ensure_ascii=False, default=str))
 
-    final_state = await graph.ainvoke(graph_input)
+    final_state, streamed_answer = await _stream_graph_to_ws(websocket, graph, graph_input)
 
     print(f"[GRAPH OUTPUT] user={user_id}, session={session_id}")
     print(json.dumps(final_state, ensure_ascii=False, default=str))
@@ -219,6 +250,10 @@ async def run_person_status_graph(websocket, state, user_id, session_id):
     # 发送事件；存在 ask 事件说明进入追问，保留状态等待用户补充
     keep_state = False
     for chunk in final_state["events"]:
+        # 回答已经按 token 流式推过：跳过收尾的完整 answer，避免重复显示
+        if streamed_answer and chunk.get("event") == "custom" \
+                and chunk.get("data", {}).get("type") == "answer":
+            continue
         text = _safe_serialize(chunk)
         await websocket.send_text(json.dumps(text, ensure_ascii=False))
         if chunk.get("event") == "custom" and chunk.get("data", {}).get("type") == "ask":
@@ -292,7 +327,7 @@ async def run_security_status_graph(websocket, state, user_id, session_id):
     print(f"[GRAPH INPUT] user={user_id}, session={session_id}")
     print(json.dumps(graph_input, ensure_ascii=False, default=str))
 
-    final_state = await graph.ainvoke(graph_input)
+    final_state, streamed_answer = await _stream_graph_to_ws(websocket, graph, graph_input)
 
     print(f"[GRAPH OUTPUT] user={user_id}, session={session_id}")
     print(json.dumps(final_state, ensure_ascii=False, default=str))
@@ -306,6 +341,10 @@ async def run_security_status_graph(websocket, state, user_id, session_id):
     # 发送事件；存在 ask 事件说明进入追问，保留状态等待用户补充
     keep_state = False
     for chunk in final_state["events"]:
+        # 回答已经按 token 流式推过：跳过收尾的完整 answer，避免重复显示
+        if streamed_answer and chunk.get("event") == "custom" \
+                and chunk.get("data", {}).get("type") == "answer":
+            continue
         text = _safe_serialize(chunk)
         await websocket.send_text(json.dumps(text, ensure_ascii=False))
         if chunk.get("event") == "custom" and chunk.get("data", {}).get("type") == "ask":
@@ -379,7 +418,7 @@ async def run_canteen_status_graph(websocket, state, user_id, session_id):
     print(f"[GRAPH INPUT] user={user_id}, session={session_id}")
     print(json.dumps(graph_input, ensure_ascii=False, default=str))
 
-    final_state = await graph.ainvoke(graph_input)
+    final_state, streamed_answer = await _stream_graph_to_ws(websocket, graph, graph_input)
 
     print(f"[GRAPH OUTPUT] user={user_id}, session={session_id}")
     print(json.dumps(final_state, ensure_ascii=False, default=str))
@@ -393,6 +432,10 @@ async def run_canteen_status_graph(websocket, state, user_id, session_id):
     # 发送事件；存在 ask 事件说明进入追问，保留状态等待用户补充
     keep_state = False
     for chunk in final_state["events"]:
+        # 回答已经按 token 流式推过：跳过收尾的完整 answer，避免重复显示
+        if streamed_answer and chunk.get("event") == "custom" \
+                and chunk.get("data", {}).get("type") == "answer":
+            continue
         text = _safe_serialize(chunk)
         await websocket.send_text(json.dumps(text, ensure_ascii=False))
         if chunk.get("event") == "custom" and chunk.get("data", {}).get("type") == "ask":
@@ -465,7 +508,7 @@ async def run_vehicle_status_graph(websocket, state, user_id, session_id):
     print(f"[GRAPH INPUT] user={user_id}, session={session_id}")
     print(json.dumps(graph_input, ensure_ascii=False, default=str))
 
-    final_state = await graph.ainvoke(graph_input)
+    final_state, streamed_answer = await _stream_graph_to_ws(websocket, graph, graph_input)
 
     print(f"[GRAPH OUTPUT] user={user_id}, session={session_id}")
     print(json.dumps(final_state, ensure_ascii=False, default=str))
@@ -479,6 +522,10 @@ async def run_vehicle_status_graph(websocket, state, user_id, session_id):
     # 发送事件；存在 ask 事件说明进入追问，保留状态等待用户补充
     keep_state = False
     for chunk in final_state["events"]:
+        # 回答已经按 token 流式推过：跳过收尾的完整 answer，避免重复显示
+        if streamed_answer and chunk.get("event") == "custom" \
+                and chunk.get("data", {}).get("type") == "answer":
+            continue
         text = _safe_serialize(chunk)
         await websocket.send_text(json.dumps(text, ensure_ascii=False))
         if chunk.get("event") == "custom" and chunk.get("data", {}).get("type") == "ask":
@@ -552,7 +599,7 @@ async def run_information_status_graph(websocket, state, user_id, session_id):
     print(f"[GRAPH INPUT] user={user_id}, session={session_id}")
     print(json.dumps(graph_input, ensure_ascii=False, default=str))
 
-    final_state = await graph.ainvoke(graph_input)
+    final_state, streamed_answer = await _stream_graph_to_ws(websocket, graph, graph_input)
 
     print(f"[GRAPH OUTPUT] user={user_id}, session={session_id}")
     print(json.dumps(final_state, ensure_ascii=False, default=str))
@@ -566,6 +613,10 @@ async def run_information_status_graph(websocket, state, user_id, session_id):
     # 发送事件；存在 ask 事件说明进入追问，保留状态等待用户补充
     keep_state = False
     for chunk in final_state["events"]:
+        # 回答已经按 token 流式推过：跳过收尾的完整 answer，避免重复显示
+        if streamed_answer and chunk.get("event") == "custom" \
+                and chunk.get("data", {}).get("type") == "answer":
+            continue
         text = _safe_serialize(chunk)
         await websocket.send_text(json.dumps(text, ensure_ascii=False))
         if chunk.get("event") == "custom" and chunk.get("data", {}).get("type") == "ask":
@@ -639,7 +690,7 @@ async def run_energy_status_graph(websocket, state, user_id, session_id):
     print(f"[GRAPH INPUT] user={user_id}, session={session_id}")
     print(json.dumps(graph_input, ensure_ascii=False, default=str))
 
-    final_state = await graph.ainvoke(graph_input)
+    final_state, streamed_answer = await _stream_graph_to_ws(websocket, graph, graph_input)
 
     print(f"[GRAPH OUTPUT] user={user_id}, session={session_id}")
     print(json.dumps(final_state, ensure_ascii=False, default=str))
@@ -653,6 +704,10 @@ async def run_energy_status_graph(websocket, state, user_id, session_id):
     # 发送事件；存在 ask 事件说明进入追问，保留状态等待用户补充
     keep_state = False
     for chunk in final_state["events"]:
+        # 回答已经按 token 流式推过：跳过收尾的完整 answer，避免重复显示
+        if streamed_answer and chunk.get("event") == "custom" \
+                and chunk.get("data", {}).get("type") == "answer":
+            continue
         text = _safe_serialize(chunk)
         await websocket.send_text(json.dumps(text, ensure_ascii=False))
         if chunk.get("event") == "custom" and chunk.get("data", {}).get("type") == "ask":
@@ -726,7 +781,7 @@ async def run_meeting_status_graph(websocket, state, user_id, session_id):
     print(f"[GRAPH INPUT] user={user_id}, session={session_id}")
     print(json.dumps(graph_input, ensure_ascii=False, default=str))
 
-    final_state = await graph.ainvoke(graph_input)
+    final_state, streamed_answer = await _stream_graph_to_ws(websocket, graph, graph_input)
 
     print(f"[GRAPH OUTPUT] user={user_id}, session={session_id}")
     print(json.dumps(final_state, ensure_ascii=False, default=str))
@@ -740,6 +795,10 @@ async def run_meeting_status_graph(websocket, state, user_id, session_id):
     # 发送事件；存在 ask 事件说明进入追问，保留状态等待用户补充
     keep_state = False
     for chunk in final_state["events"]:
+        # 回答已经按 token 流式推过：跳过收尾的完整 answer，避免重复显示
+        if streamed_answer and chunk.get("event") == "custom" \
+                and chunk.get("data", {}).get("type") == "answer":
+            continue
         text = _safe_serialize(chunk)
         await websocket.send_text(json.dumps(text, ensure_ascii=False))
         if chunk.get("event") == "custom" and chunk.get("data", {}).get("type") == "ask":
@@ -813,7 +872,7 @@ async def run_emergency_fire_graph(websocket, state, user_id, session_id):
     print(f"[GRAPH INPUT] user={user_id}, session={session_id}")
     print(json.dumps(graph_input, ensure_ascii=False, default=str))
 
-    final_state = await graph.ainvoke(graph_input)
+    final_state, streamed_answer = await _stream_graph_to_ws(websocket, graph, graph_input)
 
     print(f"[GRAPH OUTPUT] user={user_id}, session={session_id}")
     print(json.dumps(final_state, ensure_ascii=False, default=str))
@@ -827,6 +886,10 @@ async def run_emergency_fire_graph(websocket, state, user_id, session_id):
     # 发送事件；存在 ask 事件说明进入追问，保留状态等待用户补充
     keep_state = False
     for chunk in final_state["events"]:
+        # 回答已经按 token 流式推过：跳过收尾的完整 answer，避免重复显示
+        if streamed_answer and chunk.get("event") == "custom" \
+                and chunk.get("data", {}).get("type") == "answer":
+            continue
         text = _safe_serialize(chunk)
         await websocket.send_text(json.dumps(text, ensure_ascii=False))
         if chunk.get("event") == "custom" and chunk.get("data", {}).get("type") == "ask":
@@ -900,7 +963,7 @@ async def run_emergency_perimeter_graph(websocket, state, user_id, session_id):
     print(f"[GRAPH INPUT] user={user_id}, session={session_id}")
     print(json.dumps(graph_input, ensure_ascii=False, default=str))
 
-    final_state = await graph.ainvoke(graph_input)
+    final_state, streamed_answer = await _stream_graph_to_ws(websocket, graph, graph_input)
 
     print(f"[GRAPH OUTPUT] user={user_id}, session={session_id}")
     print(json.dumps(final_state, ensure_ascii=False, default=str))
@@ -914,6 +977,10 @@ async def run_emergency_perimeter_graph(websocket, state, user_id, session_id):
     # 发送事件；存在 ask 事件说明进入追问，保留状态等待用户补充
     keep_state = False
     for chunk in final_state["events"]:
+        # 回答已经按 token 流式推过：跳过收尾的完整 answer，避免重复显示
+        if streamed_answer and chunk.get("event") == "custom" \
+                and chunk.get("data", {}).get("type") == "answer":
+            continue
         text = _safe_serialize(chunk)
         await websocket.send_text(json.dumps(text, ensure_ascii=False))
         if chunk.get("event") == "custom" and chunk.get("data", {}).get("type") == "ask":
@@ -987,7 +1054,7 @@ async def run_device_status_graph(websocket, state, user_id, session_id):
     print(f"[GRAPH INPUT] user={user_id}, session={session_id}")
     print(json.dumps(graph_input, ensure_ascii=False, default=str))
 
-    final_state = await graph.ainvoke(graph_input)
+    final_state, streamed_answer = await _stream_graph_to_ws(websocket, graph, graph_input)
 
     print(f"[GRAPH OUTPUT] user={user_id}, session={session_id}")
     print(json.dumps(final_state, ensure_ascii=False, default=str))
@@ -1001,6 +1068,10 @@ async def run_device_status_graph(websocket, state, user_id, session_id):
     # 发送事件；存在 ask 事件说明进入追问，保留状态等待用户补充
     keep_state = False
     for chunk in final_state["events"]:
+        # 回答已经按 token 流式推过：跳过收尾的完整 answer，避免重复显示
+        if streamed_answer and chunk.get("event") == "custom" \
+                and chunk.get("data", {}).get("type") == "answer":
+            continue
         text = _safe_serialize(chunk)
         await websocket.send_text(json.dumps(text, ensure_ascii=False))
         if chunk.get("event") == "custom" and chunk.get("data", {}).get("type") == "ask":
@@ -1075,7 +1146,7 @@ async def run_compositive_overview_graph(websocket, state, user_id, session_id):
     print(f"[GRAPH INPUT] user={user_id}, session={session_id}")
     print(json.dumps(graph_input, ensure_ascii=False, default=str))
 
-    final_state = await graph.ainvoke(graph_input)
+    final_state, streamed_answer = await _stream_graph_to_ws(websocket, graph, graph_input)
 
     print(f"[GRAPH OUTPUT] user={user_id}, session={session_id}")
     print(json.dumps(final_state, ensure_ascii=False, default=str))
@@ -1089,6 +1160,10 @@ async def run_compositive_overview_graph(websocket, state, user_id, session_id):
     # 发送事件；存在 ask 事件说明进入追问，保留状态等待用户补充
     keep_state = False
     for chunk in final_state["events"]:
+        # 回答已经按 token 流式推过：跳过收尾的完整 answer，避免重复显示
+        if streamed_answer and chunk.get("event") == "custom" \
+                and chunk.get("data", {}).get("type") == "answer":
+            continue
         text = _safe_serialize(chunk)
         await websocket.send_text(json.dumps(text, ensure_ascii=False))
         if chunk.get("event") == "custom" and chunk.get("data", {}).get("type") == "ask":
@@ -1163,7 +1238,7 @@ async def run_twins_inspection_graph(websocket, state, user_id, session_id):
     print(f"[GRAPH INPUT] user={user_id}, session={session_id}")
     print(json.dumps(graph_input, ensure_ascii=False, default=str))
 
-    final_state = await graph.ainvoke(graph_input)
+    final_state, streamed_answer = await _stream_graph_to_ws(websocket, graph, graph_input)
 
     print(f"[GRAPH OUTPUT] user={user_id}, session={session_id}")
     print(json.dumps(final_state, ensure_ascii=False, default=str))
@@ -1177,6 +1252,10 @@ async def run_twins_inspection_graph(websocket, state, user_id, session_id):
     # 发送事件；存在 ask 事件说明进入追问，保留状态等待用户补充
     keep_state = False
     for chunk in final_state["events"]:
+        # 回答已经按 token 流式推过：跳过收尾的完整 answer，避免重复显示
+        if streamed_answer and chunk.get("event") == "custom" \
+                and chunk.get("data", {}).get("type") == "answer":
+            continue
         text = _safe_serialize(chunk)
         await websocket.send_text(json.dumps(text, ensure_ascii=False))
         if chunk.get("event") == "custom" and chunk.get("data", {}).get("type") == "ask":
@@ -1241,7 +1320,7 @@ async def run_device_query_graph(websocket, state, user_id, session_id):
     print(f"[GRAPH INPUT] user={user_id}, session={session_id}")
     print(json.dumps(graph_input, ensure_ascii=False, default=str))
 
-    final_state = await graph.ainvoke(graph_input)
+    final_state, streamed_answer = await _stream_graph_to_ws(websocket, graph, graph_input)
 
     print(f"[GRAPH OUTPUT] user={user_id}, session={session_id}")
     print(json.dumps(final_state, ensure_ascii=False, default=str))
@@ -1255,6 +1334,10 @@ async def run_device_query_graph(websocket, state, user_id, session_id):
     # 发送事件；存在 ask 事件说明进入追问，保留状态等待用户补充
     keep_state = False
     for chunk in final_state["events"]:
+        # 回答已经按 token 流式推过：跳过收尾的完整 answer，避免重复显示
+        if streamed_answer and chunk.get("event") == "custom" \
+                and chunk.get("data", {}).get("type") == "answer":
+            continue
         text = _safe_serialize(chunk)
         await websocket.send_text(json.dumps(text, ensure_ascii=False))
         if chunk.get("event") == "custom" and chunk.get("data", {}).get("type") == "ask":
@@ -1659,6 +1742,65 @@ async def get_scene_graph():
         _scene_graph = build_scene_control_graph(_scene_client, llm=llm)
         logger.info(f"SceneControlGraph创建成功: {url}")
     return _scene_graph
+
+
+# ============================================================
+# 启动预热：把首个用户要付的握手/工具加载成本挪到后台
+#   - 场景：MCP initialize + tools/list（首次场景指令不再等握手）
+#   - 业务：各域图编译 + MCP 工具加载（首次查询不再等 15s 工具加载）
+# 可用 PREWARM_ON_STARTUP=0 关闭。
+# ============================================================
+_prewarm_tasks = []
+
+_BUSINESS_GRAPH_GETTERS = (
+    ("person_status", get_person_status_graph),
+    ("security_status", get_security_status_graph),
+    ("canteen_status", get_canteen_status_graph),
+    ("vehicle_status", get_vehicle_status_graph),
+    ("information_status", get_information_status_graph),
+    ("energy_status", get_energy_status_graph),
+    ("meeting_status", get_meeting_status_graph),
+    ("emergency_fire", get_emergency_fire_graph),
+    ("emergency_perimeter", get_emergency_perimeter_graph),
+    ("device_status", get_device_status_graph),
+    ("compositive_overview", get_compositive_overview_graph),
+    ("twins_inspection", get_twins_inspection_graph),
+    ("device_query", get_device_query_graph),
+)
+
+
+def _start_prewarm() -> None:
+    if os.getenv("PREWARM_ON_STARTUP", "1").strip().lower() in ("0", "false", "off", "no"):
+        logger.info("[startup] PREWARM_ON_STARTUP 已关闭，跳过预热")
+        return
+    _prewarm_tasks.append(asyncio.create_task(_prewarm_scene_mcp()))
+    _prewarm_tasks.append(asyncio.create_task(_prewarm_business_graphs()))
+
+
+async def _prewarm_scene_mcp() -> None:
+    try:
+        graph = await get_scene_graph()
+        if graph is None or _scene_client is None:
+            return
+        # 首轮 initialize + tools/list 一次付清；失败只告警，不影响服务
+        await asyncio.wait_for(_scene_client.list_tools(), timeout=8.0)
+        logger.info("[startup] 场景 MCP 预热完成")
+    except Exception as e:
+        logger.warning(f"[startup] 场景 MCP 预热失败（不影响启动）: {e}")
+
+
+async def _prewarm_business_graphs() -> None:
+    for name, getter in _BUSINESS_GRAPH_GETTERS:
+        try:
+            graph = await getter()
+            if graph is None:
+                logger.warning(f"[startup] {name} 图预热跳过（MCP 工具为空）")
+            else:
+                logger.info(f"[startup] {name} 图预热完成")
+        except Exception as e:
+            # 单个域失败不能影响其他域和服务启动
+            logger.warning(f"[startup] {name} 图预热失败（忽略）: {e}")
+        await asyncio.sleep(0)
 
 
 async def run_scene_control_graph(websocket, query: str, user_id: str, session_id,

@@ -360,10 +360,60 @@ scene:
 - 地址也可用环境变量 `SCENE_MCP_URL` 覆盖，优先级高于 yaml；
 - 客户端超时 25s（必须大于 sidecar 的 `scene.action-timeout-ms` 15s）；
 - `/mcp/scene` 无认证；`X-Session-Id` 只由后端注入，**LLM 不接触也无法生成**；
-- 场景图懒加载、客户端的 MCP 握手也懒建立：sidecar 没起不影响服务启动，只影响场景指令。
+- 场景图与 MCP 握手默认在服务启动后由后台预热（`PREWARM_ON_STARTUP=0` 可关闭，
+  退回懒加载）：sidecar 没起只打告警，不影响服务启动，只影响场景指令。
 
 单元测试（不依赖 sidecar）：
 
 ```bash
 pytest tests/test_scene_routing.py tests/test_scene_mcp_client.py tests/test_scene_control_graph.py -v
 ```
+
+---
+
+## 8. 延迟优化：快通道、快照超时、启动预热
+
+场景指令的耗时主要在两次等待：读场景快照（`get_scene_state`）和 LLM 规划。对应三项优化：
+
+### 8.1 规则快通道（确定性指令不调 LLM）
+
+`fetch_scene_state` 在规划前先用规则判断能不能直接出计划；命中则：
+
+- **不读场景快照**（省一次 MCP 往返）；
+- **不调 LLM 规划**（省一次大模型调用）；
+- 计划写入 `plan` 并置 `fast_path=True`，`plan_action` 直接复用。
+
+只有同时满足以下条件才走快通道：
+
+1. 不是追问轮（`ask_count == 0` 且无 `last_question`）——追问时 `original_query` 是
+   "上一轮原话 + 本轮补充"，规则容易误判；
+2. 不是复合句（正则排除 `然后 / 再 / 并且 / 同时 / 顺便 / 之后 / 逗号 / 分号`）——
+   多动作指令交给 LLM 取舍；
+3. 规则能给出明确工具且不需要追问；
+4. 工具在白名单 `_FAST_PATH_TOOLS` 内（切楼层、视角复位/恢复、关闭详情、重置全部、
+   设置环境、访客轨迹/巡检/会议室/食堂/区域总览/设备类目展示、POI 显隐等）；
+5. 设备类目展示中如果出现"监控/摄像头"，退回 LLM——用户可能指某一路具体摄像头，
+   规则无法抠出 tag。
+
+日志里命中时会打印：
+
+```
+[SCENE FAST PATH] query=切到3楼, tool=scene_switch_floor
+[SCENE FAST PATH] 跳过 LLM 规划: tool=scene_switch_floor
+```
+
+### 8.2 场景快照超时
+
+`get_scene_state` 只作为规划上下文，页面没连上或响应慢不能拖住整轮回答。现在包了
+1.5s 超时（`_SCENE_STATE_TIMEOUT`）：超时只打告警、快照置空，继续正常规划；
+LLM/规则仍能基于用户原话出计划。原来最坏要等客户端 25s 超时 + 重试。
+
+### 8.3 启动预热
+
+服务启动后 `app.py` 的 `_start_prewarm()` 在后台：
+
+- 建立场景 MCP 连接并 `tools/list`（首个场景指令不再等握手）；
+- 逐个编译 13 个业务域图（首个业务查询不再等工具加载）。
+
+单个域失败只告警，不影响其他域和服务启动。环境变量 `PREWARM_ON_STARTUP=0`
+（或 `false/off/no`）可关闭预热。

@@ -10,6 +10,7 @@
   5. 破坏性动作（防区/巡检任务）额外提示"会改变现场状态"
 """
 from conftest import FakeLLM, answers_of, asks_of, events_of, run
+import graph.scene_control_langgraph as scene_mod
 from graph.scene_control_langgraph import build_scene_control_graph
 
 
@@ -83,8 +84,9 @@ SCENE_TOOLS = [
 
 
 class FakeSceneClient:
-    def __init__(self, action_result=None, action_error=None):
+    def __init__(self, action_result=None, action_error=None, state_delay=0.0):
         self.state_text = '{"floor": 1, "pois": []}'
+        self.state_delay = state_delay
         self.action_result = action_result or (
             '已下发动作 scene_switch_floor（floor=3, focus=True）。\n'
             "注意：这只代表动作帧已送到场景页面，UE 不回执。\n"
@@ -100,6 +102,9 @@ class FakeSceneClient:
 
     async def get_scene_state(self, x_session_id=None):
         self.calls.append(("get_scene_state", {}, x_session_id))
+        if self.state_delay:
+            import asyncio
+            await asyncio.sleep(self.state_delay)
         return self.state_text
 
     async def call_tool(self, name, arguments, x_session_id=None):
@@ -132,13 +137,16 @@ def _action_calls(client):
 
 def test_llm_plan_calls_tool_with_scene_session():
     client = FakeSceneClient()
-    llm = FakeLLM('{"tool": "scene_switch_floor", "arguments": {"floor": 3, "focus": true}}')
+    # 带 tag 的监控指令不走规则快通道，验证 LLM 规划链路
+    llm = FakeLLM('{"tool": "scene_show_camera", "arguments": {"tag": "CY-HIK-JK-001"}}')
     graph = build_scene_control_graph(client, llm=llm)
 
-    final = run(graph.ainvoke(_input("切到 3 楼")))
+    final = run(graph.ainvoke(_input("看下 CY-HIK-JK-001 的监控")))
 
     # 动作帧带上了前端声明的场景会话
-    assert _action_calls(client) == [("scene_switch_floor", {"floor": 3, "focus": True}, "scene-abc")]
+    assert _action_calls(client) == [
+        ("scene_show_camera", {"tag": "CY-HIK-JK-001"}, "scene-abc")
+    ]
 
     answer = answers_of(final)[0]
     assert "已下发" in answer
@@ -195,6 +203,59 @@ def test_rule_fallback_reset_view():
     run(graph.ainvoke(_input("把视角复位")))
 
     assert _action_calls(client)[0][0] == "scene_reset_view"
+
+
+# ------------------------------------------------------------
+# 规则快通道：确定性指令不调 LLM、不读场景快照
+# ------------------------------------------------------------
+def test_fast_path_skips_llm_and_scene_snapshot():
+    client = FakeSceneClient()
+    llm = FakeLLM('{"tool": "scene_reset_view", "arguments": {}}')
+    graph = build_scene_control_graph(client, llm=llm)
+
+    run(graph.ainvoke(_input("切到3楼")))
+
+    assert llm.prompts == []                      # 没调 LLM
+    assert all(c[0] != "get_scene_state" for c in client.calls)  # 没读快照
+    assert _action_calls(client) == [
+        ("scene_switch_floor", {"floor": 3, "focus": True}, "scene-abc")
+    ]
+
+
+def test_fast_path_disabled_for_compound_command():
+    client = FakeSceneClient()
+    llm = FakeLLM('{"tool": "scene_switch_floor", "arguments": {"floor": 3}}')
+    graph = build_scene_control_graph(client, llm=llm)
+
+    run(graph.ainvoke(_input("切到3楼，再重置视角")))
+
+    assert llm.prompts                       # 复合句仍交给 LLM
+    assert any(c[0] == "get_scene_state" for c in client.calls)
+
+
+def test_fast_path_disabled_on_followup():
+    client = FakeSceneClient()
+    llm = FakeLLM('{"tool": "scene_switch_floor", "arguments": {"floor": 3}}')
+    graph = build_scene_control_graph(client, llm=llm)
+
+    data = _input("3楼")
+    data["ask_count"] = 1
+    data["last_question"] = "请告诉我楼层"
+    run(graph.ainvoke(data))
+
+    assert llm.prompts                       # 追问轮不能拿拼接串走规则
+    assert any(c[0] == "get_scene_state" for c in client.calls)
+
+
+def test_scene_state_timeout_does_not_block_planning(monkeypatch):
+    monkeypatch.setattr(scene_mod, "_SCENE_STATE_TIMEOUT", 0.01)
+    client = FakeSceneClient(state_delay=0.2)
+    graph = build_scene_control_graph(client, llm=None)
+
+    final = run(graph.ainvoke(_input("看下监控")))
+
+    # 快照超时被忽略，图照常进入规则规划并追问 tag
+    assert "tag" in asks_of(final)[0]["question"]
 
 
 def test_rule_fallback_missing_tag_asks():
@@ -312,7 +373,7 @@ def test_llm_weather_argument_normalized_to_enum():
     llm = FakeLLM('{"tool": "scene_set_env", "arguments": {"env_weather": "雨"}}')
     graph = build_scene_control_graph(client, llm=llm)
 
-    run(graph.ainvoke(_input("下雨吧")))
+    run(graph.ainvoke(_input("下雨吧，谢谢")))
 
     assert _env_args(client)["env_weather"] == "小雨"
 
@@ -323,7 +384,7 @@ def test_llm_unrecognized_weather_asks_instead_of_calling():
     llm = FakeLLM('{"tool": "scene_set_env", "arguments": {"env_weather": "冰雹"}}')
     graph = build_scene_control_graph(client, llm=llm)
 
-    final = run(graph.ainvoke(_input("下冰雹")))
+    final = run(graph.ainvoke(_input("下冰雹，谢谢")))
 
     assert _action_calls(client) == []
     question = asks_of(final)[0]["question"]
@@ -344,7 +405,8 @@ def test_llm_env_time_normalized_to_clock():
         )
         graph = build_scene_control_graph(client, llm=llm)
 
-        run(graph.ainvoke(_input(query)))
+        # 加逗号让这句话成为复合句，禁用规则快通道，确保覆盖 LLM 归一化分支
+        run(graph.ainvoke(_input(query + "，谢谢")))
 
         assert _env_args(client)["env_time"] == expected, query
 
@@ -355,7 +417,7 @@ def test_query_time_wins_over_llm_time():
     llm = FakeLLM('{"tool": "scene_set_env", "arguments": {"env_time": "12:00:00"}}')
     graph = build_scene_control_graph(client, llm=llm)
 
-    run(graph.ainvoke(_input("改成下午一点")))
+    run(graph.ainvoke(_input("改成下午一点，谢谢")))
 
     assert _env_args(client)["env_time"] == "13:00:00"
 
@@ -365,7 +427,7 @@ def test_weather_only_does_not_add_env_time():
     llm = FakeLLM('{"tool": "scene_set_env", "arguments": {"env_weather": "晴天"}}')
     graph = build_scene_control_graph(client, llm=llm)
 
-    run(graph.ainvoke(_input("改成晴天")))
+    run(graph.ainvoke(_input("改成晴天，谢谢")))
 
     args = _env_args(client)
     assert args == {"env_weather": "晴天"}
