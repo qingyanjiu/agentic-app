@@ -136,8 +136,30 @@ class Router:
         domain = str(info.get("intent") or "")
         score = float(info.get("score") or 0.0)
 
+        # ③.5 场景兜底（与旧链路同口径）
+        # 正则只覆盖了「打开/查看+监控」这类说法，像「关闭监控窗口」「退出监控页面」
+        # 动词不在词表里，has_strong_scene_cue 给 False，但向量分明显偏场景。
+        # 旧链路一直用 should_route_scene 判定（正则 + 向量兜底），这里必须一致：
+        # 否则这类指令会掉进 L2，模型手里只有查询类工具，只能回答"没有这个能力"。
+        try:
+            from agent.intent.classifier import should_route_scene
+
+            if should_route_scene(info, query):
+                logger.info(f"[route] 场景向量兜底，交回旧链路：{query}")
+                return RoutePlan(
+                    level="L0",
+                    domain="scene",
+                    tool=None,
+                    confidence=1.0,
+                    reason="scene_vector",
+                    needs_confirm=True,
+                )
+        except Exception:  # 分类器依赖缺失时不影响业务主流程
+            pass
+
         if domain in ("", "other"):
             return None
+
         if self._has_cross_signal(query):
             logger.info(f"[route] 跨域信号，转 L2：{query}")
             return None
