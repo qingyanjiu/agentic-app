@@ -1978,6 +1978,31 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
                 continue
 
             # ============================================================
+            # Loop Agent 灰度（新链路）
+            # 命中条件：payload.mode=loop，或灰度比例/白名单命中
+            # 任何异常都回落旧链路，存量功能不受影响
+            # 配置见 docs/loop-agent-改造文档.md 第 8 节
+            # ============================================================
+            if query:
+                try:
+                    from agent.loop.rollout import get_rollout
+                    from agent.loop.ws_bridge import handle_chat as loop_handle_chat
+
+                    loop_decision = get_rollout().decide(
+                        user_id, str(session_id), payload.get("mode")
+                    )
+                    if loop_decision.enabled:
+                        loop_handled = await loop_handle_chat(
+                            websocket, query, user_id, str(session_id), llm, loop_decision
+                        )
+                        if loop_handled:
+                            continue
+                except Exception as loop_err:
+                    logging.error(
+                        f"[loop] 灰度链路异常，回落旧链路: {loop_err}", exc_info=True
+                    )
+
+            # ============================================================
             # UE 3D 场景控制（MCP sidecar /mcp/scene）
             # 场景指令和业务查询共用同一个聊天入口，自动识别（先于业务状态机）：
             #   ① payload.mode == "scene"：显式模式，保留给前端/脚本强制走场景；
