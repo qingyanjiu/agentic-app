@@ -169,52 +169,6 @@ mcp_servers:
     url: http://10.204.146.44:2222/mcp/scene
     direct_client: true
 
-  # 本地 Python 实现的消防态势 mock MCP 服务（fire_server.py）
-  # 当前已配置 Java MCP Sidecar（fire），先注释掉；
-  # Java 侧未就绪时可临时启用 fire-local 并注释上面的 fire 做自测
-  # fire-local:
-  #   transport: stdio
-  #   command: python
-  #   args:
-  #     - ./mcp_servers/fire_server.py
-
-  # 本地 Python 实现的周界态势 mock MCP 服务（perimeter_server.py）
-  # 当前已配置 Java MCP Sidecar（perimeter），先注释掉；
-  # Java 侧 /mcp/perimeter 未就绪时可临时启用 perimeter-local 并注释上面的 perimeter 做自测
-  # perimeter-local:
-  #   transport: stdio
-  #   command: python
-  #   args:
-  #     - ./mcp_servers/perimeter_server.py
-
-  # 本地 Python 实现的孪生巡检 mock MCP 服务（inspection_server.py）
-  # 当前已配置 Java MCP Sidecar（inspection），先注释掉；
-  # Java 侧 /mcp/inspection 未就绪时可临时启用 inspection-local 并注释上面的 inspection 做自测
-  # inspection-local:
-  #   transport: stdio
-  #   command: python
-  #   args:
-  #     - ./mcp_servers/inspection_server.py
-
-  # 本地 Python 实现的 person_status MCP 服务
-  # 当前已改用 Java MCP Sidecar，先注释掉，避免与 Java 侧车的工具冲突
-  # person_status:
-  #   transport: stdio
-  #   command: python
-  #   args:
-  #     - /root/agentic-app/mcp_servers/person_status_server.py
-  # 智慧园区报修工单生成 MCP
-  # campus_work_order:
-  #   transport: stdio 
-  #   command: python
-  #   args:
-  #     - ./mcp_servers/work_order_server.py
-  # #会议室 MCP  
-  # meeting_room:
-  #   transport: stdio
-  #   command: python
-  #   args: 
-  #     - ./mcp_servers/meet_room_server.py
   # math_server:
   #   transport: stdio
   #   command: python
