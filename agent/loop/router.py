@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable
 
@@ -53,6 +54,24 @@ DOMAIN_PLANNERS: dict[str, Callable[[str], DomainPlan]] = {
 CROSS_DOMAIN_HINTS = (
     "对比", "比较", "分别", "同时", "还有", "以及", "顺便",
     "然后", "再看", "另外", "和昨天", "比昨天",
+)
+
+# 监控/摄像头类场景指令。
+# 存量 `_SCENE_STRONG_CUES` 里「(查看|打开|调出|看|看下|显示|展示).{0,4}
+# (监控|摄像头|画面)」这条分支末尾漏了一个 `|`，和后面的「设备编号」分支粘成
+# 了一条（要求"监控"后面必须跟 ≥3 字符的编号），所以从来没生效过：
+#   has_strong_scene_cue("查看监控") is False
+# 连带 is_business_query 里「明确场景动作优先于问句」也失效，
+# 「能打开监控吗」被当成业务查询。
+# 存量分类器被 13 张旧图共用，这里不动它，只在新链路的 L0 判定里补一份。
+_SCENE_MONITOR_CUE = re.compile(
+    r"(查看|看一下|看下|看看|看|打开|调出|显示|展示|切到)"
+    r".{0,4}(监控|摄像头|画面|视频)"
+)
+
+# 出现这些词说明用户在问数据，不是要看画面（「看摄像头在线率」不能被抢到场景）
+_DATA_VETO = re.compile(
+    r"数据|统计|数量|多少|在线率|占比|排名|趋势|报表|明细|清单|列表|记录|日志|台账|情况"
 )
 
 
@@ -131,6 +150,19 @@ class Router:
         except Exception:  # 分类器依赖缺失时不影响主流程
             pass
 
+        # ②.5 监控/摄像头类场景指令（补存量正则失效的那条分支）
+        # 与 ② 分开是因为这里要额外排除数据问法：用户可能问「看摄像头在线率」，
+        # 那属于业务，不能因为出现「看+摄像头」就被送进场景。
+        if _SCENE_MONITOR_CUE.search(query) and not _DATA_VETO.search(query):
+            return RoutePlan(
+                level="L0",
+                domain="scene",
+                tool=None,
+                confidence=1.0,
+                reason="scene_monitor",
+                needs_confirm=True,
+            )
+
         # ③ L1：embedding 分类
         info = await self._classify_query(query)
         domain = str(info.get("intent") or "")
@@ -141,10 +173,12 @@ class Router:
         # 动词不在词表里，has_strong_scene_cue 给 False，但向量分明显偏场景。
         # 旧链路一直用 should_route_scene 判定（正则 + 向量兜底），这里必须一致：
         # 否则这类指令会掉进 L2，模型手里只有查询类工具，只能回答"没有这个能力"。
+        # 额外排除数据词：should_route_scene 里 _SCENE_VIEW_CUES 会把「看摄像头在线率」
+        # 判成场景（因为只看"看+摄像头"，不看"在线率"），那属于业务问法。
         try:
             from agent.intent.classifier import should_route_scene
 
-            if should_route_scene(info, query):
+            if should_route_scene(info, query) and not _DATA_VETO.search(query):
                 logger.info(f"[route] 场景向量兜底，交回旧链路：{query}")
                 return RoutePlan(
                     level="L0",

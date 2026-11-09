@@ -81,3 +81,33 @@ def test_confident_business_domain_still_direct_connects(monkeypatch):
     assert plan is not None
     assert plan.level == "L1"
     assert plan.tool == "person_status__count"
+
+
+def test_question_form_monitor_command_hands_off():
+    """「能打开监控吗」：存量正则漏 `|` 导致 has_strong_scene_cue=False、
+    is_business_query=True，会掉进业务查询只能答"没有能力"。②.5 补上这条。"""
+    plan = asyncio.run(_router("security_status", 0.80, 0.40).route("能打开监控吗"))
+
+    assert plan is not None
+    assert plan.level == "L0"
+    assert plan.reason == "scene_monitor"
+
+
+def test_monitor_cue_variants_all_hand_off():
+    for query in (
+        "查看监控",
+        "打开监控",
+        "显示摄像头",
+        "调出监控画面",
+        "看一下监控",
+        "切到监控画面",
+    ):
+        plan = asyncio.run(_router("other", 0.50, 0.30).route(query))
+        assert plan is not None and plan.level == "L0", query
+
+
+def test_data_query_about_camera_is_not_hijacked():
+    """「看摄像头在线率」问的是数据，不能被「看+摄像头」送进场景。"""
+    plan = asyncio.run(_router("device_status", 0.93, 0.70).route("看摄像头在线率"))
+
+    assert plan is None or plan.level != "L0"
