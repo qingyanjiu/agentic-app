@@ -2,6 +2,9 @@
    园区智能助手 · 前端逻辑
    WebSocket 协议（与 app.py /chat/{user_id}/{session_id} 对应）：
    - 发送: {"query": "..."}
+           知识库模式: {"query": "...", "mode": "kb"}
+           场景控制不需要单独模式：后端会把场景指令和业务查询混在一起自动识别
+           （仍保留 {"query": "...", "mode": "scene", "scene_session_id": "..."} 供脚本强制走场景）
    - 接收:
      {"event": "custom", "data": {"type": "answer",   "content": "..."}}  回答（流式分块）
      {"event": "custom", "data": {"type": "ask",      "question": "..."}} 多轮追问
@@ -42,7 +45,8 @@ let reconnectTimer = null; // 断线重连定时器
 let reconnectAttempts = 0; // 连续重连失败次数
 let reconnectDelay = 1500;
 let sendTimeout = null; // 发送后迟迟连不上后端的兜底提示
-let kbMode = false; // true 时走知识库直连（payload 带 mode=kb，后端跳过意图）
+// 问答模式：agent=智能体问答（业务查询与场景指令自动识别） | kb=知识库直连
+let chatMode = 'agent';
 
 // ------------------- DOM -------------------
 const messagesEl = document.getElementById('messages');
@@ -56,6 +60,7 @@ const connDot = document.getElementById('connDot');
 const connText = document.getElementById('connText');
 const modeAgentBtn = document.getElementById('modeAgentBtn');
 const modeKbBtn = document.getElementById('modeKbBtn');
+const sceneChipsEl = document.getElementById('sceneChips');
 
 // ------------------- 消息渲染 -------------------
 function escapeHtml(s) {
@@ -232,14 +237,20 @@ function sendMessage(text) {
     connect();
     addUserBubble(text);
     addTypingIndicator();
-    setStatus(kbMode ? '正在检索知识库…' : '正在思考…');
+    setStatus(
+        chatMode === 'kb' ? '正在检索知识库…' : '正在思考…'
+    );
     turnActive = true;
     updateComposerState();
     chipsEl.classList.add('hidden');
+    sceneChipsEl.classList.add('hidden');
     scrollToBottom(true);
 
-    // 知识库模式带 mode=kb，后端据此跳过意图分类直连 RAG 管线
-    const payload = kbMode ? { query: text, mode: 'kb' } : { query: text };
+    // 知识库模式旁路：跳过意图直连 RAG；其余查询统一入口，由后端自动识别场景指令
+    const payload = { query: text };
+    if (chatMode === 'kb') {
+        payload.mode = 'kb';
+    }
     if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify(payload));
         clearTimeout(sendTimeout);
@@ -335,6 +346,11 @@ function finishTurn() {
     clearStatus();
     turnActive = false;
     updateComposerState();
+    // 智能体模式下业务/场景快捷入口都恢复，方便连续测试
+    if (chatMode === 'agent') {
+        chipsEl.classList.remove('hidden');
+        sceneChipsEl.classList.remove('hidden');
+    }
 }
 
 // ------------------- 输入区 -------------------
@@ -342,7 +358,8 @@ function updateComposerState() {
     sendBtn.disabled = turnActive || !inputEl.value.trim();
     inputEl.placeholder = turnActive
         ? '助手正在回复…'
-        : (kbMode ? '知识库问答：直接向园区知识库提问' : '输入你的问题，回车发送');
+        : chatMode === 'kb' ? '知识库问答：直接向园区知识库提问'
+            : '输入问题或场景指令，例如“切到 3 楼”“重置视角”';
 }
 
 function autoGrow() {
@@ -384,22 +401,28 @@ document.querySelectorAll('.cap-card, .chip').forEach((el) => {
     });
 });
 
-// ------------------- 问答模式切换（智能体 / 知识库直连） -------------------
-function setKbMode(on) {
-    if (kbMode === on) return;
-    kbMode = on;
-    modeAgentBtn.classList.toggle('active', !on);
-    modeKbBtn.classList.toggle('active', on);
-    modeAgentBtn.setAttribute('aria-selected', String(!on));
-    modeKbBtn.setAttribute('aria-selected', String(on));
+// ------------------- 问答模式切换（智能体 / 知识库） -------------------
+// 场景控制不再单独设选项卡：场景指令和业务查询共用一个输入框，由后端自动识别
+function setMode(mode) {
+    if (chatMode === mode) return;
+    chatMode = mode;
+    const isAgent = mode === 'agent';
+    const isKb = mode === 'kb';
+
+    modeAgentBtn.classList.toggle('active', isAgent);
+    modeKbBtn.classList.toggle('active', isKb);
+    modeAgentBtn.setAttribute('aria-selected', String(isAgent));
+    modeKbBtn.setAttribute('aria-selected', String(isKb));
+
     updateComposerState();
-    // 场景 chips 是意图入口，知识库模式下收起
-    if (on) chipsEl.classList.add('hidden');
+    // 智能体模式展示业务 + 场景快捷入口；知识库模式都不显示
+    chipsEl.classList.toggle('hidden', !isAgent);
+    sceneChipsEl.classList.toggle('hidden', !isAgent);
     inputEl.focus();
 }
 
-modeAgentBtn.addEventListener('click', () => setKbMode(false));
-modeKbBtn.addEventListener('click', () => setKbMode(true));
+modeAgentBtn.addEventListener('click', () => setMode('agent'));
+modeKbBtn.addEventListener('click', () => setMode('kb'));
 
 // ------------------- 新对话 -------------------
 newChatBtn.addEventListener('click', (e) => {
@@ -416,9 +439,10 @@ newChatBtn.addEventListener('click', (e) => {
     sessionId = crypto.randomUUID();
     sendQueue = [];
     finishTurn();
-    // 清空消息区，恢复初始问候与场景 chips
+    // 清空消息区，按当前模式恢复对应的快捷入口
     messagesEl.innerHTML = '<div class="greeting">你好，我是园区智能助手。<br>点击下方场景快速体验，或直接输入你的问题。</div>';
-    chipsEl.classList.remove('hidden');
+    chipsEl.classList.toggle('hidden', chatMode !== 'agent');
+    sceneChipsEl.classList.toggle('hidden', chatMode !== 'agent');
     setConnState('disconnected');
     inputEl.focus();
 });

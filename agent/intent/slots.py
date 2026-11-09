@@ -1359,7 +1359,7 @@ def extract_meeting_status_slots(query: str) -> dict:
 #   device_list   -> 设备列表（可按设备类型、区域/楼栋/楼层筛选）
 #   device_detail -> 设备详情（需要设备名称或编号定位到具体设备）
 #
-# 口径是**资产库**（Java 侧 /mcp/devicequery 的 device_query:listDevice /
+# 口径是**资产库**（Java 侧 /mcp/devicequery 的 device_query:listDeviceOnly /
 # device_query:getDeviceDetail，查平台纳管的设备资产），不是厂商实时设备：
 #   1. 设备类型码是 syncSource（八类，见下），它是**可选**筛选条件——
 #      列表接口所有筛选参数都可选，不传就是全部设备
@@ -1423,6 +1423,31 @@ def parse_floor_slot(query: str) -> str:
         return ""
     # 中文数字统一成阿拉伯数字，便于后端按楼层过滤（"三楼" 与 "3楼" 命中同一条数据）
     return f"{_parse_chinese_number(m.group(1))}楼"
+
+
+# 位置名里的楼层写法：3楼 / 三楼 / 3层 / 3F
+_FLOOR_TEXT_RE = re.compile(r"([0-9]+|[一二三四五六七八九十]+)\s*(?:楼|层|[fF])")
+
+
+def normalize_area_text(text: str) -> str:
+    """
+    把位置/楼层写法统一成系统口径，便于和 spaceName 比对。
+
+    系统里楼层名写作「1F」，用户口语是「1楼/一楼/1层」，直接按字符串
+    包含匹配会全部落空。统一成小写「数字+f」：
+        "1楼" / "一楼" / "1层" / "1F" -> "1f"
+        "A栋3楼" -> "a栋3f"
+    非楼层位置（食堂、园区…）只做小写和去空格。
+
+    :param text: 位置名或 spaceName
+    :return: 归一化后的文本
+    """
+    if not text:
+        return ""
+    s = str(text).lower().replace(" ", "")
+    return _FLOOR_TEXT_RE.sub(
+        lambda m: f"{_parse_chinese_number(m.group(1))}f", s
+    )
 
 
 # 设备编号形态（两种，取先命中的）：

@@ -27,7 +27,7 @@ _TYPE_ANSWER_NOISE = (
 # 兜底反问（与消防/周界同一约定）：
 #   用户只说"查下设备"这类笼统问法时，正则落 count 兜底、分类器也判不出子类型，
 #   此时不再走 call_tool 的"暂不支持"守卫，而是反问"哪类设备"；
-#   用户选定后按**台账口径**调 device_query:listDevice 列出该类设备
+#   用户选定后按**台账口径**调 device_query:listDeviceOnly 列出该类设备
 #   （设备域只有"设备列表/设备详情"两个台账工具，走资产库口径的 syncSource）。
 # ============================================================
 class DeviceStatusHandler(IntentHandler):

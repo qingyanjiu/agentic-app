@@ -34,7 +34,7 @@ def _device_type_label(device_type: str) -> str:
 #   mj_online        -> device:getMjOnlinePercentage
 #
 # 另外一条台账口径的分支（与 device_query 共用同一个工具）：
-#   device_list      -> device_query:listDevice
+#   device_list      -> device_query:listDeviceOnly
 #
 #   "查下设备"这类笼统问法正则落 count 兜底、分类器也救不回来时，
 #   不复用"暂不支持"守卫，而是反问"哪类设备"；用户选定后按台账口径
@@ -52,7 +52,7 @@ _JAVA_TOOL_MAP = {
     "anfang_online": "device:getAnfangDeviceOnlinePercentage",
     "gb_online": "device:getGbOnlinePercentage",
     "mj_online": "device:getMjOnlinePercentage",
-    "device_list": "device_query:listDevice",
+    "device_list": "device_query:listDeviceOnly",
 }
 
 # 支持可选 date 参数的工具（Java 侧接口带 ?date=，格式 yyyy-MM）

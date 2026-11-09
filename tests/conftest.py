@@ -69,6 +69,24 @@ class FakeTool:
         return self.result
 
 
+class FakeLLM:
+    """
+    模拟 LLM：把收到的提示词记在 prompts 里，固定回一句文案。
+
+    正常路径的图都用 llm=None（走原样返回），只有专门断言"提示词口径"的
+    用例才需要它——例如能源域的单位口径（电→千瓦时、水→吨）写在提示词里，
+    只有拿到提示词才能验证它没被改掉。
+    """
+
+    def __init__(self, reply: str = "（模拟回答）"):
+        self.reply = reply
+        self.prompts = []
+
+    async def ainvoke(self, prompt, **kwargs):
+        self.prompts.append(prompt)
+        return type("FakeLLMResp", (), {"content": self.reply})()
+
+
 def make_tools(results_by_tool: dict, delay: float = 0.0) -> dict:
     """
     按时 {java工具名: 返回文本} 构造 {java工具名: FakeTool}
@@ -84,19 +102,20 @@ def make_tools(results_by_tool: dict, delay: float = 0.0) -> dict:
 # 结构参照 Java sidecar 真实返回（rows 列表 / 文本），只保证流程能走通
 # ============================================================
 
-# 资产库设备清单（device_query:listDevice 的真实返回形状）：
-# {code, data:{page:{total,size,pages,current}, data:[设备数组]}}
+# 资产库设备清单（device_query:listDeviceOnly 的真实返回形状）：
+# Java 侧描述是"不分页、返回裸数组"，所以这里 data 直接是设备数组（没有 page 包装）；
+# 注意也**没有 deviceTypeName**（listDeviceOnly 不翻译），类型中文名靠 syncSource 对照。
 # 注意 status 是启用状态（0停用 1启用 2维修 3报废），不是在线/离线
 DEVICE_ASSET_LIST_RESULT = (
-    '{"code":200,"data":{"page":{"total":2,"size":100,"pages":1,"current":1},"data":['
+    '{"code":200,"data":['
     '{"id":"1001","name":"A栋枪机","code":"CY-HIK-JK-001-0001","syncSource":"3",'
-    '"deviceTypeName":"监控设备","status":"1","spaceId":"2001",'
+    '"status":"1","spaceId":"2001",'
     '"spaceName":"园区/A栋/3楼","personInChargeName":"张三","orgName":"安防部",'
     '"maintained":"1"},'
     '{"id":"1002","name":"北门门禁","code":"CY-DH-MJ-002-0001","syncSource":"0",'
-    '"deviceTypeName":"门禁设备","status":"1","spaceId":"2002",'
+    '"status":"1","spaceId":"2002",'
     '"spaceName":"园区/北门/门岗","personInChargeName":"李四","orgName":"安防部",'
-    '"maintained":"0"}]}}'
+    '"maintained":"0"}]}'
 )
 
 DOMAIN_TOOL_RESULTS = {
@@ -186,17 +205,19 @@ DOMAIN_TOOL_RESULTS = {
         "device:getMjOnlinePercentage":
             '{"code":200,"online":70,"total":72}',
         # 台账口径：笼统问法兜底反问"哪类设备"后，用资产库列表工具列设备
-        # （与 device_query 同一工具，/mcp/devicequery 的 device_query:listDevice）
-        "device_query:listDevice": DEVICE_ASSET_LIST_RESULT,
+        # （与 device_query 同一工具，/mcp/devicequery 的 device_query:listDeviceOnly；
+        #  device_status 兜底的"哪类设备"清单走它）
+        "device_query:listDeviceOnly": DEVICE_ASSET_LIST_RESULT,
     },
     "device_query": {
-        # 设备列表：资产库 {page:{...}, data:[设备数组]}（Java PlatformDeviceQueryMcp 口径）
+        # 设备列表：资产库裸数组 {"code":200,"data":[设备数组]}（listDeviceOnly 口径）
         # 详情查询会先调它把"名称/编号"换成"内部 id"
-        "device_query:listDevice": DEVICE_ASSET_LIST_RESULT,
-        # 设备详情：按内部 id 查，返回单个设备对象（比列表多负责人/组织）
+        "device_query:listDeviceOnly": DEVICE_ASSET_LIST_RESULT,
+        # 设备详情：按内部 id 查，返回单个设备对象（比列表多负责人/组织；
+        # 同样没有 deviceTypeName——只有 listDevice 那个接口做类型翻译）
         "device_query:getDeviceDetail":
             '{"code":200,"data":{"id":"1001","name":"A栋枪机","code":"CY-HIK-JK-001-0001",'
-            '"syncSource":"3","deviceTypeName":"监控设备","status":"1","spaceId":"2001",'
+            '"syncSource":"3","status":"1","spaceId":"2001",'
             '"spaceName":"园区/A栋/3楼","personInChargeName":"张三","orgName":"安防部",'
             '"maintained":"1"}}',
     },
