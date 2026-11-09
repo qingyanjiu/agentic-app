@@ -77,6 +77,7 @@ def test_loop_executes_tool_then_answers():
         model="fake",
         registry=_demo_registry(executed),
         on_event=lambda event: events.append(event.type),
+        stream=False,
     )
 
     result = asyncio.run(agent.run("查一下门禁"))
@@ -94,7 +95,12 @@ def test_unknown_tool_is_reported_back_to_model():
         NS(content="", tool_calls=[_tool_call("no_such_tool", "{}")]),
         NS(content="工具不可用，请稍后再试。", tool_calls=None),
     ]
-    agent = LoopAgent(client=_FakeClient(script), model="fake", registry=_demo_registry(executed))
+    agent = LoopAgent(
+        client=_FakeClient(script),
+        model="fake",
+        registry=_demo_registry(executed),
+        stream=False,
+    )
 
     result = asyncio.run(agent.run("查一下"))
 
@@ -121,7 +127,12 @@ def test_length_finish_skips_tool_execution():
         (NS(content="", tool_calls=[_tool_call("demo__query", '{"query":"门禁"}')]), "length"),
         (NS(content="刚才输出太长了，我重新来。", tool_calls=None), "stop"),
     ]
-    agent = LoopAgent(client=_FakeClient(script), model="fake", registry=_demo_registry(executed))
+    agent = LoopAgent(
+        client=_FakeClient(script),
+        model="fake",
+        registry=_demo_registry(executed),
+        stream=False,
+    )
 
     result = asyncio.run(agent.run("查一下门禁"))
 
@@ -163,6 +174,7 @@ def test_tool_timeout_is_reported_back_to_model():
         model="fake",
         registry=registry,
         tool_timeout=0.05,
+        stream=False,
     )
 
     result = asyncio.run(agent.run("查一下"))
@@ -175,7 +187,9 @@ def test_tool_timeout_is_reported_back_to_model():
 def test_cancel_aborts_before_model_call():
     executed: list = []
     client = _FakeClient([])          # 脚本为空：一旦调用模型就会 IndexError
-    agent = LoopAgent(client=client, model="fake", registry=_demo_registry(executed))
+    agent = LoopAgent(
+        client=client, model="fake", registry=_demo_registry(executed), stream=False
+    )
     cancel = asyncio.Event()
     cancel.set()
 
@@ -223,7 +237,11 @@ def test_before_tool_can_block_execution():
         (NS(content="这个工具我现在用不了。", tool_calls=None), "stop"),
     ]
     agent = LoopAgent(
-        client=_FakeClient(script), model="fake", registry=registry, before_tool=guard
+        client=_FakeClient(script),
+        model="fake",
+        registry=registry,
+        before_tool=guard,
+        stream=False,
     )
 
     result = asyncio.run(agent.run("查一下"))
@@ -243,3 +261,73 @@ def test_compress_tool_messages_shrinks_old_results():
     assert compressed >= 1
     assert "已压缩" in messages[0]["content"]
     assert sum(len(m["content"]) for m in messages) <= 6000
+
+
+class _FakeStreamCompletions:
+    """假流式实现：每次 create 返回一段 chunk 序列。"""
+
+    def __init__(self, script):
+        self.script = list(script)
+        self.calls = []
+
+    async def create(self, **kwargs):
+        self.calls.append(kwargs)
+        chunks = self.script.pop(0)
+
+        async def gen():
+            for item in chunks:
+                yield item
+
+        return gen()
+
+
+class _FakeStreamClient:
+    def __init__(self, script):
+        self.chat = NS(completions=_FakeStreamCompletions(script))
+
+
+def _chunk(content=None, tool_calls=None, finish_reason=None):
+    delta = NS(content=content, tool_calls=tool_calls)
+    return NS(choices=[NS(delta=delta, finish_reason=finish_reason)])
+
+
+def _tc_chunk(index=0, call_id=None, name=None, arguments=None):
+    tc = NS(index=index, id=call_id, function=NS(name=name, arguments=arguments))
+    return _chunk(tool_calls=[tc])
+
+
+def test_stream_emits_deltas_and_stitches_tool_arguments():
+    """流式下 arguments 是分片增量，必须按 index 拼接后才能执行工具。"""
+    executed: list = []
+    deltas: list = []
+    script = [
+        [
+            _chunk(content="我先查一下。"),
+            _tc_chunk(0, "call_1", "demo__query", '{"qu'),
+            _tc_chunk(0, None, None, 'ery":"门禁"}'),
+            _chunk(finish_reason="tool_calls"),
+        ],
+        [
+            _chunk(content="共有 3 台门禁设备。"),
+            _chunk(finish_reason="stop"),
+        ],
+    ]
+
+    def collect(event):
+        if event.type == "assistant_delta":
+            deltas.append(event.data.get("text") or "")
+
+    agent = LoopAgent(
+        client=_FakeStreamClient(script),
+        model="fake",
+        registry=_demo_registry(executed),
+        on_event=collect,
+    )
+
+    result = asyncio.run(agent.run("查一下门禁"))
+
+    assert executed == [{"query": "门禁"}]
+    assert result.text == "共有 3 台门禁设备。"
+    assert result.stop_reason == "answered"
+    # 过程稿和最终回答都是逐块吐出来的，前端才能做到"边想边说"
+    assert "".join(deltas) == "我先查一下。共有 3 台门禁设备。"

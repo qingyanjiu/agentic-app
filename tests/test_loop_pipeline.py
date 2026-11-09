@@ -39,8 +39,9 @@ class _FakeLoop:
     def __init__(self):
         self.calls = []
 
-    async def run(self, query, history=None, cancel=None):
+    async def run(self, query, history=None, cancel=None, on_event=None):
         self.calls.append(query)
+        self.on_event = on_event
         return NS(text="loop 回答", stop_reason="answered", tool_calls=[{"name": "loop_tool"}])
 
 

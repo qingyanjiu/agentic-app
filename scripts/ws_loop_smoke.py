@@ -40,35 +40,66 @@ CASES = [
 ]
 
 
-async def _drain(ws, timeout: float) -> list[dict]:
+async def _drain(ws, timeout: float) -> tuple[list[dict], dict]:
     events: list[dict] = []
     while True:
         raw = await asyncio.wait_for(ws.recv(), timeout)
         payload = json.loads(raw)
         if payload.get("status") == "done":
-            return events
+            return events, payload
         events.append(payload)
 
 
-def _summarize(events: list[dict]) -> tuple[str, str, str]:
-    """返回 (type, content, level)。"""
+def _summarize(events: list[dict]) -> tuple[str, str, int, int]:
+    """返回 (type, content, answer 分块数, 工具调用次数)。
+
+    流式下一条回答会被拆成多个 answer 事件，必须拼起来看完整内容，
+    否则只能看到第一块就误判成"没回答完"。
+    """
+    blocks = 0
+    tools = 0
+    parts: list[str] = []
+    question = ""
+    error = ""
     for event in events:
+        if event.get("event") != "custom":
+            continue
         data = event.get("data") or {}
-        if event.get("event") == "custom" and data.get("type") in ("answer", "ask", "error"):
-            return data["type"], data.get("content", ""), data.get("level", "")
-    return "none", "", ""
+        kind = data.get("type")
+        if kind == "answer":
+            blocks += 1
+            parts.append(data.get("content") or "")
+        elif kind == "tool":
+            tools += 1
+        elif kind == "ask":
+            question = data.get("question") or ""
+        elif kind == "error":
+            error = data.get("content") or ""
+    if error:
+        return "error", error, blocks, tools
+    if parts:
+        return "answer", "".join(parts), blocks, tools
+    if question:
+        return "ask", question, blocks, tools
+    return "none", "", blocks, tools
 
 
 async def run_case(ws, query: str, timeout: float) -> tuple[bool, str]:
     await ws.send(json.dumps({"query": query, "mode": "loop"}, ensure_ascii=False))
     try:
-        events = await _drain(ws, timeout)
+        events, done = await _drain(ws, timeout)
     except asyncio.TimeoutError:
         return False, f"超时（>{timeout}s）"
-    kind, content, level = _summarize(events)
+    kind, content, blocks, tools = _summarize(events)
+    level = done.get("level", "")
+    prefix = f"[{level}] " if level else ""
+    meta = ""
+    if blocks > 1:
+        meta += f"stream={blocks}块 "
+    if tools:
+        meta += f"tools={tools} "
     if kind in ("answer", "ask"):
-        prefix = f"[{level}] " if level else ""
-        return True, f"{prefix}{content[:120]}"
+        return True, f"{prefix}{meta}{content[:110]}"
     if kind == "error":
         return False, f"error: {content[:160]}"
     return False, f"没有拿到 answer/ask 事件：{events[:3]}"

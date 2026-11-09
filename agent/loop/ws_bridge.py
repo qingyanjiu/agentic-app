@@ -115,15 +115,43 @@ async def handle_chat(
     pipeline = get_pipeline(llm)
     session = get_session(user_id, session_id)
     cancel = asyncio.Event()
+    streamed_chars = 0
 
     async def on_delta(text: str) -> None:
+        # 前端 case 'answer' 是「追加」语义，流式分块必须用这个 type
+        nonlocal streamed_chars
+        if not text:
+            return
+        streamed_chars += len(text)
         await _send(
             websocket,
-            {"event": "custom", "data": {"type": "answer_delta", "content": text}},
+            {"event": "custom", "data": {"type": "answer", "content": text}},
         )
 
+    async def on_event(event: Any) -> None:
+        """把 loop 内部事件翻译成前端认识的事件。
+
+        - assistant_delta → answer（追加），模型边说边出字；
+        - tool_start → tool（前端据此把已收到的文字落成「过程稿」气泡）；
+        - tool_end 不发：下一次 answer 会自然清掉状态提示。
+        """
+        kind = getattr(event, "type", None)
+        data = getattr(event, "data", None) or {}
+        if kind == "assistant_delta":
+            await on_delta(str(data.get("text") or ""))
+        elif kind == "tool_start":
+            await _send(
+                websocket,
+                {
+                    "event": "custom",
+                    "data": {"type": "tool", "name": data.get("name") or ""},
+                },
+            )
+        elif kind == "error":
+            logger.warning(f"[loop] loop 内部错误：{data.get('message')}")
+
     result: PipelineResult = await pipeline.handle(
-        query, session, cancel=cancel, on_delta=on_delta
+        query, session, cancel=cancel, on_delta=on_delta, on_event=on_event
     )
 
     if result.stop_reason == "handoff":
@@ -132,40 +160,41 @@ async def handle_chat(
         return False
 
     if result.stop_reason == "asked":
+        # 前端读的是 question 字段，不是 content
         await _send(
             websocket,
-            {
-                "event": "custom",
-                "data": {"type": "ask", "content": result.text},
-            },
+            {"event": "custom", "data": {"type": "ask", "question": result.text}},
         )
     elif result.stop_reason == "aborted":
         await _send(
             websocket,
-            {"event": "custom", "data": {"type": "info", "content": result.text}},
+            {"event": "custom", "data": {"type": "answer", "content": result.text}},
         )
     elif result.stop_reason == "error":
         await _send(
             websocket,
             {"event": "custom", "data": {"type": "error", "content": result.text}},
         )
-    else:
+    elif streamed_chars == 0:
+        # 一个字符都没流出去（L2 关流式 / 模型直接给了结论），一次性给出完整回答
         await _send(
             websocket,
-            {
-                "event": "custom",
-                "data": {
-                    "type": "answer",
-                    "content": result.text,
-                    "level": result.level,
-                    "escalated": result.escalated,
-                },
-            },
+            {"event": "custom", "data": {"type": "answer", "content": result.text}},
         )
 
-    await websocket.send_text(json.dumps({"status": "done"}))
+    await websocket.send_text(
+        json.dumps(
+            {
+                "status": "done",
+                "level": result.level,
+                "escalated": result.escalated,
+            },
+            ensure_ascii=False,
+        )
+    )
     logger.info(
         f"[loop] done level={result.level} reason={result.stop_reason} "
-        f"escalated={result.escalated} rollout={decision.reason if decision else '-'}"
+        f"escalated={result.escalated} streamed={streamed_chars} "
+        f"rollout={decision.reason if decision else '-'}"
     )
     return True

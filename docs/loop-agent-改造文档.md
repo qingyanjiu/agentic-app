@@ -356,13 +356,23 @@ SESSION_TTL = 300.0      # 5 分钟无活动即回收
 
 | Pipeline / Loop 事件 | 前端事件 | 说明 |
 |---|---|---|
-| `on_delta` 增量 | `answer_delta` | 已实现，L1 的 Composer 流式输出 |
-| `assistant_message` | `answer` | L1 由 Composer 返回，L2 由 loop 返回 |
-| `asked` | `ask` | 追问（模板生成，不调模型） |
-| `done` / `aborted` | `done` / `info` | 结束 |
-| `error` | `error` | |
+| `on_delta`（Composer） | `{"type":"answer","content":"分块"}` | L1 流式，**追加**语义 |
+| `assistant_delta`（LoopAgent） | `{"type":"answer","content":"分块"}` | L2 流式，模型边说边出字 |
+| `tool_start`（LoopAgent） | `{"type":"tool","name":"工具名"}` | 前端据此把前面的文字落成「过程稿」气泡 |
+| `tool_end` | 不发 | 下一次 `answer` 会清掉状态提示，发了反而闪烁 |
+| `asked` | `{"type":"ask","question":"..."}` | 追问（模板生成，不调模型）。**前端读 `question`，不是 `content`** |
+| `error` | `{"type":"error","content":"..."}` | |
+| 结束 | `{"status":"done","level":"L1/L2","escalated":bool}` | `level` / `escalated` 用于埋点 |
 
-`PipelineResult.level` 与 `escalated` 已写入日志，便于埋点排查。
+约束：一个字符都没流出去时（`streamed_chars == 0`），才补发整段 `answer`；
+否则前端会看到重复内容——这是"看起来没走流式"的根因之一，已用 `streamed_chars` 计数挡住。
+
+前端侧（`AiChatDialog.vue`）的配套改动：
+
+- `case 'tool'` 里先 `flushAnswer(true)`：把模型调工具前那段话落成独立「过程稿」气泡，
+  之后的流式内容进入新气泡，两者不再混成一条；
+- 过程稿用 `ai-message--process` 弱化样式（虚线边框、半透明、小字号）区分最终回答；
+- `clearConversation()` 同时清 `processMessageIds`，避免 id 复用后样式串台。
 
 ### 8.4 灰度和回滚
 
@@ -509,7 +519,9 @@ L2 兜底：6 条（security / information / energy / meeting / device_status / 
 
 ## 15. 已知限制
 
-1. **L2 不流式**：loop 的中间轮次非流式，只有 L1 的 Composer 支持 `on_delta`。
+1. **L2 的收尾总结仍是非流式**：模型主循环已全程流式（`stream=True`，`assistant_delta` 逐块下发），
+   但 `_finalize()`（步数用尽时的兜底总结）是一次性调用，用户会看到一段"无声"等待。
+   另外关闭流式（`stream=False`）时前端只能整段出字。
 2. **压缩是占位式**：不做语义摘要。
 3. **工具串行**：没有并行执行。
 4. **场景控制未纳入**：L0 只做 handoff。

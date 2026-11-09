@@ -7,6 +7,9 @@
 2. 单个工具超时保护 —— max_steps 只管轮数，管不住单次卡死；
 3. cancel 信号 —— 用户在页面上点"停止"必须能中断。
 
+流式：默认 stream=True，模型输出逐字回调 assistant_delta；
+工具调用的 arguments 是分片增量，按 index 累加后再拼成完整 JSON。
+
 其余取舍：
 
 - 工具串行执行。并行会和现有 MCP 客户端/Java sidecar 的连接模型冲突，
@@ -18,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from types import SimpleNamespace as NS
 from typing import Awaitable, Callable
 
 from openai import AsyncOpenAI
@@ -63,6 +67,7 @@ class LoopAgent:
         temperature: float = 0.0,
         tool_timeout: float = 30.0,
         context_budget: int = 60_000,
+        stream: bool = True,
         before_tool: BeforeTool | None = None,
         after_tool: AfterTool | None = None,
         on_event: EventHandler | None = None,
@@ -77,6 +82,7 @@ class LoopAgent:
         self.temperature = temperature
         self.tool_timeout = tool_timeout
         self.context_budget = context_budget
+        self.stream = stream
         self.before_tool = before_tool
         self.after_tool = after_tool
         self.on_event = on_event
@@ -84,11 +90,16 @@ class LoopAgent:
     # ------------------------------------------------------------------ #
     # 事件与状态
     # ------------------------------------------------------------------ #
-    async def _emit(self, type_: str, data: dict | None = None) -> None:
-        if self.on_event is None:
+    async def _emit(
+        self,
+        handler: EventHandler | None,
+        type_: str,
+        data: dict | None = None,
+    ) -> None:
+        if handler is None:
             return
         event = LoopEvent(type_, data or {})
-        result = self.on_event(event)
+        result = handler(event)
         if hasattr(result, "__await__"):
             await result  # type: ignore[func-returns-value]
 
@@ -98,12 +109,13 @@ class LoopAgent:
 
     async def _aborted(
         self,
+        handler: EventHandler | None,
         messages: list[dict],
         executed: list[dict],
         steps: int,
     ) -> LoopResult:
         text = "已取消本轮查询。"
-        await self._emit("aborted", {"steps": steps})
+        await self._emit(handler, "aborted", {"steps": steps})
         return LoopResult(
             text=text,
             messages=messages,
@@ -113,6 +125,88 @@ class LoopAgent:
         )
 
     # ------------------------------------------------------------------ #
+    # 模型调用（流式 / 非流式）
+    # ------------------------------------------------------------------ #
+    async def _call_model(
+        self,
+        messages: list[dict],
+        tools: list[dict],
+        handler: EventHandler | None,
+    ) -> tuple[str, list, str | None]:
+        """返回 (文本, tool_calls, finish_reason)。
+
+        流式下 tool_calls 的 arguments 是分片字符串，必须按 index 累加。
+        """
+        if not self.stream:
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                tools=tools,
+                tool_choice="auto",
+                temperature=self.temperature,
+            )
+            choice = response.choices[0]
+            message = choice.message
+            return (
+                message.content or "",
+                list(message.tool_calls or []),
+                getattr(choice, "finish_reason", None),
+            )
+
+        stream = await self.client.chat.completions.create(
+            model=self.model,
+            messages=messages,
+            tools=tools,
+            tool_choice="auto",
+            temperature=self.temperature,
+            stream=True,
+        )
+        parts: list[str] = []
+        slots: dict[int, dict] = {}
+        finish_reason: str | None = None
+
+        async for chunk in stream:
+            choices = getattr(chunk, "choices", None) or []
+            if not choices:
+                continue
+            choice = choices[0]
+            if getattr(choice, "finish_reason", None):
+                finish_reason = choice.finish_reason
+            delta = getattr(choice, "delta", None)
+            if delta is None:
+                continue
+
+            content = getattr(delta, "content", None)
+            if content:
+                parts.append(content)
+                await self._emit(handler, "assistant_delta", {"text": content})
+
+            for tc in getattr(delta, "tool_calls", None) or []:
+                index = getattr(tc, "index", 0) or 0
+                slot = slots.setdefault(index, {"id": "", "name": "", "arguments": ""})
+                if getattr(tc, "id", None):
+                    slot["id"] = tc.id
+                fn = getattr(tc, "function", None)
+                if fn is not None:
+                    if getattr(fn, "name", None):
+                        slot["name"] = fn.name
+                    if getattr(fn, "arguments", None):
+                        slot["arguments"] += fn.arguments
+
+        tool_calls = [
+            NS(
+                id=slot["id"] or f"call_{index}",
+                function=NS(
+                    name=slot["name"],
+                    arguments=slot["arguments"] or "{}",
+                ),
+            )
+            for index, slot in sorted(slots.items())
+            if slot["name"]
+        ]
+        return "".join(parts), tool_calls, finish_reason
+
+    # ------------------------------------------------------------------ #
     # 主循环
     # ------------------------------------------------------------------ #
     async def run(
@@ -120,7 +214,11 @@ class LoopAgent:
         user_input: str,
         history: list[dict] | None = None,
         cancel: asyncio.Event | None = None,
+        on_event: EventHandler | None = None,
     ) -> LoopResult:
+        # 优先用本次调用传入的 handler，避免单例被并发会话串台
+        handler = on_event or self.on_event
+
         messages: list[dict] = [{"role": "system", "content": self.system_prompt}]
         messages.extend(history or [])
         messages.append({"role": "user", "content": user_input})
@@ -131,7 +229,7 @@ class LoopAgent:
 
         while steps < self.max_steps:
             if self._cancelled(cancel):
-                return await self._aborted(messages, executed, steps)
+                return await self._aborted(handler, messages, executed, steps)
 
             # 工具结果总量超预算时，压缩最早的长结果（不调模型）
             compressed = compress_tool_messages(messages, self.context_budget)
@@ -140,16 +238,12 @@ class LoopAgent:
 
             steps += 1
             try:
-                response = await self.client.chat.completions.create(
-                    model=self.model,
-                    messages=messages,
-                    tools=tools,
-                    tool_choice="auto",
-                    temperature=self.temperature,
+                text, tool_calls, finish_reason = await self._call_model(
+                    messages, tools, handler
                 )
             except Exception as exc:  # 网络/鉴权/模型侧错误
                 logger.exception("[loop] 模型调用失败")
-                await self._emit("error", {"message": str(exc)})
+                await self._emit(handler, "error", {"message": str(exc)})
                 return LoopResult(
                     text=f"模型调用失败：{exc}",
                     messages=messages,
@@ -158,16 +252,11 @@ class LoopAgent:
                     stop_reason="error",
                 )
 
-            choice = response.choices[0]
-            message = choice.message
-            finish_reason = getattr(choice, "finish_reason", None)
-            tool_calls = list(message.tool_calls or [])
-
             # 没有工具调用 → 本轮就是最终回答
             if not tool_calls:
-                text = (message.content or "").strip()
-                await self._emit("assistant_message", {"text": text})
-                await self._emit("done", {"steps": steps})
+                text = text.strip()
+                await self._emit(handler, "assistant_message", {"text": text})
+                await self._emit(handler, "done", {"steps": steps})
                 return LoopResult(
                     text=text,
                     messages=messages,
@@ -180,7 +269,7 @@ class LoopAgent:
             messages.append(
                 {
                     "role": "assistant",
-                    "content": message.content or "",
+                    "content": text,
                     "tool_calls": [
                         {
                             "id": tc.id,
@@ -199,7 +288,7 @@ class LoopAgent:
             if finish_reason == "length":
                 for tc in tool_calls:
                     name = tc.function.name
-                    text = (
+                    notice = (
                         f'工具调用 "{name}" 未执行：模型输出达到长度上限，'
                         f"参数可能被截断。请重新生成完整参数后再调用。"
                     )
@@ -209,25 +298,29 @@ class LoopAgent:
                             "name": name,
                             "arguments": tc.function.arguments,
                             "is_error": True,
-                            "preview": text[:200],
+                            "preview": notice[:200],
                         }
                     )
                     messages.append(
-                        {"role": "tool", "tool_call_id": tc.id, "content": text}
+                        {"role": "tool", "tool_call_id": tc.id, "content": notice}
                     )
                     await self._emit(
-                        "tool_end", {"name": name, "is_error": True, "preview": text[:200]}
+                        handler,
+                        "tool_end",
+                        {"name": name, "is_error": True, "preview": notice[:200]},
                     )
                 continue
 
             all_terminate = True
             for tc in tool_calls:
                 if self._cancelled(cancel):
-                    return await self._aborted(messages, executed, steps)
+                    return await self._aborted(handler, messages, executed, steps)
 
                 name = tc.function.name
                 await self._emit(
-                    "tool_start", {"name": name, "arguments": tc.function.arguments}
+                    handler,
+                    "tool_start",
+                    {"name": name, "arguments": tc.function.arguments},
                 )
                 outcome = await self._execute(name, tc.function.arguments)
                 all_terminate = all_terminate and outcome.terminate
@@ -243,15 +336,20 @@ class LoopAgent:
                     {"role": "tool", "tool_call_id": tc.id, "content": outcome.text}
                 )
                 await self._emit(
+                    handler,
                     "tool_end",
-                    {"name": name, "is_error": outcome.is_error, "preview": outcome.text[:200]},
+                    {
+                        "name": name,
+                        "is_error": outcome.is_error,
+                        "preview": outcome.text[:200],
+                    },
                 )
 
             if all_terminate:
                 break
 
         # 步数用尽：再要一次不带工具的总结，避免给用户一个空回答
-        await self._emit("error", {"message": "达到最大工具调用步数"})
+        await self._emit(handler, "error", {"message": "达到最大工具调用步数"})
         summary = await self._finalize(messages)
         return LoopResult(
             text=summary,

@@ -114,7 +114,19 @@ async def _main(args: argparse.Namespace) -> int:
     client, model = _resolve_client()
     registry = build_registry()
 
+    streamed = {"any": False}
+
     def on_event(event) -> None:
+        # 流式增量逐字输出，避免每块都打一行 JSON
+        if event.type == "assistant_delta":
+            text = event.data.get("text") or ""
+            if text:
+                streamed["any"] = True
+                print(text, end="", flush=True)
+            return
+        if streamed["any"]:
+            print()
+            streamed["any"] = False
         payload = json.dumps(event.data, ensure_ascii=False)
         print(f"[{event.type}] {payload[:400]}")
 

@@ -84,12 +84,15 @@ class ChatPipeline:
         session: Session,
         cancel: asyncio.Event | None = None,
         on_delta=None,
+        on_event=None,
     ) -> PipelineResult:
         plan = await self.router.route(query, session.pending)
 
         # ---------- L2：交给 loop ----------
         if plan is None:
-            return await self._run_loop(query, session, cancel, level="L2")
+            return await self._run_loop(
+                query, session, cancel, level="L2", on_event=on_event
+            )
 
         # ---------- L0 场景控制：暂不接管，交回旧链路 ----------
         if plan.tool is None:
@@ -124,7 +127,9 @@ class ChatPipeline:
         # 工具说"我搞不定" → 升级到 loop 换工具重试
         if outcome.escalate:
             logger.info(f"[pipeline] {plan.tool} 请求升级到 L2：{outcome.text[:120]}")
-            result = await self._run_loop(query, session, cancel, level="L2")
+            result = await self._run_loop(
+                query, session, cancel, level="L2", on_event=on_event
+            )
             result.escalated = True
             return result
 
@@ -155,6 +160,7 @@ class ChatPipeline:
         cancel: asyncio.Event | None = None,
         *,
         level: str = "L2",
+        on_event=None,
     ) -> PipelineResult:
         if self.loop_agent is None:
             return PipelineResult(
@@ -162,7 +168,9 @@ class ChatPipeline:
                 level=level,
                 stop_reason="loop_unavailable",
             )
-        result = await self.loop_agent.run(query, history=session.history, cancel=cancel)
+        result = await self.loop_agent.run(
+            query, history=session.history, cancel=cancel, on_event=on_event
+        )
         if result.stop_reason != "aborted":
             session.add_turn(query, result.text)
         session.clear_pending()
