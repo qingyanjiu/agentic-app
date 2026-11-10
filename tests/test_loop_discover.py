@@ -240,12 +240,12 @@ def test_get_discovered_is_empty_before_warm():
 
 
 def test_excluded_overlapping_tool_is_skipped():
-    """和显式工具干同一件事的，即使参数简单也要排掉——模型会在两个入口间瞎选。"""
+    """"列设备"这一类有重复入口的要排掉——模型会在两个入口间瞎选。"""
     box = _box_with(
         {
             "devicequery": [
                 NS(name="devicequery:listDeviceWithSpace", description="", inputSchema={}),
-                NS(name="devicequery:countByDeviceType", description="", inputSchema={}),
+                NS(name="devicequery:countByStatus", description="", inputSchema={}),
             ]
         }
     )
@@ -253,4 +253,26 @@ def test_excluded_overlapping_tool_is_skipped():
     domains = asyncio.run(discover_domains(box, set(), ("devicequery",)))
 
     names = [tool.name for tool in domains[0].tools]
-    assert names == ["devicequery__countByDeviceType"]
+    assert names == ["devicequery__countByStatus"]
+
+
+def test_broken_tools_are_blacklisted():
+    """2026-11-10：countMonitorBySubType 仍返回 null，先停掉止血。
+
+    countByDeviceType 同日一起坏过（500 / 耗时 19~95s），已在 16:52 修复并放开，
+    所以这里它应该正常出现。接口修好后从 _EXCLUDE_TOOLS 删掉对应名字即可。
+    """
+    box = _box_with(
+        {
+            "devicequery": [
+                NS(name="devicequery:countByDeviceType", description="", inputSchema={}),
+                NS(name="devicequery:countMonitorBySubType", description="", inputSchema={}),
+                NS(name="devicequery:getEquipClass", description="", inputSchema={}),
+            ]
+        }
+    )
+
+    domains = asyncio.run(discover_domains(box, set(), ("devicequery",)))
+
+    names = [tool.name for tool in domains[0].tools]
+    assert names == ["devicequery__countByDeviceType", "devicequery__getEquipClass"]

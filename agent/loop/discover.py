@@ -46,7 +46,17 @@ PILOT_SERVERS: tuple[str, ...] = ("devicequery",)
 
 # 参数再简单也不能直通：与显式工具语义重叠，模型会在两个入口之间瞎选。
 # listDeviceWithSpace 和 device_query__list（listDeviceOnly）都是"列设备"。
-_EXCLUDE_TOOLS: frozenset[str] = frozenset({"listDeviceWithSpace"})
+#
+# 2026-11-10 追加停用：countMonitorBySubType 在 Java 侧"不限空间"分支上
+# 返回字面量 null（不是空数组），模型看到 null 会答成"查不到"。先停掉，
+# 接口修好后从这个集合里删掉即可恢复。
+#
+# 注：countByDeviceType 同日一起坏过（500 / 耗时 19~95s），已在 16:52 修复
+# 并实测 0.2s / 579 台与台账一致，已从下面移出，正常暴露。
+_EXCLUDE_TOOLS: frozenset[str] = frozenset({
+    "listDeviceWithSpace",
+    "countMonitorBySubType",
+})
 # 时间戳类：要求精确到秒（yyyy-MM-dd HH:mm:ss）。描述写得再细，
 # 模型也算不准"今天"对应的秒级时刻；而且填错会返回一段看起来合法的错误时间段，
 # 用户从结果里察觉不到。这类必须由代码翻译，不能让模型填。
