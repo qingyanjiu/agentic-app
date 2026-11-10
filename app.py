@@ -132,13 +132,18 @@ async def startup():
         try:
             from agent.loop.discover import warm_discovered
 
-            found = await asyncio.wait_for(warm_discovered(), timeout=12)
+            found = await asyncio.wait_for(warm_discovered(), timeout=10)
             tool_count = sum(len(domain.tools) for domain in found)
             logger.info(
                 f"[startup] MCP 工具发现完成：{len(found)} 个域 / {tool_count} 个工具"
             )
-        except Exception as e:
-            logger.warning(f"[startup] MCP 工具发现跳过（仅使用显式工具）: {e}")
+        except BaseException as e:  # noqa: BLE001
+            # 必须是 BaseException：MCP 不可达时 wait_for 超时会抛 CancelledError，
+            # 早期写 except Exception 接不住，直接把 startup 带崩（服务起不来）。
+            # 工具发现是可选项，失败就该退回只用 14 个显式工具。
+            logger.warning(
+                f"[startup] MCP 工具发现跳过（仅使用显式工具）: {type(e).__name__} {e}"
+            )
     else:
         logger.info("[startup] LOOP_DISCOVER=0，跳过 MCP 工具发现")
     _start_prewarm()

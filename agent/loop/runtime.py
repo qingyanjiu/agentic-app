@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, suppress
 from typing import Any
 
 from mcp import ClientSession
@@ -119,8 +119,13 @@ class McpToolbox:
             )
             session = await stack.enter_async_context(ClientSession(read, write))
             await asyncio.wait_for(session.initialize(), self.connect_timeout)
-        except Exception:
-            await stack.aclose()
+        except BaseException:
+            # 连接失败或被取消（外层 wait_for 超时会抛 CancelledError，
+            # 它继承 BaseException，用 except Exception 接不住）。
+            # 早期这里就是漏了这点，导致 MCP 不可达时异常穿透到
+            # FastAPI startup，整个服务起不来。
+            with suppress(BaseException):
+                await stack.aclose()
             raise
 
         self._stacks[server] = stack

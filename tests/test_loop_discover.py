@@ -254,3 +254,50 @@ def test_excluded_overlapping_tool_is_skipped():
 
     names = [tool.name for tool in domains[0].tools]
     assert names == ["devicequery__countByStatus"]
+
+
+def test_warm_discovered_swallows_cancelled_error():
+    """MCP 不可达时外层 wait_for 超时会抛 CancelledError（继承 BaseException）。
+
+    这是线上踩过的坑：warm_discovered 里原本写的是 except Exception，
+    接不住 CancelledError，异常一路穿透到 FastAPI startup，整个服务起不来。
+    """
+    from agent.loop.discover import reset_discovered, warm_discovered
+
+    class _Boom:
+        async def tool_schemas(self, server):
+            raise asyncio.CancelledError("simulated wait_for timeout")
+
+    reset_discovered()
+    assert asyncio.run(warm_discovered(toolbox=_Boom())) == []
+
+
+def test_warm_discovered_degrades_when_server_unreachable(tmp_path):
+    """指向连不上的地址：返回空列表、不抛异常、几秒内结束。"""
+    import textwrap
+    import time
+
+    from agent.loop.discover import reset_discovered, warm_discovered
+    from agent.loop.runtime import McpToolbox
+
+    cfg = tmp_path / "mcp.yaml"
+    cfg.write_text(
+        textwrap.dedent(
+            """
+            mcp_servers:
+              devicequery:
+                transport: streamable_http
+                url: http://127.0.0.1:1/mcp/devicequery
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    reset_discovered()
+    box = McpToolbox(yaml_path=str(cfg), timeout=1, connect_timeout=1)
+    started = time.time()
+    result = asyncio.run(warm_discovered(toolbox=box))
+    elapsed = time.time() - started
+
+    assert result == []
+    assert elapsed < 8, f"降级耗时 {elapsed:.1f}s，太久了"

@@ -220,14 +220,20 @@ async def warm_discovered(
     from .domains import build_default_domains
 
     own = toolbox is None
-    box = toolbox or McpToolbox()
+    # 内部超时要明显小于调用方（startup）的外层 wait_for，
+    # 否则外层强杀会抛 CancelledError，只能靠下面的 BaseException 兜。
+    box = toolbox or McpToolbox(timeout=6, connect_timeout=4)
     try:
         explicit = build_default_domains(box)
         known = {pair for domain in explicit for pair in domain.mcp_tools}
         _discovered = await discover_domains(box, known, servers)
         return _discovered
-    except Exception as exc:
-        logger.warning(f"[discover] 工具发现失败，仅使用显式工具：{exc}")
+    except BaseException as exc:  # noqa: BLE001
+        # 必须是 BaseException：MCP 不可达时外层 wait_for 超时会抛 CancelledError，
+        # 工具发现只是可选增强，绝不能让整个服务启动失败。
+        logger.warning(
+            f"[discover] 工具发现跳过（仅用显式工具）：{type(exc).__name__} {exc}"
+        )
         return []
     finally:
         if own:
