@@ -47,11 +47,21 @@ PILOT_SERVERS: tuple[str, ...] = ("devicequery",)
 # 参数再简单也不能直通：与显式工具语义重叠，模型会在两个入口之间瞎选。
 # listDeviceWithSpace 和 device_query__list（listDeviceOnly）都是"列设备"。
 _EXCLUDE_TOOLS: frozenset[str] = frozenset({"listDeviceWithSpace"})
-# 参数名里出现这些词，说明是接口口径（时间戳、内部 id、编码、空间 id），
-# 模型给不出合理值——给了也是瞎编。
-_UNSAFE_PARAM = re.compile(
-    r"time|date|start|end|id|code|source|space|area|region",
-    re.IGNORECASE,
+# 时间戳类：要求精确到秒（yyyy-MM-dd HH:mm:ss）。描述写得再细，
+# 模型也算不准"今天"对应的秒级时刻；而且填错会返回一段看起来合法的错误时间段，
+# 用户从结果里察觉不到。这类必须由代码翻译，不能让模型填。
+_TIME_PARAM = re.compile(r"time|date|start|end", re.IGNORECASE)
+
+# 内部标识：必填 id 一定是"从另一个接口的返回里取"（如 getDeviceDetail 要
+# listDeviceOnly 的 id）。用户不会主动报 uuid，模型只能编，所以直接排除。
+# 注意 code（设备编号）不属于此类——那是用户能直接说出来的，模型抄原话即可。
+_INTERNAL_ID_PARAM = re.compile(r"(^id$|Id$|_id$)", re.IGNORECASE)
+
+# 描述里带"编码-中文"对照（7-电表 / 0门禁 / jk(监控设备)）说明取值可枚举，
+# 模型照着选就行。这类不能因为参数名看着危险就排掉。
+_ENUM_IN_DESC = re.compile(
+    r"[0-9A-Za-z]+\s*[-=:：]\s*[\u4e00-\u9fa5]"
+    r"|[(（][\u4e00-\u9fa5]{2,}[)）]"
 )
 
 _ALLOWED_TYPES = ("string", "integer", "number", "boolean")
@@ -64,10 +74,20 @@ _discovered: list[DomainSpec] = []
 # 判定与构造（纯函数，方便单测）
 # ----------------------------------------------------------------------
 def _param_is_fillable(name: str, spec: dict) -> bool:
-    """这个参数模型能不能自己填出合理值。"""
+    """这个参数模型能不能自己填出合理值。
+
+    依据不是参数名，而是**描述里有没有可枚举的取值**：
+    MCP 侧把枚举写得很细（"deviceType: 0门禁 1道闸 2梯控…"），
+    模型照着选完全没问题；按名字一刀切会把本来能的也排掉。
+    """
+    desc = str(spec.get("description") or "")
     if spec.get("enum"):
-        return True  # 枚举：模型照着选项选，安全
-    if _UNSAFE_PARAM.search(name):
+        return True
+    if _ENUM_IN_DESC.search(desc):
+        return True
+    if _TIME_PARAM.search(name):
+        return False
+    if _INTERNAL_ID_PARAM.search(name):
         return False
     return spec.get("type", "string") in _ALLOWED_TYPES
 
@@ -81,8 +101,15 @@ def screen_schema(schema: dict | None) -> tuple[bool, str]:
     props = schema.get("properties") or {}
     for name in schema.get("required") or []:
         spec = props.get(name) or {}
-        if not _param_is_fillable(name, spec):
-            return False, f"必填参数 {name} 是接口口径，模型填不出来"
+        if _param_is_fillable(name, spec):
+            continue
+        if _TIME_PARAM.search(name):
+            why = "要秒级时间戳，模型算不准"
+        elif _INTERNAL_ID_PARAM.search(name):
+            why = "要从别的接口取内部 id"
+        else:
+            why = "参数类型无法自动映射"
+        return False, f"必填参数 {name}：{why}"
     return True, ""
 
 

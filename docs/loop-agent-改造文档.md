@@ -674,15 +674,28 @@ devicequery 24          overview 2  inspection 4
 真正卡住的是参数：返回 JSON 交给模型组织没有问题，但 `startTime` 填错，
 返回的就已经是错数据了。
 
-所以筛子是 `screen_schema()`（`agent/loop/discover.py`）：
+所以筛子是 `screen_schema()`（`agent/loop/discover.py`）。判据**不是参数名长得可不可疑**，
+而是**描述里有没有可枚举的取值**：
 
-| 条件 | 处理 |
-|---|---|
-| required 为空或全为枚举 | 放行 |
-| required 含 time / date / start / end / id / code / source / space / area / region | 排除（模型填不出来） |
-| required 类型不是 string/number/integer/boolean | 排除 |
-| 已被显式域使用的 MCP 工具 | 排除（同一能力两个入口，模型会选错） |
-| `_EXCLUDE_TOOLS` 黑名单 | 排除（语义重叠，如 `listDeviceWithSpace` vs `device_query__list`） |
+| 条件 | 处理 | 为什么 |
+|---|---|---|
+| 参数有 `enum`，或描述里带"编码-中文"对照（`7-电表` / `0门禁` / `jk(监控设备)`） | 放行 | 模型照着选项选，不会错 |
+| 必填参数名是 time / date / start / end | 排除 | 要秒级时间戳，模型算不准"今天"，且填错会返回看似合法的错误时段 |
+| 必填参数是内部 id（`id` / `xxxId`） | 排除 | 只能从另一个接口的返回里取，用户不会主动报 uuid |
+| 已被显式域使用的 MCP 工具 | 排除 | 同一能力两个入口，模型会选错 |
+| `_EXCLUDE_TOOLS` 黑名单 | 排除 | 语义重叠，如 `listDeviceWithSpace` vs `device_query__list` |
+
+**这条判据是踩过坑改出来的**。最初按参数名一刀切（`time` / `date` / `id` / `code` /
+`source` / `space`），结果把 `getEnergyOnlineRate` 和 `getVendorDeviceDetail` 也排掉了。
+读它们的原文才发现 MCP 侧描述写得极细：
+
+- `getEnergyOnlineRate`：必传 `syncSource:7-电表 / 6-水表`，只支持这两个；还写了
+  `ONLINE_PERCENTAGE` 是 0~1 的小数（0.92 表示 92%）要换算、分母只含"启用"设备
+- `getVendorDeviceDetail`：`code` 必填，形如 `CY-HIK-JK-001-0001`，**不是**
+  `getVendorDeviceList` 的 channelCode/EndpointID，也不是 `getDeviceDetail` 的内部 id
+
+枚举、单位换算、易错点都写明了，模型完全能填对。所以判据改成"看描述"，
+这两个放行（19 → 21 个）。
 
 注意**只看 required**：可选参数不填就是后端默认口径，不该因为它整条排除。
 所以 `countByDeviceType`（`spaceId` 可选）是放行的——不传就是全园区统计。
@@ -720,8 +733,8 @@ getEquipClass / getEquipDistribution / getStatisRegion / getVendorDeviceList
 
 这批正好补上「设备在线率」「设备分布」「各类设备数量」这类现在答不了的问法
 （旧链路只覆盖其中一部分，L2 loop 之前碰到就答"查不了"）。排除
-`listDeviceWithSpace`（与 `device_query__list` 重复）后，**实际新增 19 个，
-registry 从 14 个工具变成 33 个**。
+`listDeviceWithSpace`（与 `device_query__list` 重复）后，**实际新增 21 个，
+registry 从 14 个工具变成 35 个**。
 
 ### 19.4 装配方式：为什么不能启动后动态加
 
@@ -750,7 +763,7 @@ python -m agent.loop.cli --discover
 LOOP_DISCOVER=0
 ```
 
-启动日志会打 `[startup] MCP 工具发现完成：1 个域 / 19 个工具`；
+启动日志会打 `[startup] MCP 工具发现完成：1 个域 / 21 个工具`；
 被跳过的工具和原因也打 `[discover] devicequery 跳过 N 个：...`。
 
 ### 19.6 已知风险

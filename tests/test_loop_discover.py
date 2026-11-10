@@ -38,11 +38,44 @@ def test_time_params_are_rejected():
     assert "startTime" in reason
 
 
-def test_space_id_and_code_are_rejected():
-    for name in ("spaceId", "deviceCode", "syncSource", "areaId"):
-        schema = {"properties": {name: {"type": "string"}}, "required": [name]}
-        ok, _ = screen_schema(schema)
-        assert ok is False, name
+def test_enum_in_description_is_fillable():
+    """枚举写在描述里就够了。
+
+    MCP 侧确实这么写（syncSource: "7-电表 / 6-水表"），
+    按参数名一刀切会把这类本来能用的误排掉。
+    """
+    schema = {
+        "properties": {
+            "syncSource": {
+                "type": "string",
+                "description": "设备类型,必传。7-电表 / 6-水表",
+            }
+        },
+        "required": ["syncSource"],
+    }
+    assert screen_schema(schema)[0] is True
+
+
+def test_user_supplied_code_is_fillable():
+    """code 是用户能直接说出来的编号（CY-HIK-JK-001-0001），模型抄原话即可。"""
+    schema = {
+        "properties": {
+            "code": {
+                "type": "string",
+                "description": "设备编号,必填,形如 CY-HIK-JK-001-0001",
+            }
+        },
+        "required": ["code"],
+    }
+    assert screen_schema(schema)[0] is True
+
+
+def test_internal_id_is_rejected():
+    """必填 id 只能从别的接口的返回里取，用户不会主动报 uuid，模型只能编。"""
+    schema = {"properties": {"id": {"type": "string"}}, "required": ["id"]}
+    ok, why = screen_schema(schema)
+    assert ok is False
+    assert "id" in why
 
 
 def test_enum_param_is_fillable():
