@@ -47,14 +47,23 @@ __all__ = [
 
 
 def build_registry() -> ToolRegistry:
-    """装配内置业务域。
+    """装配内置业务域 + 启动时动态发现到的 MCP 工具。
 
-    新增一个业务域：在 agent/loop/domains/ 下加一个模块，导出 build_domain(toolbox)，
-    然后在这里 add_domain。不需要改 loop 本身。
+    新增一个显式业务域：在 agent/loop/domains/ 下加一个模块，导出
+    build_domain(toolbox)，然后登记到 domains/_MODULES。
+
+    动态发现的部分来自 discover.warm_discovered()（startup 时预热）：
+    未预热、或 MCP 不可达时为空的，此时行为与「只有显式工具」完全一致。
     """
+    from .discover import get_discovered
     from .domains import build_default_domains
 
     registry = ToolRegistry()
     for domain in build_default_domains():
+        registry.add_domain(domain)
+
+    for domain in get_discovered():
+        if domain.name in {item.name for item in registry.domains}:
+            continue
         registry.add_domain(domain)
     return registry

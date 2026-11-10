@@ -118,4 +118,8 @@ def build_from(cfg: QueryDomain, toolbox: McpToolbox) -> DomainSpec:
                 execute=execute,
             )
         ],
+        # 自检 / 发现去重用：这个域会打到哪些 MCP 工具（去重保序）
+        mcp_tools=tuple(
+            (cfg.server, name) for name in dict.fromkeys(cfg.tool_map.values())
+        ),
     )

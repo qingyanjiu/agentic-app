@@ -393,4 +393,6 @@ def build_domain(toolbox: McpToolbox) -> DomainSpec:
                 execute=device_detail,
             ),
         ],
+        # 自检 / 发现去重用：这个域会打到哪些 MCP 工具
+        mcp_tools=((SERVER, TOOL_LIST), (SERVER, TOOL_DETAIL)),
     )

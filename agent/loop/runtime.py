@@ -149,7 +149,9 @@ class McpToolbox:
         if stack is not None:
             try:
                 await stack.aclose()
-            except Exception:
+            except BaseException:  # noqa: BLE001
+                # mcp SDK 关会话时可能抛 BaseExceptionGroup / CancelledError
+                # （anyio TaskGroup 的清理时序），清理路径上不该把它抛给调用方
                 logger.debug(f"[mcp] 关闭 [{server}] 连接时忽略异常", exc_info=True)
 
     async def close(self) -> None:
@@ -171,6 +173,16 @@ class McpToolbox:
         }
         logger.info(f"[mcp] server [{server}] 可用工具 {len(mapping)} 个")
         return mapping
+
+    async def tool_schemas(self, server: str) -> list:
+        """返回 MCP 原始 tool 对象（含 inputSchema），供动态发现使用。
+
+        tools_for() 只给 {名字: 描述}，够诊断但不够生成工具声明；
+        这里保留 SDK 的原始对象，调用方自己取 name/description/inputSchema。
+        """
+        session = await self._session_for(server)
+        result = await asyncio.wait_for(session.list_tools(), self.timeout)
+        return list(getattr(result, "tools", None) or [])
 
     async def call(self, server: str, tool_name: str, args: dict | None = None) -> str:
         """调用一个 MCP 工具并返回文本。

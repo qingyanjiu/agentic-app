@@ -103,4 +103,8 @@ def build_domain(toolbox: McpToolbox) -> DomainSpec:
                 execute=person_status,
             )
         ],
+        # 自检 / 发现去重用：这个域会打到哪些 MCP 工具（去重保序）
+        mcp_tools=tuple(
+            (SERVER, name) for name in dict.fromkeys(JAVA_TOOL_MAP.values())
+        ),
     )

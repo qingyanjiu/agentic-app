@@ -650,3 +650,116 @@ python3 -m pytest -q tests/test_loop_agent.py tests/test_loop_pipeline.py
 - L1 / L2 的实际占比与延迟
 
 **当前明确不做的**：分类器语料补充（等业务给出确定的提示词/问法）、阈值调整（等 T1 数据）。
+
+
+## 19. MCP 工具动态发现（试点）
+
+### 19.1 问题
+
+loop 的 **14 个工具全部手写**，而 MCP 侧实际有 **87 个**（不含 knowledge / scene 两个专属直连 server）：
+
+```
+local 3   security 10   canteen 3   vehicle 6   information 6
+energy 7  meeting 6     fire 4      perimeter 4 device 8
+devicequery 24          overview 2  inspection 4
+```
+
+手写的理由是**参数口径**：Java 接口要 `startTime`（`yyyy-MM-dd HH:mm:ss`）、
+`spaceId`（内部 id）、`syncSource`（枚举码），模型编不出来。所以过去把
+「用户原话 → 接口参数」的解析下沉到工具内部，模型只传 `{"query": "原话"}`。
+
+### 19.2 判据：不是"返回值要不要处理"，而是"参数能不能自己填"
+
+最初的设想是"返回体需要改写的才手写，其余直通"。实测后这个判据不够——
+真正卡住的是参数：返回 JSON 交给模型组织没有问题，但 `startTime` 填错，
+返回的就已经是错数据了。
+
+所以筛子是 `screen_schema()`（`agent/loop/discover.py`）：
+
+| 条件 | 处理 |
+|---|---|
+| required 为空或全为枚举 | 放行 |
+| required 含 time / date / start / end / id / code / source / space / area / region | 排除（模型填不出来） |
+| required 类型不是 string/number/integer/boolean | 排除 |
+| 已被显式域使用的 MCP 工具 | 排除（同一能力两个入口，模型会选错） |
+| `_EXCLUDE_TOOLS` 黑名单 | 排除（语义重叠，如 `listDeviceWithSpace` vs `device_query__list`） |
+
+注意**只看 required**：可选参数不填就是后端默认口径，不该因为它整条排除。
+所以 `countByDeviceType`（`spaceId` 可选）是放行的——不传就是全园区统计。
+
+### 19.3 实测：只有 devicequery 有空缺
+
+```
+server          总数  显式已用  空缺  其中可直通
+local             3      3      0        0
+security         10     10      0        0
+canteen           3      3      0        0
+vehicle           6      5      1        0
+information       6      6      0        0
+energy            7      7      0        0
+meeting           6      6      0        0
+fire              4      4      0        0
+perimeter         4      4      0        0
+device            8      8      0        0
+devicequery      24      2     22       20
+overview          2      2      0        0
+inspection        4      4      0        0
+```
+
+**12 个 server 的工具已被显式域用满**——这也解释了为什么当初手写 14 个工具就够用。
+唯一有空缺的是 `devicequery`：24 个工具只用了 2 个（listDeviceOnly / getDeviceDetail），
+剩下 22 个里 20 个是统计类接口：
+
+```
+countByDeviceType / countByFloor / countByParam / countBySpace / countByStatus
+countByTypeAndStatus / countMonitorByStatus / countMonitorBySubType
+getAnfangDeviceOnlinePercentage / getCameraOnlinePercentage / getMjOnlinePercentage
+getCategoryHealth / getDeviceStatistics / getDistribution / getEnergyDeviceStatus
+getEquipClass / getEquipDistribution / getStatisRegion / getVendorDeviceList
+```
+
+这批正好补上「设备在线率」「设备分布」「各类设备数量」这类现在答不了的问法
+（旧链路只覆盖其中一部分，L2 loop 之前碰到就答"查不了"）。排除
+`listDeviceWithSpace`（与 `device_query__list` 重复）后，**实际新增 19 个，
+registry 从 14 个工具变成 33 个**。
+
+### 19.4 装配方式：为什么不能启动后动态加
+
+`LoopAgent` 的 system prompt（含工具概览）是**构造时固化**的，晚加的域进不去。
+所以走「启动预热 → 进程内缓存 → `build_registry()` 同步读取」：
+
+```
+app.py startup
+  └─ warm_discovered()            # asyncio.wait_for 12s，失败只告警
+       ├─ build_default_domains(box)   # 拿已知的 64 个 (server, tool)
+       ├─ discover_domains()           # 拉 list_tools + 筛选
+       └─ 写入 discover._discovered
+ws_bridge.build_pipeline()        # 首次聊天时
+  └─ build_registry()             # 显式 13 域 + get_discovered()
+```
+
+MCP 不可达 → `_discovered` 为空 → 只有 14 个显式工具，**行为与改造前完全一致**。
+
+### 19.5 运维
+
+```bash
+# 手动看筛出了什么（不写缓存、不影响服务）
+python -m agent.loop.cli --discover
+
+# 一键退回：只用 14 个手写工具
+LOOP_DISCOVER=0
+```
+
+启动日志会打 `[startup] MCP 工具发现完成：1 个域 / 19 个工具`；
+被跳过的工具和原因也打 `[discover] devicequery 跳过 N 个：...`。
+
+### 19.6 已知风险
+
+1. **工具变多，模型选择面变大**：14 → 33。同类统计接口名字相近
+   （`countByStatus` / `countByTypeAndStatus`），可能选偏。要盯的是埋点里的工具命中率。
+2. **返回体大小未知**：`getVendorDeviceList` 带分页，`getDeviceStatistics` 也可能返回长列表。
+   它们走 `govern()` 兜底（2000 行 / 50KB），但截断提示词会进模型上下文。
+3. **passthrough=False**：这些工具返回 MCP 原始 JSON，必须由模型组织成自然语言，
+   不能像 `device_query__list` 那样直出。
+4. **只覆盖了 devicequery**：其余 server 没有空缺，扩不了。真正想"少写代码"，
+   要等 MCP 侧新增工具时才有素材。

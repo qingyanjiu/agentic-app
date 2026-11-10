@@ -67,6 +67,32 @@ async def _main(args: argparse.Namespace) -> int:
             print(json.dumps(tool.to_openai(), ensure_ascii=False, indent=2))
         return 0
 
+    if args.discover:
+        from .discover import PILOT_SERVERS, discover_domains
+        from .domains import build_default_domains
+        from .runtime import McpToolbox
+
+        print(f"试点 server：{', '.join(PILOT_SERVERS)}")
+        box = McpToolbox()
+        explicit = build_default_domains(box)
+        known = {pair for domain in explicit for pair in domain.mcp_tools}
+        try:
+            domains = await discover_domains(box, known, PILOT_SERVERS)
+        finally:
+            try:
+                await box.close()
+            except BaseException:  # noqa: BLE001
+                # mcp SDK 关会话时可能抛 BaseExceptionGroup，清理路径上忽略
+                pass
+
+        for domain in domains:
+            print(f"\n[{domain.name}] 新增 {len(domain.tools)} 个")
+            for tool in domain.tools:
+                props = list(tool.parameters.get("properties") or {})
+                print(f"  - {tool.name}  参数={props}")
+        print(f"\n合计新增 {sum(len(d.tools) for d in domains)} 个工具")
+        return 0
+
     if args.dry_run:
         if not args.prompt:
             raise SystemExit("--dry-run 需要提供一句用户问题")
@@ -153,6 +179,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dry-run", action="store_true", help="只做参数解析，不调 MCP/模型")
     parser.add_argument("--route", action="store_true", help="只打印路由决策（需要 BGE，不调 LLM/MCP）")
     parser.add_argument("--chat", action="store_true", help="走三级分流管线（L1 直连 + L2 兜底）")
+    parser.add_argument("--discover", action="store_true", help="试跑 MCP 工具发现，打印筛出的工具")
     parser.add_argument("--max-steps", type=int, default=8, help="最大工具调用步数")
     args = parser.parse_args(argv)
     return asyncio.run(_main(args))

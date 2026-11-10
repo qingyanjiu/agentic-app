@@ -25,6 +25,10 @@ class DomainSpec:
     name: str
     description: str
     tools: list[ToolSpec] = field(default_factory=list)
+    # 该域依赖的 MCP 工具：(server, tool_name)。
+    # 只给启动自检和动态发现去重用，不参与运行时调用；
+    # 漏写只会让自检少查几个，不影响查询本身。
+    mcp_tools: tuple[tuple[str, str], ...] = ()
 
 
 class ToolRegistry:

@@ -123,6 +123,24 @@ async def startup():
     await get_classifier()
     logger.info("[startup] 意图识别模型预加载完成")
     # 后台预热场景 MCP / 各业务域图，避免第一个用户承担握手和工具加载时间
+    #
+    # 动态发现参数简单的 MCP 工具（试点 devicequery 的统计类接口）。
+    # 必须在首次构建 pipeline 之前完成：loop 的 system prompt 里的工具概览是
+    # LoopAgent 构造时固化的，晚到的工具进不去。失败只告警，只用显式工具。
+    # 出问题可以用 LOOP_DISCOVER=0 一键退回（只保留手写的 14 个工具）。
+    if os.getenv("LOOP_DISCOVER", "1").strip().lower() not in ("0", "false", "off", "no"):
+        try:
+            from agent.loop.discover import warm_discovered
+
+            found = await asyncio.wait_for(warm_discovered(), timeout=12)
+            tool_count = sum(len(domain.tools) for domain in found)
+            logger.info(
+                f"[startup] MCP 工具发现完成：{len(found)} 个域 / {tool_count} 个工具"
+            )
+        except Exception as e:
+            logger.warning(f"[startup] MCP 工具发现跳过（仅使用显式工具）: {e}")
+    else:
+        logger.info("[startup] LOOP_DISCOVER=0，跳过 MCP 工具发现")
     _start_prewarm()
 
 
