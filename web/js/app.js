@@ -2,19 +2,21 @@
    园区智能助手 · 前端逻辑
    WebSocket 协议（与 app.py /chat/{user_id}/{session_id} 对应）：
    - 发送: {"query": "..."}
-           知识库模式: {"query": "...", "mode": "kb"}
-           场景控制不需要单独模式：后端会把场景指令和业务查询混在一起自动识别
-           （仍保留 {"query": "...", "mode": "scene", "scene_session_id": "..."} 供脚本强制走场景）
+           {"query": "...", "mode": "kb"}    知识库直连
+           {"query": "...", "mode": "loop"}  强制走 loop 新链路（灰度测试用）
+           场景指令不单独设模式：后端自动识别，命中 L0 会交回旧链路
+           （{"query": "...", "mode": "scene", ...} 仅保留给脚本强制走场景）
    - 接收:
-     {"event": "custom", "data": {"type": "answer",   "content": "..."}}  回答（流式分块）
-     {"event": "custom", "data": {"type": "ask",      "question": "..."}} 多轮追问
-     {"event": "custom", "data": {"type": "intent_desc", ...}}            意图理解进度
-     {"event": "custom", "data": {"type": "tool", ...}}                   工具调用进度
-     {"event": "custom", "data": {"type": "done"}}                        本轮结束
-     {"event": "custom", "data": {"type": "error",   "content": "..."}}   错误
-     {"event": "on_tool_start" | "on_tool_end" | ...}                     LangChain 生命周期
-     {"status": "done"}                                                   整轮结束标识
-     {"error": "..."}                                                     全局错误
+     {"event":"custom","data":{"type":"answer","content":"..."}}   回答，追加语义（流式分块）
+     {"event":"custom","data":{"type":"ask","question":"..."}}     追问（读 question，不是 content）
+     {"event":"custom","data":{"type":"tool","name":"..."}}        工具调用 → 上段文字落成过程稿
+     {"event":"custom","data":{"type":"intent_desc"}}              意图理解进度
+     {"event":"custom","data":{"type":"error","content":"..."}}    错误
+     {"status":"done","level":"L0/L1/L2","escalated":bool}         整轮结束（旧链路只带 status）
+     {"event":"on_tool_start"|"on_tool_end"}                       LangChain 生命周期（旧链路）
+     {"error":"..."}                                               全局错误
+
+   注意：后端不发 {"type":"done"}，结束统一认 {"status":"done"}。
    ============================================================ */
 
 // ------------------- 连接配置 -------------------
@@ -45,7 +47,7 @@ let reconnectTimer = null; // 断线重连定时器
 let reconnectAttempts = 0; // 连续重连失败次数
 let reconnectDelay = 1500;
 let sendTimeout = null; // 发送后迟迟连不上后端的兜底提示
-// 问答模式：agent=智能体问答（业务查询与场景指令自动识别） | kb=知识库直连
+// 问答模式：agent=智能体问答（自动识别业务/场景） | kb=知识库直连 | loop=强制走 loop 新链路
 let chatMode = 'agent';
 
 // ------------------- DOM -------------------
@@ -60,7 +62,9 @@ const connDot = document.getElementById('connDot');
 const connText = document.getElementById('connText');
 const modeAgentBtn = document.getElementById('modeAgentBtn');
 const modeKbBtn = document.getElementById('modeKbBtn');
+const modeLoopBtn = document.getElementById('modeLoopBtn');
 const sceneChipsEl = document.getElementById('sceneChips');
+const routeBarEl = document.getElementById('routeBar');
 
 // ------------------- 消息渲染 -------------------
 function escapeHtml(s) {
@@ -153,6 +157,37 @@ function finishAiBubble() {
     currentAiRaw = '';
 }
 
+// 过程稿：模型调工具前说的那段话。落成独立气泡并弱化，避免和最终回答混成一坨
+function markProcessBubble() {
+    if (!currentAiBubble) return;
+    if (currentAiRaw.trim()) {
+        currentAiBubble.classList.remove('streaming');
+        currentAiBubble.classList.add('msg-process');
+    } else {
+        currentAiBubble.remove(); // 只有光标没有内容，直接扔掉
+    }
+    currentAiBubble = null;
+    currentAiRaw = '';
+}
+
+// 本轮用到的 loop 工具名（用于下面的链路信息）
+let currentToolNames = [];
+
+// 链路信息条：只有 loop 链路会在 done 里带 level，旧链路不显示
+function showRouteInfo(info) {
+    const level = info && info.level;
+    if (!level) {
+        routeBarEl.hidden = true;
+        routeBarEl.textContent = '';
+        return;
+    }
+    const parts = [`链路 ${level}`];
+    if (info.escalated) parts.push('已升级');
+    if (currentToolNames.length) parts.push(`工具 ${currentToolNames.length} 次`);
+    routeBarEl.textContent = parts.join(' · ');
+    routeBarEl.hidden = false;
+}
+
 // ------------------- 状态条 -------------------
 function setStatus(text) {
     statusTextEl.textContent = text;
@@ -236,6 +271,7 @@ function sendMessage(text) {
     reconnectAttempts = 0; // 用户主动发送时重置重连计数
     connect();
     addUserBubble(text);
+    currentToolNames = [];
     addTypingIndicator();
     setStatus(
         chatMode === 'kb' ? '正在检索知识库…' : '正在思考…'
@@ -246,10 +282,12 @@ function sendMessage(text) {
     sceneChipsEl.classList.add('hidden');
     scrollToBottom(true);
 
-    // 知识库模式旁路：跳过意图直连 RAG；其余查询统一入口，由后端自动识别场景指令
+    // 知识库模式旁路；Loop 新链路用 mode=loop 强制命中灰度
     const payload = { query: text };
     if (chatMode === 'kb') {
         payload.mode = 'kb';
+    } else if (chatMode === 'loop') {
+        payload.mode = 'loop';
     }
     if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify(payload));
@@ -277,8 +315,9 @@ function handleWsMessage(raw) {
         return;
     }
 
-    // 整轮结束
+    // 整轮结束（loop 链路会额外带 level / escalated）
     if (data.status === 'done') {
+        showRouteInfo(data);
         finishTurn();
         return;
     }
@@ -325,6 +364,10 @@ function handleCustomEvent(d) {
             setStatus('正在理解你的需求…');
             break;
         case 'tool':
+            // 工具调用说明上一段文字只是"过程说明"：先把它落成过程稿气泡，
+            // 之后的流式内容进新气泡，过程稿与最终回答就不会混在一起。
+            markProcessBubble();
+            if (d.name || d.tool) currentToolNames.push(d.name || d.tool);
             setStatus(`正在调用工具 · ${d.name || d.tool || ''}`);
             break;
         case 'done':
@@ -346,9 +389,10 @@ function finishTurn() {
     clearStatus();
     turnActive = false;
     updateComposerState();
-    // 智能体模式下业务/场景快捷入口都恢复，方便连续测试
-    if (chatMode === 'agent') {
-        chipsEl.classList.remove('hidden');
+    // 业务快捷入口只在智能体模式；场景入口在 agent / loop 都恢复，方便连续测试
+    // （loop 下点场景指令正好验证 L0 handoff）
+    if (chatMode !== 'kb') {
+        chipsEl.classList.toggle('hidden', chatMode !== 'agent');
         sceneChipsEl.classList.remove('hidden');
     }
 }
@@ -359,7 +403,8 @@ function updateComposerState() {
     inputEl.placeholder = turnActive
         ? '助手正在回复…'
         : chatMode === 'kb' ? '知识库问答：直接向园区知识库提问'
-            : '输入问题或场景指令，例如“切到 3 楼”“重置视角”';
+            : chatMode === 'loop' ? 'Loop 新链路：可以问设备统计、跨域问题'
+                : '输入问题或场景指令，例如"切到 3 楼""重置视角"';
 }
 
 function autoGrow() {
@@ -401,28 +446,33 @@ document.querySelectorAll('.cap-card, .chip').forEach((el) => {
     });
 });
 
-// ------------------- 问答模式切换（智能体 / 知识库） -------------------
+// ------------------- 问答模式切换（智能体 / 知识库 / Loop 新链路） -------------------
 // 场景控制不再单独设选项卡：场景指令和业务查询共用一个输入框，由后端自动识别
 function setMode(mode) {
     if (chatMode === mode) return;
     chatMode = mode;
     const isAgent = mode === 'agent';
     const isKb = mode === 'kb';
+    const isLoop = mode === 'loop';
 
     modeAgentBtn.classList.toggle('active', isAgent);
     modeKbBtn.classList.toggle('active', isKb);
+    modeLoopBtn.classList.toggle('active', isLoop);
     modeAgentBtn.setAttribute('aria-selected', String(isAgent));
     modeKbBtn.setAttribute('aria-selected', String(isKb));
+    modeLoopBtn.setAttribute('aria-selected', String(isLoop));
 
     updateComposerState();
-    // 智能体模式展示业务 + 场景快捷入口；知识库模式都不显示
+    // 业务快捷入口只在智能体模式展示；场景入口在 agent / loop 都保留
+    // （loop 下点场景指令正好验证 L0 handoff 有没有交回旧链路）
     chipsEl.classList.toggle('hidden', !isAgent);
-    sceneChipsEl.classList.toggle('hidden', !isAgent);
+    sceneChipsEl.classList.toggle('hidden', isKb);
     inputEl.focus();
 }
 
 modeAgentBtn.addEventListener('click', () => setMode('agent'));
 modeKbBtn.addEventListener('click', () => setMode('kb'));
+modeLoopBtn.addEventListener('click', () => setMode('loop'));
 
 // ------------------- 新对话 -------------------
 newChatBtn.addEventListener('click', (e) => {
@@ -442,7 +492,7 @@ newChatBtn.addEventListener('click', (e) => {
     // 清空消息区，按当前模式恢复对应的快捷入口
     messagesEl.innerHTML = '<div class="greeting">你好，我是园区智能助手。<br>点击下方场景快速体验，或直接输入你的问题。</div>';
     chipsEl.classList.toggle('hidden', chatMode !== 'agent');
-    sceneChipsEl.classList.toggle('hidden', chatMode !== 'agent');
+    sceneChipsEl.classList.toggle('hidden', chatMode === 'kb');
     setConnState('disconnected');
     inputEl.focus();
 });

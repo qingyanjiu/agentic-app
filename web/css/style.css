@@ -492,6 +492,16 @@ html {
     }
 }
 
+/* 过程稿气泡：模型调工具前说的那段话。虚框 + 弱化，和最终回答区分开 */
+.msg-ai.msg-process {
+    background: transparent;
+    border: 1px dashed var(--hairline);
+    color: var(--text-secondary);
+    font-size: 15px;
+    line-height: 1.5;
+    padding: 8px 16px;
+    border-radius: 16px;
+}
 .msg-error {
     align-self: center;
     background: var(--error-bg);
@@ -548,6 +558,23 @@ html {
 }
 
 /* ---- 状态条(Liquid Glass 小胶囊) ---- */
+/* 最近一轮的链路信息（灰度验证用，旧链路不显示） */
+.route-bar {
+    display: block;
+    width: fit-content;
+    margin: 0 auto 10px;
+    padding: 5px 14px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    background: var(--bg-gray);
+    border-radius: var(--radius-pill);
+    font-variant-numeric: tabular-nums;
+}
+
+.route-bar[hidden] {
+    display: none;
+}
+
 .status-bar {
     display: none;
     align-items: center;
@@ -646,6 +673,11 @@ html {
     padding: 3px;
     background: var(--bg-gray);
     border-radius: var(--radius-pill);
+}
+
+/* 三个模式按钮要能排成一行（加第三个后，旧 padding 会挤到换行） */
+.mode-btn {
+    white-space: nowrap;
 }
 
 .mode-btn {

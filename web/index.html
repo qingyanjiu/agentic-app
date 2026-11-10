@@ -156,6 +156,9 @@
                 </div>
             </div>
 
+
+            <!-- 最近一轮的链路信息：只在 loop 新链路返回 level 时显示，用来验证灰度分流 -->
+            <div class="route-bar" id="routeBar" hidden></div>
             <!-- 状态提示（意图识别 / 工具调用） -->
             <div class="status-bar" id="statusBar">
                 <span class="status-spinner"></span>
@@ -196,6 +199,7 @@
             <div class="mode-switch" id="modeSwitch">
                 <button class="mode-btn active" id="modeAgentBtn" type="button" aria-selected="true">智能体问答</button>
                 <button class="mode-btn" id="modeKbBtn" type="button" aria-selected="false">知识库问答</button>
+                <button class="mode-btn" id="modeLoopBtn" type="button" aria-selected="false">Loop 新链路</button>
             </div>
 
             <!-- 输入区（毛玻璃悬浮） -->
