@@ -132,3 +132,97 @@ def test_scene_command_hands_off():
 
     assert result.stop_reason == "handoff"
     assert result.level == "L0"
+
+
+def _passthrough_pipeline(passthrough: bool, outcome=None):
+    """真 Executor + 真 registry，用来验证 passthrough 分支是否绕过 Composer。"""
+    from agent.loop import DomainSpec, ToolRegistry, ToolSpec, tool_schema
+    from agent.loop.executor import Executor
+
+    async def execute(args):
+        return outcome or ToolOutcome(
+            "3 台设备，楼层 3F：\n- A｜门禁\n- B｜门禁\n- C｜门禁"
+        )
+
+    registry = ToolRegistry()
+    registry.add_domain(
+        DomainSpec(
+            name="device_query",
+            description="设备台账",
+            tools=[
+                ToolSpec(
+                    name="device_query__list",
+                    description="设备清单",
+                    parameters=tool_schema({"query": {"type": "string"}}, ["query"]),
+                    execute=execute,
+                    passthrough=passthrough,
+                )
+            ],
+        )
+    )
+
+    class _CountingComposer:
+        def __init__(self):
+            self.calls = 0
+
+        async def compose(self, query, tool_text, history=None, on_delta=None):
+            self.calls += 1
+            return f"回答：{tool_text}"
+
+    composer = _CountingComposer()
+    pipeline = ChatPipeline(
+        router=_FakeRouter(
+            RoutePlan(
+                level="L1",
+                domain="device_query",
+                tool="device_query__list",
+                args={"query": "3楼门禁"},
+                confidence=0.9,
+            )
+        ),
+        executor=Executor(registry),
+        composer=composer,
+        loop_agent=None,
+    )
+    return pipeline, composer
+
+
+def test_passthrough_tool_answers_without_composer():
+    """设备清单直接出：不让模型复述（省 1~2 秒，也省掉"以下是"这类客套）。"""
+    pipeline, composer = _passthrough_pipeline(passthrough=True)
+    deltas: list = []
+
+    async def on_delta(text):
+        deltas.append(text)
+
+    result = asyncio.run(pipeline.handle("3楼门禁", Session(), on_delta=on_delta))
+
+    assert composer.calls == 0
+    assert result.text.startswith("3 台设备")
+    assert result.stop_reason == "answered"
+    # 仍然推给前端（一次全量），ws_bridge 的 streamed_chars 会照常记账
+    assert deltas == [result.text]
+
+
+def test_non_passthrough_tool_still_uses_composer():
+    pipeline, composer = _passthrough_pipeline(passthrough=False)
+
+    result = asyncio.run(pipeline.handle("3楼门禁", Session()))
+
+    assert composer.calls == 1
+    assert result.text.startswith("回答：")
+
+
+def test_passthrough_error_is_not_shown_to_user():
+    """错误文案是写给模型看的（"请让用户确认…"），直出会让用户看到内部话术。"""
+    pipeline, composer = _passthrough_pipeline(
+        passthrough=True,
+        outcome=ToolOutcome(
+            "缺少要查询的设备。请向用户确认设备名称或编号。", is_error=True
+        ),
+    )
+
+    result = asyncio.run(pipeline.handle("3楼门禁", Session()))
+
+    assert composer.calls == 1
+    assert result.text.startswith("回答：")

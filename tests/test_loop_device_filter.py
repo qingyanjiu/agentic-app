@@ -52,3 +52,28 @@ def test_keyword_matches_rawname_and_code():
     assert _row_matches_keyword(row, "主楼梯") is True
     assert _row_matches_keyword(row, "0170") is True
     assert _row_matches_keyword(row, "不存在") is False
+
+
+def test_format_rows_header_is_user_facing():
+    """清单会原样展示给用户，header 不能带"status 不是在线状态"这类给模型看的注解。"""
+    from agent.loop.domains.device_query import _format_rows
+
+    rows = [
+        {
+            "rawName": "3F-主楼梯MJ",
+            "code": "MJ-001",
+            "id": 7,
+            "spaceName": "园区/科研办公楼/3F",
+            "status": 1,
+            "syncSource": "0",
+        }
+    ]
+    text = _format_rows(rows, total=579, floor="3F", keyword="主楼梯")
+    lines = text.splitlines()
+
+    assert "status" not in lines[0]
+    assert "1 台设备（园区共 579 台）" in lines[0]
+    assert "楼层 3F" in lines[0]
+    assert "关键词「主楼梯」" in lines[0]
+    assert lines[1].startswith("- 3F-主楼梯MJ")
+    assert "状态 启用" in lines[1]

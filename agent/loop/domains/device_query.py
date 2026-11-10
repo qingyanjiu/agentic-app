@@ -181,14 +181,16 @@ def _format_rows(
 
     parts: list[str] = []
     if total is not None and total != len(rows):
-        parts.append(f"共 {total} 台设备，按条件筛出 {len(rows)} 台")
+        parts.append(f"{len(rows)} 台设备（园区共 {total} 台）")
     else:
-        parts.append(f"共 {len(rows)} 台设备")
+        parts.append(f"{len(rows)} 台设备")
     if floor:
         parts.append(f"楼层 {floor}")
     if keyword:
         parts.append(f"关键词「{keyword}」")
-    header = "，".join(parts) + "（status 是启用状态，不是在线状态）："
+    # 这段文本会原样展示给用户（list 工具是 passthrough），
+    # 不要塞"status 不是在线状态"这类给模型看的注解——那是 tool description 的职责。
+    header = "，".join(parts) + "："
 
     lines = [header]
     for row in rows[:MAX_ROWS]:
@@ -377,6 +379,8 @@ def build_domain(toolbox: McpToolbox) -> DomainSpec:
                 ),
                 parameters=tool_schema(_QUERY_PARAM, ["query"]),
                 execute=list_devices,
+                # 列表本身就是成品文本，L1 直出，不交给模型复述
+                passthrough=True,
             ),
             ToolSpec(
                 name="device_query__detail",

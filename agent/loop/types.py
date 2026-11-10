@@ -44,6 +44,11 @@ class ToolSpec:
     description: str
     parameters: dict
     execute: Callable[[dict], Awaitable[ToolOutcome]]
+    # execute 的返回值是否已经是"面向用户"的成品文本（如设备清单）。
+    # True 时 L1 直接把它当回答返回，不再交给 Composer 复述——
+    # 列表类结果让模型复写一遍，只会多出"根据查询结果""以下是"这类废话，
+    # 还多花 1~2 秒和一次 token。
+    passthrough: bool = False
 
     def to_openai(self) -> dict:
         """转成 OpenAI function calling 的 tool 定义。"""

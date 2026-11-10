@@ -134,6 +134,31 @@ class ChatPipeline:
             return result
 
         session.clear_pending()
+        tool_records = [
+            {
+                "name": plan.tool,
+                "args": plan.args,
+                "is_error": outcome.is_error,
+                "domain": plan.domain,
+                "confidence": round(plan.confidence, 4),
+            }
+        ]
+
+        # 结果本身是给用户看的成品（设备清单这类）→ 直接出，不让模型复述。
+        # 列表交给模型重写一遍，只会多出"根据查询结果""以下是"这类废话，
+        # 还多花一次 LLM 调用（1~2 秒）。清单要的是准确，不是润色。
+        if self._is_passthrough(plan.tool, outcome):
+            text = outcome.text
+            if on_delta is not None:
+                await on_delta(text)
+            session.add_turn(query, text)
+            return PipelineResult(
+                text=text,
+                level=plan.level,
+                stop_reason="answered",
+                tool_calls=tool_records,
+            )
+
         text = await self.composer.compose(
             query, outcome.text, session.history, on_delta=on_delta
         )
@@ -142,16 +167,22 @@ class ChatPipeline:
             text=text,
             level=plan.level,
             stop_reason="answered",
-            tool_calls=[
-                {
-                    "name": plan.tool,
-                    "args": plan.args,
-                    "is_error": outcome.is_error,
-                    "domain": plan.domain,
-                    "confidence": round(plan.confidence, 4),
-                }
-            ],
+            tool_calls=tool_records,
         )
+
+    def _is_passthrough(self, tool: str, outcome) -> bool:
+        """工具结果是否已经是面向用户的成品文本（设备清单这类）。
+
+        出错的结果不透传：错误文案是写给模型看的（"请让用户确认…"），
+        直出会让用户看到内部话术。
+        """
+        if outcome.is_error or outcome.escalate:
+            return False
+        registry = getattr(self.executor, "registry", None)
+        if registry is None:
+            return False
+        spec = registry.get(tool)
+        return bool(spec is not None and getattr(spec, "passthrough", False))
 
     async def _run_loop(
         self,
