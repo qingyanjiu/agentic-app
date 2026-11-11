@@ -28,13 +28,14 @@ DEFAULT_MCP_CONFIG = "mcp_client/mcp_server_config.yaml"
 
 
 def load_servers(yaml_path: str) -> dict:
-    """读 mcp_server_config.yaml 的 mcp_servers 段。
+    """读 mcp_server_config.yaml 的 mcp_servers 段（url 已按 mcp_base_url 补全）。
 
-    自己读而不是复用 mcp_client.mcp_loader：后者顶部 import 了
-    langchain_mcp_adapters，会把 langchain 一起拉进来。
+    不复用 mcp_client.mcp_loader：后者顶部 import 了 langchain_mcp_adapters，
+    会把 langchain 一起拉进来。mcp_client.mcp_config 只依赖标准库 + pyyaml。
     """
-    with open(yaml_path, encoding="utf-8") as handle:
-        return (yaml.safe_load(handle) or {}).get("mcp_servers", {})
+    from mcp_client.mcp_config import load_servers as _load_with_base
+
+    return _load_with_base(yaml_path)
 
 
 def extract_text(result: Any) -> str:

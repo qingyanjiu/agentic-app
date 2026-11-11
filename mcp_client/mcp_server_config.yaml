@@ -1,157 +1,122 @@
+# ============================================================
+# MCP sidecar 地址的唯一入口。
+#
+# 下面每个 server 的 url 只写端点路径（如 /personStatus），
+# 读取时会自动拼成 mcp_base_url + url。换部署环境只改这一行：
+#   - Python 跑在容器里、sidecar 在宿主机：http://10.204.146.44:2222/mcp
+#   - Python 与 sidecar 同一容器网络：      http://mcp-sidecar:2222/mcp
+#
+# 也支持给单条 url 写完整 http(s) 地址，那样会忽略 mcp_base_url（老写法兼容）。
+# 实现：mcp_client/mcp_config.py 的 resolve_url()
+# ============================================================
+mcp_base_url: http://10.204.146.44:2222/mcp
+
 mcp_servers:
-# 注意：下面各条 url 的默认写法是「Java sidecar 与 Python 在同一个容器网络」→ http://mcp-sidecar:2222/...
-# 如果你要在宿主机直接跑 python（不经 compose），把 host 换回 10.204.146.44，
-# 或在本机 hosts 里加一行：127.0.0.1 mcp-sidecar
-  # Java MCP Sidecar - 人员态势模块
-  # 端点路径是 /mcp/personStatus（与 Java 侧车 PersonStatusMcpServerConfig 一致）
-  # 根据部署方式二选一：
-  # - Java 跑在宿主机：url: http://10.204.146.44:2222/mcp/personStatus
-  # - Java 跑在 Docker 且与 Python 同网络：url: http://mcp-sidecar:2222/mcp/personStatus
+  # 人员态势（/mcp/personStatus，与 Java 侧 PersonStatusMcpServerConfig 一致）
   local:
     transport: streamable_http
-    url: http://mcp-sidecar:2222/mcp/personStatus
+    url: /personStatus
 
-  # Java MCP Sidecar - 安防态势模块
-  # 端点路径是 /mcp/securityStatus（与 Java 侧车 SecurityStatusMcpServerConfig 一致）
-  # 部署方式与人员态势一致：
-  # - Java 跑在宿主机：url: http://10.204.146.44:2222/mcp/securityStatus
-  # - Java 跑在 Docker 且与 Python 同网络：url: http://mcp-sidecar:2222/mcp/securityStatus
+  # 安防态势（/mcp/securityStatus，与 Java 侧 SecurityStatusMcpServerConfig 一致）
   security:
     transport: streamable_http
-    url: http://mcp-sidecar:2222/mcp/securityStatus
+    url: /securityStatus
 
-  # Java MCP Sidecar - 食堂管理模块
-  # 端点路径是 /mcp/canteen（与 Java 侧 DiningHallMcpServerConfig 一致）
-  # 部署方式与人员态势一致：
-  # - Java 跑在宿主机：url: http://10.204.146.44:2222/mcp/canteen
-  # - Java 跑在 Docker 且与 Python 同网络：url: http://mcp-sidecar:2222/mcp/canteen
+  # 食堂管理（/mcp/canteen，与 Java 侧 DiningHallMcpServerConfig 一致）
   canteen:
     transport: streamable_http
-    url: http://mcp-sidecar:2222/mcp/canteen
+    url: /canteen
 
-  # Java MCP Sidecar - 车辆态势模块
-  # 端点路径是 /mcp/vehicleStatus（与 Java 侧车 VehicleStatusMcpServerConfig 一致）
-  # 部署方式与人员态势一致：
-  # - Java 跑在宿主机：url: http://10.204.146.44:2222/mcp/vehicleStatus
-  # - Java 跑在 Docker 且与 Python 同网络：url: http://mcp-sidecar:2222/mcp/vehicleStatus
+  # 车辆态势（/mcp/vehicleStatus，与 Java 侧 VehicleStatusMcpServerConfig 一致）
   vehicle:
     transport: streamable_http
-    url: http://mcp-sidecar:2222/mcp/vehicleStatus
+    url: /vehicleStatus
 
-  # Java MCP Sidecar - 信息发布模块
-  # 端点路径是 /mcp/information（与 Java 侧 InfoPublishMcpServerConfig 一致）
-  # 部署方式与人员态势一致：
-  # - Java 跑在宿主机：url: http://10.204.146.44:2222/mcp/information
-  # - Java 跑在 Docker 且与 Python 同网络：url: http://mcp-sidecar:2222/mcp/information
+  # 信息发布（/mcp/information，与 Java 侧 InfoPublishMcpServerConfig 一致）
   information:
     transport: streamable_http
-    url: http://mcp-sidecar:2222/mcp/information
+    url: /information
 
-  # Java MCP Sidecar - 能源态势模块
-  # 端点路径是 /mcp/energyStatus（与 Java 侧 EnergyMcpServerConfig 一致）
-  # 部署方式与人员态势一致：
-  # - Java 跑在宿主机：url: http://10.204.146.44:2222/mcp/energyStatus
-  # - Java 跑在 Docker 且与 Python 同网络：url: http://mcp-sidecar:2222/mcp/energyStatus
+  # 能源态势（/mcp/energyStatus，与 Java 侧 EnergyMcpServerConfig 一致）
   energy:
     transport: streamable_http
-    url: http://mcp-sidecar:2222/mcp/energyStatus
+    url: /energyStatus
 
-  # Java MCP Sidecar - 会议管理模块
-  # 端点路径是 /mcp/meetingStatus（与 Java 侧 MeetingMcpServerConfig 一致）
-  # 部署方式与人员态势一致：
-  # - Java 跑在宿主机：url: http://10.204.146.44:2222/mcp/meetingStatus
-  # - Java 跑在 Docker 且与 Python 同网络：url: http://mcp-sidecar:2222/mcp/meetingStatus
+  # 会议管理（/mcp/meetingStatus，与 Java 侧 MeetingMcpServerConfig 一致）
   meeting:
     transport: streamable_http
-    url: http://mcp-sidecar:2222/mcp/meetingStatus
+    url: /meetingStatus
 
-  # Java MCP Sidecar - 消防态势模块（/mcp/fire，与 Java 侧 FireMcpServerConfig 一致）
-  # 部署方式与人员态势一致：
-  # - Java 跑在宿主机：url: http://10.204.146.44:2222/mcp/fire
-  # - Java 跑在 Docker 且与 Python 同网络：url: http://mcp-sidecar:2222/mcp/fire
+  # 消防态势（/mcp/fire，与 Java 侧 FireMcpServerConfig 一致）
   fire:
     transport: streamable_http
-    url: http://mcp-sidecar:2222/mcp/fire
+    url: /fire
 
-  # Java MCP Sidecar - 周界态势模块（/mcp/perimeter，与 Java 侧 PerimeterMcpServerConfig 一致）
+  # 周界态势（/mcp/perimeter，与 Java 侧 PerimeterMcpServerConfig 一致）
   # 工具：perimeter:getKeyMetrics / getAreaOverview / getPerimeterAlarmStats / getAlarmOverview
-  # 部署方式与人员态势一致：
-  # - Java 跑在宿主机：url: http://10.204.146.44:2222/mcp/perimeter
-  # - Java 跑在 Docker 且与 Python 同网络：url: http://mcp-sidecar:2222/mcp/perimeter
   perimeter:
     transport: streamable_http
-    url: http://mcp-sidecar:2222/mcp/perimeter
+    url: /perimeter
 
-  # Java MCP Sidecar - 设备态势模块（/mcp/device，与 Java 侧 DeviceMcpServerConfig 一致）
-  # 工具：设备态势统计（device:getEquipClass / getCategoryHealth / getMonthMaintenance /
-  #      getMonthRepair / getStatisRegion / getAnfangDeviceOnlinePercentage /
-  #      getGbOnlinePercentage / getMjOnlinePercentage）
-  # 部署方式与人员态势一致：
-  # - Java 跑在宿主机：url: http://10.204.146.44:2222/mcp/device
-  # - Java 跑在 Docker 且与 Python 同网络：url: http://mcp-sidecar:2222/mcp/device
+  # 设备态势（/mcp/device，与 Java 侧 DeviceMcpServerConfig 一致）
+  # 工具：device:getEquipClass / getCategoryHealth / getMonthMaintenance / getMonthRepair
+  #       / getStatisRegion / getAnfangDeviceOnlinePercentage / getGbOnlinePercentage
+  #       / getMjOnlinePercentage
   device:
     transport: streamable_http
-    url: http://mcp-sidecar:2222/mcp/device
+    url: /device
 
-  # Java MCP Sidecar - 设备查询模块（/mcp/devicequery，
-  # 与 Java 侧 PlatformDeviceQueryMcp 一致，工具名前缀 device_query:）
-  # 设备查询意图（device_query）用资产库口径的两个工具：
-  #   device_query:listDeviceOnly  设备资产清单（**不分页**，返回裸数组；
-  #                                可按 syncSource/status/name/code/spaceId 等筛，
-  #                                返回行里没有 deviceTypeName，类型名靠 syncSource 对照）
-  #   device_query:getDeviceDetail 设备详情（按列表返回的内部 id 查）
-  # 设备态势（device_status）笼统问法的兜底也走 listDeviceOnly（按 syncSource 列设备）
-  # 注意：同端点还有个分页版的 listDevice（pageCurrent/pageSize），
-  #      Python 侧**不用**——列表展示和详情定位都要全量结果，翻页会漏。
+  # 设备查询（/mcp/devicequery，与 Java 侧 PlatformDeviceQueryMcp 一致，工具名前缀 device_query:）
   #
-  # 说明：该端点还有状态统计/在线率/厂商透传另外三组工具，Python 侧暂不使用；
-  #      其中 5 个接口与 /mcp/device 重叠（device:getEquipClass 等），别混用。
-  # 部署方式同上：
-  # - Java 跑在宿主机：url: http://10.204.146.44:2222/mcp/devicequery
-  # - Java 跑在 Docker 且与 Python 同网络：url: http://mcp-sidecar:2222/mcp/devicequery
+  # 设备查询意图（device_query）用资产库口径的两个工具：
+  #   device_query:listDeviceOnly   设备资产清单。**不分页**，返回裸数组；
+  #                                 可按 syncSource/status/name/code/spaceId 等筛；
+  #                                 返回行里没有 deviceTypeName，类型名靠 syncSource 对照。
+  #   device_query:getDeviceDetail  设备详情，按列表返回的内部 id 查。
+  #
+  # 设备态势（device_status）笼统问法的兜底也走 listDeviceOnly（按 syncSource 列设备）。
+  #
+  # 注意：同端点还有个分页版的 listDevice（pageCurrent/pageSize），Python 侧**不用**——
+  #      列表展示和详情定位都要全量结果，翻页会漏。
+  #
+  # 该端点另有 22 个统计/在线率/厂商透传工具，其中 19 个由 agent/loop/discover.py
+  # 在启动时动态发现并暴露给模型（见 docs/loop-agent-改造文档.md 第 19 节）；
+  # 其中 5 个与 /mcp/device 重叠（device:getEquipClass 等），别混用。
   devicequery:
     transport: streamable_http
-    url: http://mcp-sidecar:2222/mcp/devicequery
+    url: /devicequery
 
-  # Java MCP Sidecar - 综合态势总览模块（/mcp/overview，与 Java 侧 OverviewMcpServerConfig 一致）
-  # 工具：overview:getBasicInfo / overview:getDeviceHealth（接口文档 §2.1）
-  # 部署方式与人员态势一致：
-  # - Java 跑在宿主机：url: http://10.204.146.44:2222/mcp/overview
-  # - Java 跑在 Docker 且与 Python 同网络：url: http://mcp-sidecar:2222/mcp/overview
+  # 综合态势总览（/mcp/overview，与 Java 侧 OverviewMcpServerConfig 一致）
+  # 工具：overview:getBasicInfo / overview:getDeviceHealth
   overview:
     transport: streamable_http
-    url: http://mcp-sidecar:2222/mcp/overview
+    url: /overview
 
-  # Java MCP Sidecar - 孪生巡检模块（/mcp/inspection，与 Java 侧 InspectionMcpServerConfig 一致）
-  # 工具：inspection:getTodayInspection / getTodayTasks / getInspectionStatistics / getInspectionExecutionStatus
+  # 孪生巡检（/mcp/inspection，与 Java 侧 InspectionMcpServerConfig 一致）
+  # 工具：inspection:getTodayOverview / getTodayTaskList / getStatistics / getExecutionStatus
   # 对应平台接口：/screenPatrol/todayOverview、/screenPatrol/todayTaskList、
-  #              /screenPatrol/statistics、/screenPatrol/executionStatus
-  # 部署方式与人员态势一致：
-  # - Java 跑在宿主机：url: http://10.204.146.44:2222/mcp/inspection
-  # - Java 跑在 Docker 且与 Python 同网络：url: http://mcp-sidecar:2222/mcp/inspection
+  #               /screenPatrol/statistics、/screenPatrol/executionStatus
   inspection:
     transport: streamable_http
-    url: http://mcp-sidecar:2222/mcp/inspection
+    url: /inspection
 
-  # Java MCP Sidecar - 知识库检索模块（/mcp/knowledge，与 Java 侧 KnowledgeMcpServerConfig 一致）
+  # 知识库检索（/mcp/knowledge，与 Java 侧 KnowledgeMcpServerConfig 一致）
   # 工具：ragflow:searchKnowledge(question, datasetIds) / ragflow:listDatasets()
-  # 底层是 RAGFlow HTTP API，baseUrl/apiKey/默认检索范围都配在 sidecar 的 application-*.yml，
-  # Python 端不感知 RAGFlow 的地址和密钥。
-  # 注意：本条目不走 langchain_mcp_adapters（direct_client 标记让 get_mcp_tools 跳过它），
-  # 而是由 KnowledgeMcpClient 按 Postman 联调口径直连：
+  # 底层是 RAGFlow HTTP API，baseUrl/apiKey/默认检索范围都配在 sidecar 的
+  # application-*.yml，Python 端不感知 RAGFlow 的地址和密钥。
+  #
+  # direct_client: true —— 不走 langchain_mcp_adapters（get_mcp_tools 会跳过它），
+  # 而由 KnowledgeMcpClient 按 Postman 联调口径直连：
   #   initialize(protocolVersion 2025-03-26) → 响应头 Mcp-Session-Id →
   #   notifications/initialized → tools/call ragflow:searchKnowledge
-  # 知识库问答同样不走意图识别：前端切到"知识库问答"模式后 payload 带 mode=kb，
+  # 知识库问答不走意图识别：前端切"知识库问答"后 payload 带 mode=kb，
   # app.py 直接交给 graph/knowledge_qa_langgraph.py 专用管线。
-  # 部署方式与人员态势一致：
-  # - Java 跑在宿主机：url: http://10.204.146.44:2222/mcp/knowledge
-  # - Java 跑在 Docker 且与 Python 同网络：url: http://mcp-sidecar:2222/mcp/knowledge
   knowledge:
     transport: streamable_http
-    url: http://mcp-sidecar:2222/mcp/knowledge
+    url: /knowledge
     direct_client: true
 
-  # Java MCP Sidecar - UE 3D 场景控制模块（/mcp/scene）
+  # UE 3D 场景控制（/mcp/scene）
   # 工具 20 个：scene_switch_floor / scene_reset_view / scene_recover_view /
   #   scene_close_detail / scene_reset_all / scene_show_visitor_track / scene_show_camera /
   #   scene_show_inspection / scene_show_meeting_rooms / scene_show_dining /
@@ -159,25 +124,23 @@ mcp_servers:
   #   scene_focus_actor / scene_set_actor_visible / scene_set_poi_visible /
   #   scene_set_env / scene_set_area_state / scene_set_inspection_state / get_scene_state
   #
-  # 注意：本条目也不走 langchain_mcp_adapters（direct_client 让 get_mcp_tools 跳过它），
-  # 由 SceneMcpClient 直连，原因是业务路由头 X-Session-Id 必须逐请求注入：
+  # direct_client: true —— 不走 langchain_mcp_adapters，由 SceneMcpClient 直连。
+  # 原因是业务路由头 X-Session-Id 必须逐请求注入：
   #   前端 WS hello 声明的场景会话 id → app.py 从 payload 取出 → 传给 tools/call，
   #   决定动作帧推给哪个场景页面。MultiServerMCPClient 的 header 是静态的，做不到。
   # sidecar 动作超时 15s，客户端超时取 25s；动作返回只代表"已下发"，UE 不回执。
-  # 部署方式与人员态势一致：
-  # - Java 跑在宿主机：url: http://10.204.146.44:2222/mcp/scene
-  # - Java 跑在 Docker 且与 Python 同网络：url: http://mcp-sidecar:2222/mcp/scene
   scene:
     transport: streamable_http
-    url: http://mcp-sidecar:2222/mcp/scene
+    url: /scene
     direct_client: true
 
+  # 其它传输方式的示例（stdio / sse）：
   # math_server:
   #   transport: stdio
   #   command: python
   #   args:
   #     - ./servers/math_server.py
-
+  #
   # finance_server:
   #   transport: sse
   #   url: http://localhost:8002/mcp

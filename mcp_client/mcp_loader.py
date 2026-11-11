@@ -5,6 +5,8 @@ import yaml
 from pathlib import Path
 from typing import Dict
 
+from .mcp_config import apply_base_url
+
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
 logger = logging.getLogger(__name__)
@@ -17,17 +19,20 @@ logger = logging.getLogger(__name__)
 # 3. 返回工具列表给Agent使用
 '''
 def load_mcp_config(file_path: str) -> Dict:
-    """从 YAML 加载 MCP 配置"""
+    """从 YAML 加载 MCP 配置。
+
+    支持顶层 `mcp_base_url`：各 server 的 url 只写路径（如 /personStatus）时
+    用 base 补全；url 已是完整 http(s) 地址则原样返回，老配置不受影响。
+    """
     # 把字符串路径转为 Path 对象（跨平台兼容）
     path = Path(file_path)
     # 打开文件（指定utf-8编码，避免中文乱码）
     with open(path, encoding="utf-8") as f:
-         # 安全加载YAML内容（yaml.safe_load避免执行恶意代码）
-        config = yaml.safe_load(f)
-         # 只返回配置中 "mcp_servers" 字段的内容（核心配置），默认返回空字典
-    return config.get("mcp_servers", {})
-
-
+        # 安全加载YAML内容（yaml.safe_load避免执行恶意代码）
+        config = yaml.safe_load(f) or {}
+    # 只处理 "mcp_servers" 段（核心配置），并补全相对 url
+    servers = config.get("mcp_servers", {}) or {}
+    return apply_base_url(servers, config.get("mcp_base_url"))
 async def _load_server_tools(name: str, server_conf: dict) -> list:
     """连接单个 MCP server 并返回其工具列表"""
     client = MultiServerMCPClient({name: server_conf})
