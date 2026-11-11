@@ -68,6 +68,18 @@ class Executor:
 
         try:
             outcome = await asyncio.wait_for(spec.execute(payload), timeout=self.timeout)
+        except asyncio.CancelledError:
+            # 与 agent._execute 同理：mcp SDK 的 anyio cancel scope 在连接超时时
+            # 抛 CancelledError 而不是 TimeoutError，不接住会穿透到 uvicorn、
+            # 把整个 WebSocket 打断。这里不 escalate：服务不可用时转 L2 只会再等一次超时。
+            task = asyncio.current_task()
+            if task is not None and task.cancelling():
+                raise
+            logger.warning(f"[executor] 工具 {tool} 被中断（MCP 连接超时或不可用）")
+            return ToolOutcome(
+                text=f"工具 {tool} 执行被中断：MCP 服务连接超时或不可用。",
+                is_error=True,
+            )
         except asyncio.TimeoutError:
             logger.warning(f"[executor] 工具 {tool} 超时（>{self.timeout}s）")
             return ToolOutcome(

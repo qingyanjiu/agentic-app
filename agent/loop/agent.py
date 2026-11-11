@@ -394,6 +394,21 @@ class LoopAgent:
             outcome = await asyncio.wait_for(
                 spec.execute(args), timeout=self.tool_timeout
             )
+        except asyncio.CancelledError:
+            # mcp SDK 的 anyio cancel scope 在连接超时/中断时抛的是 CancelledError，
+            # 不是 TimeoutError。早期这里只接 TimeoutError，异常会一路穿透到
+            # uvicorn，把整个 WebSocket 打断（前端表现为"发完消息连接就断了"）。
+            task = asyncio.current_task()
+            if task is not None and task.cancelling():
+                raise  # 外层真的在取消（用户点停止 / 服务关闭），交回去
+            logger.warning(f"[loop] 工具 {name} 被中断（MCP 连接超时或不可用）")
+            return ToolOutcome(
+                text=(
+                    f"工具 {name} 执行被中断：MCP 服务连接超时或不可用。"
+                    f"请如实告诉用户业务服务暂时连不上，稍后再试。"
+                ),
+                is_error=True,
+            )
         except asyncio.TimeoutError:
             logger.warning(f"[loop] 工具 {name} 超时（>{self.tool_timeout}s）")
             return ToolOutcome(

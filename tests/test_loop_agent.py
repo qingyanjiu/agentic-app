@@ -331,3 +331,59 @@ def test_stream_emits_deltas_and_stitches_tool_arguments():
     assert result.stop_reason == "answered"
     # 过程稿和最终回答都是逐块吐出来的，前端才能做到"边想边说"
     assert "".join(deltas) == "我先查一下。共有 3 台门禁设备。"
+
+
+def _boom_registry(exc: BaseException):
+    """构造一个 execute 直接抛指定异常的工具域。"""
+
+    async def boom(args):
+        raise exc
+
+    registry = ToolRegistry()
+    registry.add_domain(
+        DomainSpec(
+            name="demo",
+            description="会中断的工具",
+            tools=[
+                ToolSpec(
+                    name="demo__boom",
+                    description="中断",
+                    parameters=tool_schema({"query": {"type": "string"}}, ["query"]),
+                    execute=boom,
+                )
+            ],
+        )
+    )
+    return registry
+
+
+def test_tool_cancelled_error_becomes_is_error():
+    """mcp SDK 连接超时抛的是 CancelledError（BaseException 子类），必须转成工具错误。
+
+    早期只接 asyncio.TimeoutError，CancelledError 会一路穿透到 uvicorn，
+    把整个 WebSocket 打断（前端表现是"发完消息连接就断了"）。
+    """
+    agent = LoopAgent(
+        client=_FakeClient([]),
+        model="fake",
+        registry=_boom_registry(asyncio.CancelledError("simulated mcp cancel scope")),
+        stream=False,
+    )
+
+    outcome = asyncio.run(agent._execute("demo__boom", '{"query":"x"}'))
+
+    assert outcome.is_error is True
+    assert "中断" in outcome.text
+
+
+def test_executor_cancelled_error_becomes_is_error():
+    """L1 直连路径同样要兜住 CancelledError，且不 escalate（服务不可用时转 L2 无意义）。"""
+    from agent.loop.executor import Executor
+
+    executor = Executor(_boom_registry(asyncio.CancelledError("simulated cancel")))
+
+    outcome = asyncio.run(executor.execute("demo__boom", {"query": "x"}))
+
+    assert outcome.is_error is True
+    assert outcome.escalate is False
+    assert "中断" in outcome.text
