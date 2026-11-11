@@ -5,7 +5,7 @@ import yaml
 from pathlib import Path
 from typing import Dict
 
-from .mcp_config import apply_base_url
+from .mcp_config import apply_base_url, resolve_base_url
 
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
@@ -23,6 +23,8 @@ def load_mcp_config(file_path: str) -> Dict:
 
     支持顶层 `mcp_base_url`：各 server 的 url 只写路径（如 /personStatus）时
     用 base 补全；url 已是完整 http(s) 地址则原样返回，老配置不受影响。
+
+    部署时用环境变量 `MCP_BASE_URL` 覆盖，优先级高于 yaml，不用改仓库里的文件。
     """
     # 把字符串路径转为 Path 对象（跨平台兼容）
     path = Path(file_path)
@@ -32,7 +34,7 @@ def load_mcp_config(file_path: str) -> Dict:
         config = yaml.safe_load(f) or {}
     # 只处理 "mcp_servers" 段（核心配置），并补全相对 url
     servers = config.get("mcp_servers", {}) or {}
-    return apply_base_url(servers, config.get("mcp_base_url"))
+    return apply_base_url(servers, resolve_base_url(config.get("mcp_base_url")))
 async def _load_server_tools(name: str, server_conf: dict) -> list:
     """连接单个 MCP server 并返回其工具列表"""
     client = MultiServerMCPClient({name: server_conf})

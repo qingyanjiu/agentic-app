@@ -5,7 +5,12 @@
 各条只写路径（`/personStatus`），读取时自动拼接。
 """
 from mcp_client.mcp_config import apply_base_url, load_servers, resolve_url
-
+from mcp_client.mcp_config import (
+    apply_base_url,
+    load_servers,
+    resolve_base_url,
+    resolve_url,
+)
 
 def test_absolute_url_is_kept():
     """已经是完整地址的原样返回——老配置不用改也能跑。"""
@@ -71,3 +76,48 @@ def test_real_config_file_resolves():
 
     assert conf["scene"]["direct_client"] is True
     assert conf["knowledge"]["direct_client"] is True
+
+
+# ------------------------------------------------------------
+# 部署环境用 MCP_BASE_URL 覆盖 yaml，不用改仓库里的文件
+# ------------------------------------------------------------
+def test_env_base_url_wins_over_yaml(monkeypatch):
+    monkeypatch.setenv("MCP_BASE_URL", "http://env-host:2223/mcp")
+    assert resolve_base_url("http://yaml-host:2222/mcp") == "http://env-host:2223/mcp"
+
+
+def test_env_base_url_empty_falls_back_to_yaml(monkeypatch):
+    """compose 的 ${VAR:-} 会传空串，空串必须让位给 yaml。"""
+    monkeypatch.setenv("MCP_BASE_URL", "")
+    assert resolve_base_url("http://yaml-host:2222/mcp") == "http://yaml-host:2222/mcp"
+
+    monkeypatch.setenv("MCP_BASE_URL", "   ")
+    assert resolve_base_url("http://yaml-host:2222/mcp") == "http://yaml-host:2222/mcp"
+
+
+def test_env_base_url_strips_trailing_slash(monkeypatch):
+    monkeypatch.setenv("MCP_BASE_URL", "http://env-host:2223/mcp/")
+    base = resolve_base_url(None)
+    assert base == "http://env-host:2223/mcp"
+    # 拼出来不能出现双斜杠
+    assert resolve_url(base, "/devicequery") == "http://env-host:2223/mcp/devicequery"
+
+
+def test_env_base_url_overrides_real_config(monkeypatch):
+    """部署时只改环境变量，不用动仓库里的 yaml。"""
+    monkeypatch.setenv("MCP_BASE_URL", "http://env-host:2223/mcp")
+    conf = load_servers("mcp_client/mcp_server_config.yaml")
+
+    assert len(conf) == 15
+    for name, item in conf.items():
+        url = item.get("url") or ""
+        assert url.startswith("http://env-host:2223/mcp/"), f"{name} 没跟着环境变量走：{url}"
+    # 不靠 url 的标记不能因为换 base 丢掉
+    assert conf["scene"]["direct_client"] is True
+
+
+def test_real_config_uses_yaml_base_without_env(monkeypatch):
+    monkeypatch.delenv("MCP_BASE_URL", raising=False)
+    conf = load_servers("mcp_client/mcp_server_config.yaml")
+    assert conf["local"]["url"].endswith("/personStatus")
+    assert conf["local"]["url"].startswith("http")

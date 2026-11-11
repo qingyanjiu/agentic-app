@@ -1,13 +1,16 @@
 # ============================================================
-# MCP sidecar 地址的唯一入口。
+# MCP sidecar 地址的**兜底**配置。
+#
+# 优先级：环境变量 MCP_BASE_URL  >  这里的 mcp_base_url
+#   —— 部署时请用环境变量，别改这个文件（改了会进 git，各环境互相覆盖）
+#      容器内：MCP_BASE_URL=http://mcp-sidecar:2223/mcp
+#      本机连宿主机 sidecar：MCP_BASE_URL=http://10.204.146.44:2223/mcp
 #
 # 下面每个 server 的 url 只写端点路径（如 /personStatus），
-# 读取时会自动拼成 mcp_base_url + url。换部署环境只改这一行：
-#   - Python 跑在容器里、sidecar 在宿主机：http://10.204.146.44:2223/mcp
-#   - Python 与 sidecar 同一容器网络：      http://mcp-sidecar:2223/mcp
+# 读取时会自动拼成 base + url。这里保留一个默认值，方便不开环境变量时本地直跑。
 #
-# 也支持给单条 url 写完整 http(s) 地址，那样会忽略 mcp_base_url（老写法兼容）。
-# 实现：mcp_client/mcp_config.py 的 resolve_url()
+# 也支持给单条 url 写完整 http(s) 地址，那样会忽略 base（老写法兼容）。
+# 实现：mcp_client/mcp_config.py 的 resolve_base_url() / resolve_url()
 # ============================================================
 mcp_base_url: http://10.204.146.44:2223/mcp
 # mcp_base_url: http://mcp-sidecar:2223/mcp

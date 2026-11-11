@@ -8,9 +8,13 @@
 """
 from __future__ import annotations
 
+import os
 import re
 
 _ABSOLUTE = re.compile(r"^https?://", re.IGNORECASE)
+
+# 部署环境切换用：覆盖 yaml 里的 mcp_base_url
+ENV_BASE_URL = "MCP_BASE_URL"
 
 
 def resolve_url(base: str | None, url: str | None) -> str:
@@ -48,15 +52,27 @@ def apply_base_url(servers: dict, base: str | None) -> dict:
     return servers
 
 
+def resolve_base_url(yaml_base: str | None) -> str | None:
+    """决定最终的 base 地址：环境变量 `MCP_BASE_URL` 优先于 yaml 里的 `mcp_base_url`。
+
+    各部署环境的 sidecar 地址不同，改环境变量就够了，不用动仓库里的 yaml。
+    空串按"未设置"处理——compose 的 `${VAR:-}` 会传空串，不能让它把 yaml 冲掉。
+    """
+    env = (os.getenv(ENV_BASE_URL) or "").strip()
+    if env:
+        return env.rstrip("/")
+    return (yaml_base or "").strip().rstrip("/") or None
+
+
 def load_servers(yaml_path: str) -> dict:
     """读 yaml 并返回补全过 url 的 mcp_servers 段。
 
-    `mcp_base_url` 只在顶层出现一次，换部署环境（宿主机 / 容器网络）时
-    只改那一行，不用逐个 server 改地址。
+    base 地址来源：环境变量 `MCP_BASE_URL` > yaml 顶层的 `mcp_base_url`。
+    url 已经是完整 http(s) 地址的条目不参与，老配置不受影响。
     """
     import yaml
 
     with open(yaml_path, encoding="utf-8") as handle:
         conf = yaml.safe_load(handle) or {}
     servers = conf.get("mcp_servers", {}) or {}
-    return apply_base_url(servers, conf.get("mcp_base_url"))
+    return apply_base_url(servers, resolve_base_url(conf.get("mcp_base_url")))
