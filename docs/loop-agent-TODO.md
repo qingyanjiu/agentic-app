@@ -20,6 +20,7 @@
 | T8 | 压缩从占位改语义摘要 | P3 | 1 天 | 出现"跨轮丢细节"问题 | 中 |
 | T9 | `vehicle_status:getVehiclePassRecord` 未接入 | P3 | 半小时 | 业务确认口径 | 低 |
 | T10 | gen_doc / knowledge / scene 纳入 loop | 暂不做 | — | — | 高 |
+| T11 | **MCP 参数白名单校验**（参数漂移检测） | P1 | 半小时 | 无 | 低 |
 
 **顺序建议**：T1 → 等业务语料（T2）→ T3 → T4 → 用 T1 数据决定是否做 T5。
 
@@ -276,10 +277,47 @@ for words, bad_domain in VETO:
 | 编号 | 内容 | 说明 |
 |---|---|---|
 | T6 | 会话改 Redis | 现在 `ws_bridge._sessions` 是进程内存，多副本/重启会丢 pending |
-| T7 | L2 流式 | 现在只有 L1 的 Composer 流式；L2 中间轮次非流式 |
+| T7 | ~~L2 流式~~ | ✅ 已完成（`a52aab3`）：LoopAgent 全程 `stream=True`，过程稿单独气泡 |
 | T8 | 压缩升级 | 现在是"占位式"（保留开头 300 字），不是语义摘要 |
 | T9 | vehicle 通行记录 | 后端有 `getVehiclePassRecord`，Python 侧没映射 |
+| T11 | MCP 参数白名单 | `McpToolbox.call` 原样透传，参数名漂移不会早失败（见 6.1） |
 
+
+### 6.1 T11 细节：MCP 参数白名单校验
+
+**问题**：`McpToolbox.call()` 把参数原样 `session.call_tool(tool_name, payload)` 下发，
+不做任何校验。本地写的参数名一旦和 Java 侧 `@McpToolParam` 漂移，**启动期不报错、
+调用时也可能不报错**：Java 会忽略不认识的参数、退回默认口径，返回一个看起来合理
+但范围错了的结果。用户和日志都发现不了。
+
+两个来源的参数都有这个风险：
+
+- 13 个显式域：`args_builder` 里写的键名（如 `syncSource`、`spaceId`）
+- 21 个 discover 工具：模型自己填的参数名（MCP `inputSchema` 原样暴露，模型可能写错）
+
+**旧链路有这层保护**：`graph/device_query_langgraph.py:199` 的 `_build_tool_args`
+会读 langchain 从 `inputSchema` 转出的 `tool.args`，把 Java 不认识的参数丢掉并打
+INFO 日志。新链路没继承——这是重构时漏掉的一层。
+
+**做法**（约 30 行，改 `agent/loop/runtime.py`）：
+
+1. 首次调用某 `(server, tool)` 时 `list_tools()` 拉一次 `inputSchema.properties`，缓存
+2. `call()` 里按缓存过滤参数，dropped 的记 WARNING
+3. 缓存失败（MCP 不可达）时放行，不要因为这个把正常调用拦掉
+
+**分两步上线，别一步到位**：
+
+1. **先只打日志、不拦截**，观察一周。要确认没有误杀——Java 侧如果用了
+   `@JsonProperty` 别名，`properties` 里的名字可能和实际接收的参数名不同，
+   直接拦截会打掉本该传的字段
+2. 确认日志长期为空（即从没漂移过）之后，再改成真拦截，并顺手把旧链路的
+   `_build_tool_args` 简化掉，两条链路共用这一层
+
+**验收**：正常运行时日志里**不应出现** `[mcp] xxx 不接受参数 [...]`。
+一旦出现就是真的漂移了，去对 Java 侧的参数名。
+
+**为什么排 P1 而不是 P0**：它不阻塞功能，但会掩盖问题——参数错了照样返回 200 和一堆数字。
+等 T1 埋点上线、能看到"用户说答得不对"的反馈后，这条的价值会更明显。
 ---
 
 ## 7. 明确不做的
