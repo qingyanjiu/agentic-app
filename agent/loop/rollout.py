@@ -1,6 +1,14 @@
-"""灰度开关。
+"""启动级路由 + 灰度开关。
 
-三种命中方式，优先级从高到低：
+启动级开关（日常用这个）——环境变量 `AGENT_MODE`，改完重启生效：
+
+| AGENT_MODE | 效果 |
+|---|---|
+| `loop`   | 全量走 LOOP 新链路（等价 enabled=1、percent=100）；单请求仍可用 `mode=legacy` 应急回滚 |
+| `legacy` | 全部走旧逻辑（等价 enabled=0、percent=0）；单请求仍可用 `mode=loop` 试用 |
+| `auto`（默认/留空） | 按下面的灰度变量判定 |
+
+灰度变量（仅 `AGENT_MODE=auto` 时生效），命中优先级从高到低：
 
 1. payload 显式：`mode=loop` 强制走新链路，`mode=legacy` 强制走旧链路；
 2. 白名单：`LOOP_ROLLOUT_USERS` 里的 user_id / session_id；
@@ -21,6 +29,8 @@ TRUTHY = {"1", "true", "yes", "on"}
 
 # 不由灰度接管的专用模式
 RESERVED_MODES = {"kb", "scene", "gen_doc", "asr"}
+# 启动级路由：loop（全量新链路）/ legacy（全走旧逻辑）/ auto（按灰度变量）
+STARTUP_MODE_ENV = "AGENT_MODE"
 
 
 @dataclass(slots=True)
@@ -61,10 +71,23 @@ class Rollout:
         enabled: bool = False,
         percent: int = 0,
         users: set[str] | None = None,
+        startup_mode: str = "auto",
     ) -> None:
         self.enabled = enabled
         self.percent = max(0, min(100, percent))
         self.users = {u.strip() for u in (users or set()) if u.strip()}
+        self.startup_mode = startup_mode
+
+    def describe(self) -> str:
+        """启动日志用的一行描述。"""
+        if self.startup_mode == "loop":
+            return "AGENT_MODE=loop → 全量走 LOOP 新链路（单请求 mode=legacy 仍可回滚）"
+        if self.startup_mode == "legacy":
+            return "AGENT_MODE=legacy → 全部走旧逻辑（单请求 mode=loop 仍可试用）"
+        return (
+            f"AGENT_MODE=auto → 灰度 enabled={int(self.enabled)} "
+            f"percent={self.percent}% 白名单={len(self.users)} 个"
+        )
 
     def decide(
         self,
@@ -100,16 +123,35 @@ class Rollout:
 _instance: Rollout | None = None
 
 
+def startup_mode() -> str:
+    """读 `AGENT_MODE`，返回 loop / legacy / auto（无法识别按 auto）。"""
+    raw = (os.getenv(STARTUP_MODE_ENV) or "").strip().lower()
+    if raw in ("loop", "full", "all", "on", "1", "true", "yes"):
+        return "loop"
+    if raw in ("legacy", "old", "off", "0", "false", "no"):
+        return "legacy"
+    return "auto"
+
+
 def get_rollout() -> Rollout:
     """进程级单例，读取环境变量。改配置后重启生效。"""
     global _instance
     if _instance is None:
-        users = set(filter(None, (os.getenv("LOOP_ROLLOUT_USERS") or "").split(",")))
-        _instance = Rollout(
-            enabled=_env_bool("LOOP_ROLLOUT_ENABLED", False),
-            percent=_env_int("LOOP_ROLLOUT_PERCENT", 0),
-            users=users,
-        )
+        mode = startup_mode()
+        if mode == "loop":
+            # 全量新链路：不再看灰度变量，避免两个配置打架
+            _instance = Rollout(enabled=True, percent=100, startup_mode=mode)
+        elif mode == "legacy":
+            # 全量旧逻辑：白名单/比例一并失效
+            _instance = Rollout(enabled=False, percent=0, startup_mode=mode)
+        else:
+            users = set(filter(None, (os.getenv("LOOP_ROLLOUT_USERS") or "").split(",")))
+            _instance = Rollout(
+                enabled=_env_bool("LOOP_ROLLOUT_ENABLED", False),
+                percent=_env_int("LOOP_ROLLOUT_PERCENT", 0),
+                users=users,
+                startup_mode=mode,
+            )
     return _instance
 
 

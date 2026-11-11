@@ -15,7 +15,7 @@
 环境变量：
 
     LLM_BASE_URL  默认 https://api.deepseek.com
-    LLM_API_KEY   依次回退 SILICON_API_KEY / OPENAI_API_KEY
+    LLM_API_KEY   未设置时回退 OPENAI_API_KEY
     LLM_MODEL     默认 deepseek-chat
 """
 from __future__ import annotations
@@ -44,15 +44,11 @@ from .domains import PREVIEWERS
 
 def _resolve_client() -> tuple[AsyncOpenAI, str]:
     base_url = os.getenv("LLM_BASE_URL") or "https://api.deepseek.com"
-    api_key = (
-        os.getenv("LLM_API_KEY")
-        or os.getenv("SILICON_API_KEY")
-        or os.getenv("OPENAI_API_KEY")
-    )
+    api_key = os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY")
     model = os.getenv("LLM_MODEL") or "deepseek-chat"
     if not api_key:
         raise SystemExit(
-            "缺少模型凭证：请设置 LLM_API_KEY（或 SILICON_API_KEY / OPENAI_API_KEY）"
+            "缺少模型凭证：请设置 LLM_API_KEY（或 OPENAI_API_KEY）"
         )
     return AsyncOpenAI(base_url=base_url, api_key=api_key), model
 

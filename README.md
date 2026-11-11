@@ -521,9 +521,8 @@ ws.onopen = () => {
 
 ### 环境变量配置
 ```bash
-# SiliconFlow API配置
-export SILICON_API_KEY="sk-xxxxxxxxxxxx"
-export OPENAI_API_KEY=${SILICON_API_KEY}  # 兼容OpenAI格式
+# 模型 API Key（DeepSeek / 任意 OpenAI 兼容服务；SILICON_API_KEY 已废弃）
+export OPENAI_API_KEY="sk-xxxxxxxxxxxx"
 
 # 模型服务URL（如需使用其他模型）
 export MODEL_API_URL="https://api.siliconflow.cn/v1"
@@ -535,10 +534,10 @@ export MODEL_API_URL="https://api.siliconflow.cn/v1"
 ```python
 model_confs = [
     { 
-        "name": "silicon",  # 模型标识
+        "name": "deepseek",  # 模型标识
         "type": "openai",   # API类型
-        "model_url": "https://api.siliconflow.cn/v1",
-        "model_name": "Qwen/Qwen3-30B-A3B-Instruct-2507",
+        "model_url": "https://api.deepseek.com/v1",
+        "model_name": "deepseek-flash",
         "api_key": os.getenv("OPENAI_API_KEY")
     },
     # 可添加其他模型配置...
@@ -763,7 +762,7 @@ agentic-app/
 - **`memory_persistor_sqlite.py`**：生产环境推荐的持久化方案。它使用SQLite数据库，通过`get_conn()`上下文管理器确保事务安全和连接关闭。该实现具备完整功能，支持多用户、多会话、数据持久化和内存窗口化（即: 只持久化最近的对话）。
 
 ### 6. `models/` 模块
-- **`llm.py`**：大模型工厂。`CustomLLMFactory` 类初始化了多个大模型的实例（如 `silicon` 和 `local`），并根据配置选择默认模型。这使得系统可以轻松切换不同的大模型，且支持 OpenAI 和 Ollama 两种后端。
+- **`llm.py`**：大模型工厂。`CustomLLMFactory` 类初始化了多个大模型的实例（如 `deepseek` 和 `local`），并根据配置选择默认模型。这使得系统可以轻松切换不同的大模型，且支持 OpenAI 和 Ollama 两种后端。
 
 ### 7. `utils/` 模块
 - **`utils.py`**：通用工具函数。`get_config()` 函数用于从 `global_config.json` 文件中读取全局配置。

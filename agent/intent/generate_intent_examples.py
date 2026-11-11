@@ -24,7 +24,7 @@
     - 同时生成 JSON 检查文件到 agent/intent/generated_examples/
 
 说明：
-    - 脚本调用 DeepSeek API，请确保 OPENAI_API_KEY 或 SILICON_API_KEY 已设置。
+    - 脚本调用 DeepSeek API，请确保 OPENAI_API_KEY 已设置。
     - 默认每个子类型生成 25 条示例，可在 SUB_TYPE_TARGET_COUNT 调整。
     - 为增加口气多样性，脚本按 5 种风格分别生成：一般疑问、省略主语疑问、口语化疑问、场景化疑问、陈述式请求。
     - 统一硬性要求：4~20 字、口语化、带子类型核心词锚定；疑问/陈述均可（按风格），时间口径必须与参考表达一致。
@@ -50,15 +50,14 @@ except ImportError:
 # DeepSeek API 配置（与项目 models/llm.py 保持一致）
 # ============================================================
 _MODEL_URL = "https://api.deepseek.com"
-API_KEY = os.getenv("SILICON_API_KEY") if os.getenv("SILICON_API_KEY") else os.getenv("OPENAI_API_KEY", "")
+API_KEY = os.getenv("OPENAI_API_KEY", "")
 LLM_MODEL = "deepseek-v4-flash"
 BASE_URL = _MODEL_URL if _MODEL_URL.endswith("/v1") else _MODEL_URL.rstrip("/") + "/v1"
 
 if not API_KEY or "xxxx" in API_KEY or len(API_KEY) < 10:
     raise ValueError(
         "请在环境变量中设置真实的 API Key：\n"
-        "  优先读取 SILICON_API_KEY\n"
-        "  否则读取 OPENAI_API_KEY\n"
+        "  读取 OPENAI_API_KEY\n"
         "例如：set OPENAI_API_KEY=sk-xxx"
     )
 

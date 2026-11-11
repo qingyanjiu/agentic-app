@@ -146,6 +146,14 @@ async def startup():
             )
     else:
         logger.info("[startup] LOOP_DISCOVER=0，跳过 MCP 工具发现")
+    # 启动级路由：AGENT_MODE=loop 全量走新链路 / legacy 全走旧逻辑 / auto 走灰度
+    # 只影响路由判定，不改变任何链路内部行为；改完重启生效
+    try:
+        from agent.loop.rollout import get_rollout
+
+        logger.info(f"[startup] 路由模式: {get_rollout().describe()}")
+    except Exception as e:  # noqa: BLE001 日志不该带崩启动
+        logger.warning(f"[startup] 读取路由模式失败: {type(e).__name__} {e}")
     _start_prewarm()
 
 

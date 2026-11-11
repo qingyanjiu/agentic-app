@@ -47,7 +47,7 @@ class CustomLLMFactory():
     def __init__(self):
         '''
         配置项说明（注释是关键，定义了模型配置的规范）：
-        name-模型的key，在放到map的时候作为检索的名称（如'silicon'/'zp'）
+        name-模型的key，在放到map的时候作为检索的名称（如'deepseek'/'local'）
         type-模型的api类型，openai/ollama或其他（区分不同客户端）
         model_url-模型api地址（OpenAI兼容API的base_url，或Ollama的地址）
         model_name-模型名称，调用模型时需要（如Qwen3-30B、glm-4.7）
@@ -58,16 +58,6 @@ class CustomLLMFactory():
                  环境变量 LLM_THINKING。DeepSeek 想真正关闭思考用 disabled
         '''
         model_confs = [
-            {
-                "name": "silicon",
-                "type": "openai",
-                "model_url": "https://api.deepseek.com", # 硅基流动API地址
-                "model_name": "deepseek-v4-flash",
-                "reasoning_effort": "low",
-                "thinking": "disabled",
-                # 优先级：先读SILICON_API_KEY，没有则读OPENAI_API_KEY
-                "api_key": os.getenv("SILICON_API_KEY") if os.getenv("SILICON_API_KEY") else os.getenv("OPENAI_API_KEY")
-            },
             {
                 "name": "local",
                 "type": "openai",
@@ -82,8 +72,8 @@ class CustomLLMFactory():
                 "model_name": "deepseek-flash",
                 "reasoning_effort": "low",
                 "thinking": "disabled",
-                # 优先级：先读SILICON_API_KEY，没有则读OPENAI_API_KEY
-                "api_key": os.getenv("SILICON_API_KEY") if os.getenv("SILICON_API_KEY") else os.getenv("OPENAI_API_KEY")
+                # 统一只读 OPENAI_API_KEY（SILICON_API_KEY 已废弃）
+                "api_key": os.getenv("OPENAI_API_KEY")
             },
             # {
             #     "name": "local",

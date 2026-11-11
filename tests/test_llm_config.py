@@ -60,10 +60,9 @@ def test_factory_deepseek_configs_disable_thinking(monkeypatch):
     from models.llm import CustomLLMFactory
 
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    monkeypatch.delenv("SILICON_API_KEY", raising=False)
 
     factory = CustomLLMFactory()
-    for name in ("silicon", "deepseek"):
+    for name in ("deepseek",):
         llm = factory.llms[name]
         assert llm.extra_body == {"thinking": {"type": "disabled"}}
         assert llm.reasoning_effort == "low"
