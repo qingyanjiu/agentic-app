@@ -9,7 +9,7 @@
 # 也支持给单条 url 写完整 http(s) 地址，那样会忽略 mcp_base_url（老写法兼容）。
 # 实现：mcp_client/mcp_config.py 的 resolve_url()
 # ============================================================
-mcp_base_url: http://10.204.146.44:2222/mcp
+mcp_base_url: http://10.204.146.44:2223/mcp
 
 mcp_servers:
   # 人员态势（/mcp/personStatus，与 Java 侧 PersonStatusMcpServerConfig 一致）
