@@ -64,7 +64,7 @@ def test_startup_mode_aliases(monkeypatch):
 def test_agent_mode_loop_is_full_rollout(monkeypatch):
     """AGENT_MODE=loop：不看灰度变量，全部走新链路。"""
     monkeypatch.setenv("AGENT_MODE", "loop")
-    monkeypatch.setenv("LOOP_ROLLOUT_ENABLED", "0")
+    monkeypatch.setenv("LOOP_ROLLOUT_PERCENT", "0")
     reset_rollout()
     try:
         rollout = get_rollout()
@@ -81,7 +81,6 @@ def test_agent_mode_loop_is_full_rollout(monkeypatch):
 def test_agent_mode_legacy_ignores_gray_config(monkeypatch):
     """AGENT_MODE=legacy：灰度开着也全部走旧逻辑。"""
     monkeypatch.setenv("AGENT_MODE", "legacy")
-    monkeypatch.setenv("LOOP_ROLLOUT_ENABLED", "1")
     monkeypatch.setenv("LOOP_ROLLOUT_PERCENT", "100")
     monkeypatch.setenv("LOOP_ROLLOUT_USERS", "u1")
     reset_rollout()
@@ -97,7 +96,6 @@ def test_agent_mode_legacy_ignores_gray_config(monkeypatch):
 
 def test_agent_mode_auto_keeps_gray_behavior(monkeypatch):
     monkeypatch.delenv("AGENT_MODE", raising=False)
-    monkeypatch.setenv("LOOP_ROLLOUT_ENABLED", "1")
     monkeypatch.setenv("LOOP_ROLLOUT_PERCENT", "100")
     reset_rollout()
     try:
@@ -105,5 +103,43 @@ def test_agent_mode_auto_keeps_gray_behavior(monkeypatch):
         assert rollout.startup_mode == "auto"
         assert rollout.decide("u1", "s1").enabled is True
         assert "auto" in rollout.describe()
+    finally:
+        reset_rollout()
+
+
+def test_gray_enabled_is_derived(monkeypatch):
+    """没有单独的灰度总开关：percent>0 或白名单非空才算开，都空即关闭。"""
+    monkeypatch.delenv("AGENT_MODE", raising=False)
+
+    # 都空 → 关闭
+    monkeypatch.setenv("LOOP_ROLLOUT_PERCENT", "0")
+    monkeypatch.delenv("LOOP_ROLLOUT_USERS", raising=False)
+    reset_rollout()
+    try:
+        rollout = get_rollout()
+        assert rollout.enabled is False
+        assert rollout.decide("u1", "s1").enabled is False
+        assert rollout.decide("u1", "s1").reason == "disabled"
+    finally:
+        reset_rollout()
+
+    # 有比例 → 开
+    monkeypatch.setenv("LOOP_ROLLOUT_PERCENT", "100")
+    reset_rollout()
+    try:
+        assert get_rollout().enabled is True
+        assert get_rollout().decide("u1", "s1").enabled is True
+    finally:
+        reset_rollout()
+
+    # 只有白名单（percent=0）→ 也算开，但只命中白名单
+    monkeypatch.setenv("LOOP_ROLLOUT_PERCENT", "0")
+    monkeypatch.setenv("LOOP_ROLLOUT_USERS", "vip")
+    reset_rollout()
+    try:
+        rollout = get_rollout()
+        assert rollout.enabled is True
+        assert rollout.decide("vip", "s1").enabled is True
+        assert rollout.decide("other", "s1").enabled is False
     finally:
         reset_rollout()

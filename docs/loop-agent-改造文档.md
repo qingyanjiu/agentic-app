@@ -347,7 +347,6 @@ Python 侧过滤：楼层 + 名称
 
 | 环境变量 | 默认 | 作用 |
 |---|---|---|
-| `LOOP_ROLLOUT_ENABLED` | `0` | 总开关。`0` 时只有 `mode=loop` 能命中 |
 | `LOOP_ROLLOUT_PERCENT` | `0` | 命中比例 0–100，按 `user_id:session_id` 稳定哈希取模 |
 | `LOOP_ROLLOUT_USERS` | 空 | 白名单，逗号分隔的 `user_id` 或 `session_id` |
 
@@ -359,22 +358,23 @@ payload 也可以强制指定：
 | `{"query": "...", "mode": "legacy"}` | 强制走旧链路（出问题时的应急开关） |
 | `mode=kb` / `scene` / `gen_doc` / `asr` | 不接管，保持原逻辑 |
 
-判定优先级：`mode` 显式 > 总开关 > 白名单 > 比例。
+判定优先级：`mode` 显式 > 白名单 > 比例。没有单独的灰度总开关——配了
+`LOOP_ROLLOUT_PERCENT`（>0）或 `LOOP_ROLLOUT_USERS` 就算开，两者都空即关闭。
 
 常用配置：
 
 ```bash
 # 联调：只给自己开
-LOOP_ROLLOUT_ENABLED=1 LOOP_ROLLOUT_USERS=louisliu uvicorn app:app
+LOOP_ROLLOUT_USERS=louisliu uvicorn app:app
 
 # 灰度 10%
-LOOP_ROLLOUT_ENABLED=1 LOOP_ROLLOUT_PERCENT=10 uvicorn app:app
+LOOP_ROLLOUT_PERCENT=10 uvicorn app:app
 
-# 全量
-LOOP_ROLLOUT_ENABLED=1 LOOP_ROLLOUT_PERCENT=100 uvicorn app:app
+# 全量（等价 AGENT_MODE=loop）
+LOOP_ROLLOUT_PERCENT=100 uvicorn app:app
 
 # 紧急回滚（不重启也行：前端带 mode=legacy）
-LOOP_ROLLOUT_ENABLED=0 uvicorn app:app
+AGENT_MODE=legacy uvicorn app:app
 ```
 
 验证命中情况：

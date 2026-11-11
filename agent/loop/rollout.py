@@ -14,8 +14,9 @@
 2. 白名单：`LOOP_ROLLOUT_USERS` 里的 user_id / session_id；
 3. 比例：按 `user_id:session_id` 的稳定哈希取模 100，小于 `LOOP_ROLLOUT_PERCENT` 命中。
 
-总开关 `LOOP_ROLLOUT_ENABLED=0` 时，只有 `mode=loop` 能命中（方便联调），
-其余全部走旧链路。任何异常都由调用方回落到旧链路。
+没有独立的"灰度总开关"：配了 `LOOP_ROLLOUT_PERCENT` 或 `LOOP_ROLLOUT_USERS` 就算开，
+两者都空等价于关闭（percent=0 且白名单为空时任何请求都不会命中）。
+任何异常都由调用方回落到旧链路。
 
 注意：`mode=kb` / `mode=scene` 这类专用模式不由本模块接管。
 """
@@ -24,8 +25,6 @@ from __future__ import annotations
 import hashlib
 import os
 from dataclasses import dataclass
-
-TRUTHY = {"1", "true", "yes", "on"}
 
 # 不由灰度接管的专用模式
 RESERVED_MODES = {"kb", "scene", "gen_doc", "asr"}
@@ -41,12 +40,6 @@ class RolloutDecision:
     def __bool__(self) -> bool:  # 方便 if decision:
         return self.enabled
 
-
-def _env_bool(name: str, default: bool) -> bool:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    return raw.strip().lower() in TRUTHY
 
 
 def _env_int(name: str, default: int) -> int:
@@ -146,9 +139,12 @@ def get_rollout() -> Rollout:
             _instance = Rollout(enabled=False, percent=0, startup_mode=mode)
         else:
             users = set(filter(None, (os.getenv("LOOP_ROLLOUT_USERS") or "").split(",")))
+            percent = _env_int("LOOP_ROLLOUT_PERCENT", 0)
+            # 没有单独的灰度总开关：配了比例或白名单就算开。
+            # 两者都空时等价于关闭——percent=0 且白名单为空，任何请求都不会命中。
             _instance = Rollout(
-                enabled=_env_bool("LOOP_ROLLOUT_ENABLED", False),
-                percent=_env_int("LOOP_ROLLOUT_PERCENT", 0),
+                enabled=bool(users) or percent > 0,
+                percent=percent,
                 users=users,
                 startup_mode=mode,
             )

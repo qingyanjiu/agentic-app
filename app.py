@@ -112,10 +112,16 @@ except Exception as e:
     logger.error(f"文本纠错器初始化失败: {e}")
     text_corrector = None
 
-# 全局模型和工具
+# 全局模型：配置全部来自环境变量，见 models/llm.py 模块注释
 llm_factory = CustomLLMFactory()
-# llm = llm_factory.llms['local']
-llm = llm_factory.llms['deepseek']
+llm = llm_factory.llm
+# 打一行日志，避免"改了 .env 却不知道实际用了哪个模型"
+logger.info(
+    "[startup] 模型 %s / %s @ %s",
+    llm_factory.config["type"],
+    llm_factory.config["model_name"],
+    llm_factory.config["model_url"],
+)
 @app.on_event("startup")
 async def startup():
     logger.info("[startup] 开始预加载意图识别模型...")

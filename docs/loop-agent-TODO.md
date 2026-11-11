@@ -21,6 +21,8 @@
 | T9 | `vehicle_status:getVehiclePassRecord` 未接入 | P3 | 半小时 | 业务确认口径 | 低 |
 | T10 | gen_doc / knowledge / scene 纳入 loop | 暂不做 | — | — | 高 |
 | T11 | **MCP 参数白名单校验**（参数漂移检测） | P1 | 半小时 | 无 | 低 |
+| T12 | **上下文预算可配**（`LOOP_CONTEXT_BUDGET`） | P1 | 半天 | 无 | 中 |
+| T13 | **旧链路历史无上限**（persistor 语义不一致） | P1 | 1 小时 | 无 | 高 |
 
 **顺序建议**：T1 → 等业务语料（T2）→ T3 → T4 → 用 T1 数据决定是否做 T5。
 
@@ -281,6 +283,8 @@ for words, bad_domain in VETO:
 | T8 | 压缩升级 | 现在是"占位式"（保留开头 300 字），不是语义摘要 |
 | T9 | vehicle 通行记录 | 后端有 `getVehiclePassRecord`，Python 侧没映射 |
 | T11 | MCP 参数白名单 | `McpToolbox.call` 原样透传，参数名漂移不会早失败（见 6.1） |
+| T12 | 上下文预算可配 | `context_budget` 写死 60000 **字符**，且 `ws_bridge` 没传，线上无法调；接本地模型会超窗（见 6.2） |
+| T13 | 旧链路历史无上限 | JSON persistor 覆盖写（只记 1 轮），MySQL/SQLite 追加写且 load **无 LIMIT**（无限增长），见 6.3 |
 
 
 ### 6.1 T11 细节：MCP 参数白名单校验
@@ -318,6 +322,62 @@ INFO 日志。新链路没继承——这是重构时漏掉的一层。
 
 **为什么排 P1 而不是 P0**：它不阻塞功能，但会掩盖问题——参数错了照样返回 200 和一堆数字。
 等 T1 埋点上线、能看到"用户说答得不对"的反馈后，这条的价值会更明显。
+### 6.2 T12 细节：上下文预算可配 + 按 token 计
+
+**现状**——`agent/loop/` 已经有三层防护，不要重复造：
+
+1. **单条工具结果封顶**：`govern.py` 2000 行 / 50KB，超出截断并落盘（`_spill`），
+   提示里带路径。所有域工具都过这一层（`_generic.py:108`、`device_query.py:311/350/365`）
+2. **跨步总量压缩**：`agent.py:236` 每轮调模型前跑 `compress_tool_messages`，
+   tool 消息总字符超预算时，从最早的长结果（>2000 字符）开始换成"前 300 字符 + 占位"
+3. **跨轮历史裁剪**：`pipeline.py` 的 `Session.max_history=12`（24 条消息），
+   且 `add_turn` 只存 user/assistant 纯文本——**工具结果不进 history**，
+   所以上一轮查到的清单不会带到下一轮
+
+**问题**：`LoopAgent(context_budget=60_000)` 是**字符数**，而且
+`ws_bridge.build_pipeline` 构造时**没传这个参数**，线上没有任何入口能调。
+60k 中文字符约 3~4 万 token，本地 8k / 32k 窗口的模型在压缩阈值触发**之前**
+就已经超窗，表现为"回答开始丢前文"或直接报 context length 超限。
+
+**和 T8 的区别**：T8 管"压缩方式"（占位 → 语义摘要），本项管"预算多大"和
+"用什么单位计量"。两件事独立，可以先做 T12。
+
+**做法**：
+
+1. `LoopAgent.__init__` 的 `context_budget` 改读 `LOOP_CONTEXT_BUDGET` 环境变量，
+   缺省仍 60_000——默认行为不变，不影响线上
+2. `ws_bridge.build_pipeline` 显式把该值传进 `LoopAgent`
+3. （第二步再做）按 token 而不是字符计量。字符数在中文/代码场景偏差太大，
+   同一份内容不同 tokenizer 能差一倍
+
+**接本地模型时必须一起确认**：Ollama 默认 `num_ctx=2048`，代码侧压得再准也没用，
+模型侧会直接截断。要在 Modelfile 里设 `PARAMETER num_ctx 8192`，或请求时显式传。
+
+### 6.3 T13 细节：旧链路历史无限累加（两套 persistor 语义相反）
+
+**问题**：`memory/store.py:101` 的 `graph_get_history_messages` 把持久化里的**所有**
+消息无条件转成 `HumanMessage` / `AIMessage`，没有任何切片；`reactive_pipeline.py:541`
+又把它整体拼进 `init_state['messages']`。会话越长越容易超窗，而且是**单调增长**——
+同一个 session 聊 50 轮，第 51 轮就要把前 50 轮全部塞进上下文。
+
+**两套 persistor 语义完全相反**：
+
+| 实现 | 写入方式 | 读取方式 | 实际能记住 |
+|---|---|---|---|
+| `memory_persistor_json.py:24` | `all_data[user_id][session_id] = {...}` **覆盖** | 只有上次写的那份 | **仅上一轮** |
+| `memory_persistor_mysql.py:115` / sqlite | `INSERT INTO aiagent_chat_content` **追加** | `SQL_QUERY_CHAT_SESSION_CONTENT`，**无 LIMIT** | **无限增长** |
+
+同一份代码换个存储后端，记忆长度完全相反，这个差异目前没有任何文档记录。
+
+**对照 loop**：新链路 `Session.max_history=12` 有明确上限，且工具结果不进 history。
+
+**做法**（排 P1 而不是 P0：旧链路迟早下线，但它现在仍承载流量）：
+
+1. `graph_get_history_messages` 加 `limit` 参数，默认只取最近 N 条（对齐 loop 的 12 轮）
+2. 两套 persistor 统一语义：都按"追加 + 读取时截断"，JSON 那套改成 list 追加
+3. `SQL_QUERY_CHAT_SESSION_CONTENT` 直接加 `ORDER BY ... DESC LIMIT`，
+   别把整张表读进内存再切片
+
 ---
 
 ## 7. 明确不做的
