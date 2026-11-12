@@ -1,7 +1,8 @@
 # 前端对接：`list` 事件（结构化清单）
 
-> 这份文档是给前端（`tf_park_ue`）的交接单，可以直接整段给前端 AI。
-> 后端实现已完成并推送（`agentic-app` 的 `9bdf1cb` 起），只差前端接。
+> 状态：**前端已接入**（`tf_park_ue` `b936340`：`AiChatDialog.vue` 的 `case 'list'` +
+> `applyEntityList`，复用现有 `DeviceNode`）。本文档保留作为协议参考与复查清单；
+> 后端实现见 `agentic-app` 的 `9bdf1cb` / `7c8610b`。
 
 ## 1. 背景（一句话）
 

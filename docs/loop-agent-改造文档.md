@@ -1024,21 +1024,24 @@ WS 事件 {"type":"list","kind":"device","items":[…]}
 - **L2 loop**：工具执行完立刻发 `list`（`LoopAgent` 的 `entities` 内部事件 → `ws_bridge` 翻译成 `list`），
   比最终回答先到，前端可以先渲染卡片再等结论。
 
-### 21.4 前端怎么改
+### 21.4 前端怎么改（已完成）
+
+**状态：`tf_park_ue` 已接入（`b936340`）。** 实际做法不是新建卡片组件，而是把 `items`
+拼成 `<device>` 标签，复用现有的 `DeviceNode` → `openDeviceScene` 链路——点击行为和样式
+零成本对齐。下面的文字保留作协议说明，改动详见 `docs/前端对接-list事件.md`。
 
 现在那套文本推断（`DEVICE_WORD_RE` / `nameIndex` / `parsePipeEntry` / `convertDeviceTable` …）
-可以整体退役，换成一个分支：
+保留做**兜底**（旧链路仍只发文本），`list` 事件到达时以结构化数据为准。
 
 ```ts
 case 'list':
-  // 有结构化数据就以它为准：渲染卡片，不再走 markdown 文本增强
-  renderEntityList(data.kind, data.title, data.items, data.note)
+  // 有结构化数据就以它为准，不再走 markdown 文本增强
+  applyEntityList(data)
   break
 ```
 
-```ts
-const COMPONENTS = { device: DeviceCard }   // 以后加 person: PersonCard
-```
+`applyEntityList` 内部只认 `kind: 'device'`（把 `items` 拼成 `<device>` 标签），
+其他 `kind` 直接 return、交给文本路径；以后加人员/车辆就是在这个函数里再加一个分支。
 
 点击行为：`onClick(id)` → 把 `id` 当设备编号（tag）下发场景，和现在 `<device code>` 完全一致。
 
