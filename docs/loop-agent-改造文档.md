@@ -1300,3 +1300,107 @@ twins_inspection / emergency_fire / emergency_perimeter / compositive_overview /
 所以「本月电费」虽然落到 `getOverallEnergyConsu`，返回的仍是接口默认口径
 （`todayElectricity/yearElectricity`），日期范围没生效。要按时间取数得先确认
 各 Java 工具是否接受 `startTime/endTime`。
+
+#### 子类型矩阵（35 条，就是测试用例）
+
+这张表把「用户怎么说 → 判成哪个子类型 → 打哪个 MCP 工具」列全了。
+**唯一来源是 `tests/test_loop_domains.py` 的 `SUBTYPE_MATRIX`**，本表只是镜像——
+两边不一致时以代码为准。加新说法就往矩阵里补一行，MISS 会直接报
+「判成什么、会打哪个工具」。
+
+**meeting_status**
+
+| 说法 | 子类型 | MCP 工具 |
+|---|---|---|
+| 列出各会议室使用情况 | `meeting_room_overview` | `meeting:getMeetingRoomOverview` |
+| 会议室概览 | `meeting_room_overview` | `meeting:getMeetingRoomOverview` |
+| 会议室现在有人吗 | `meeting_room_status` | `meeting:getMeetingRoomStatus` |
+| 哪些会议室空闲 | `meeting_room_status` | `meeting:getMeetingRoomStatus` |
+| 今天开了多少会 | `number_of_meetings` | `meeting:getNumberOfMeetings` |
+| 今天有几场会 | `number_of_meetings` | `meeting:getNumberOfMeetings` |
+| 今天的会议列表 | `room_meet_list_by_day` | `meeting:getRoomMeetListByDay` |
+| 今天有什么会 | `room_meet_list_by_day` | `meeting:getRoomMeetListByDay` |
+| 哪个会议室用得最多 | `high_freq_meeting_rooms` | `meeting:getHighFrequencyMeetingRooms` |
+| 会议室使用排行 | `high_freq_meeting_rooms` | `meeting:getHighFrequencyMeetingRooms` |
+| 平均会议时长 | `meeting_statistics` | `meeting:getMeetingStatistics` |
+
+**canteen_status**
+
+| 说法 | 子类型 | MCP 工具 |
+|---|---|---|
+| 今天食堂多少人 | `dining_count` | `canteen:getDiningCount` |
+| 本周菜谱 | `week_menu` | `canteen:getWeekMenu` |
+| 什么菜最受欢迎 | `dish_rank` | `canteen:getDishPopularity` |
+
+**security_status**
+
+| 说法 | 子类型 | MCP 工具 |
+|---|---|---|
+| 今天的告警 | `alarm_list` | `security:getSecurityAlarmList` |
+| 安防概览 | `ai_overview` | `security:getAlarmView` |
+| 告警总览 | `ai_overview` | `security:getAlarmView` |
+| 安全指数 | `security_index` | `security:getSecurityIndex` |
+| 园区安全吗 | `security_index` | `security:getSecurityIndex` |
+| 告警趋势 | `ai_trend` | `security:getAlertSituation` |
+| 巡查任务 | `patrol` | `security:getPatrolMission` |
+
+**energy_status**
+
+| 说法 | 子类型 | MCP 工具 |
+|---|---|---|
+| 今天用水多少 | `realtime_water` | `energy:getRealtimeWaterUsage` |
+| 本月电费 | `overall_energy` | `energy:getOverallEnergyConsu` |
+| 总能耗 | `overall_energy` | `energy:getOverallEnergyConsu` |
+| 用电排名 | `electricity_rank` | `energy:getElectricityUsageRanking` |
+| 水表在线情况 | `metering_equipment` | `energy:getMeteringEquipment` |
+
+**information_status**
+
+| 说法 | 子类型 | MCP 工具 |
+|---|---|---|
+| 今天发了几条信息 | `info_view` | `information:getInfoView` |
+
+**vehicle_status**
+
+| 说法 | 子类型 | MCP 工具 |
+|---|---|---|
+| 还剩多少停车位 | `parking_space` | `vehicle_status:getParkingSpace` |
+| 今天的车辆通行记录 | `traffic_flow` | `vehicle_status:getTrafficVolume` |
+
+**twins_inspection**
+
+| 说法 | 子类型 | MCP 工具 |
+|---|---|---|
+| 今天巡检任务 | `today_tasks` | `inspection:getTodayTaskList` |
+| 巡检统计 | `inspection_statistics` | `inspection:getStatistics` |
+
+**emergency_fire**
+
+| 说法 | 子类型 | MCP 工具 |
+|---|---|---|
+| 消防设备有多少 | `fire_assets` | `fire:getFireAssets` |
+
+**emergency_perimeter**
+
+| 说法 | 子类型 | MCP 工具 |
+|---|---|---|
+| 周界告警统计 | `perimeter_alarm_stats` | `perimeter:getPerimeterAlarmStats` |
+
+**compositive_overview**
+
+| 说法 | 子类型 | MCP 工具 |
+|---|---|---|
+| 园区基本情况 | `basic_info` | `overview:getBasicInfo` |
+
+**device_status**
+
+| 说法 | 子类型 | MCP 工具 |
+|---|---|---|
+| 设备健康度 | `category_health` | `device:getCategoryHealth` |
+
+**怎么用这张表**
+
+1. 用户说法没命中（答非所问 / 后端暂未接入）→ 先查它属于哪个域、期望哪个子类型；
+2. 去 `agent/intent/slots.py` 对应抽取器补关键词，或调整规则**顺序**（顺序即优先级，
+   21.11/21.12 的坑都在顺序上：`今天.*会` 抢了「多少会」、`会议室.*使用` 抢了「使用情况」）；
+3. 在 `SUBTYPE_MATRIX` 里加一行把它锁住，再跑 `pytest tests/test_loop_domains.py`。
