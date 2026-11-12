@@ -12,6 +12,7 @@
 from .agent import DEFAULT_SYSTEM_PROMPT, LoopAgent
 from .composer import ASK_TEMPLATES, Composer, ask_text
 from .executor import Executor
+from .entities import KIND_DEVICE, Entity, EntityList
 from .govern import govern
 from .pipeline import ChatPipeline, PipelineResult, Session
 from .registry import DomainSpec, ToolRegistry
@@ -26,6 +27,9 @@ __all__ = [
     "DomainSpec",
     "ToolSpec",
     "ToolOutcome",
+    "Entity",
+    "EntityList",
+    "KIND_DEVICE",
     "LoopEvent",
     "LoopResult",
     "tool_schema",

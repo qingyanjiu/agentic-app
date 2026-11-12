@@ -433,6 +433,7 @@ SESSION_TTL = 300.0      # 5 分钟无活动即回收
 | `assistant_delta`（LoopAgent） | `{"type":"answer","content":"分块"}` | L2 流式，模型边说边出字 |
 | `tool_start`（LoopAgent） | `{"type":"tool","name":"工具名"}` | 前端据此把前面的文字落成「过程稿」气泡 |
 | `tool_end` | 不发 | 下一次 `answer` 会清掉状态提示，发了反而闪烁 |
+| `entities`（LoopAgent） | `{"type":"list","kind":"device","items":[…]}` | 结构化清单，工具产出即发，不经过模型。前端按 `kind` 渲染可点控件（见第 21 节） |
 | `asked` | `{"type":"ask","question":"..."}` | 追问（模板生成，不调模型）。**前端读 `question`，不是 `content`** |
 | `error` | `{"type":"error","content":"..."}` | |
 | 结束 | `{"status":"done","level":"L1/L2","escalated":bool}` | `level` / `escalated` 用于埋点 |
@@ -944,3 +945,128 @@ TTL 由 `DEVICE_CACHE_TTL` 控制（默认 300 秒）。给了名称/楼层却�
 
 方向：压缩**单调化**（压过就保持，别每步重判）；优先压靠后的长结果，或一次性压"最早的一段"，
 把断点次数压到每会话个位数。—— 未实施，等 T12/T14 一起做。
+
+---
+
+## 21. 2026-11-12 增补：清单类回答改用结构化实体（`list` 事件）
+
+### 21.1 问题
+
+设备清单原本是纯文本：
+
+```
+14 台设备，楼层 5F：
+- 5F客梯厅｜编号 jk_zl_5f_0006｜id 1001｜位置 园区/科研办公楼/5F｜状态 启用｜类型 监控
+```
+
+前端要把它变成可点按钮，只能靠正则猜「这段文字是不是设备清单」：
+表头词、竖线分段、`名称（编号 xxx）`、整行设备名、markdown 表格……每条规则都在
+赌模型的输出形态。模型换个说法就漏，漏了用户就点不动。已经写了 500 行仍会漏。
+
+根因是**判定权放错了地方**：数据是后端给的，格式是模型复述的，前端只能靠文本反推。
+模型措辞不可控，正则永远追不完。
+
+### 21.2 设计
+
+把「这是什么东西」的判定搬回**产出数据的工具**——它最懂自己的字段：
+
+```
+MCP 原始 JSON
+   ↓ device_query 域（知道哪列是名称、哪列是编号）
+ToolOutcome.text      ← 照旧：给模型看、给 history 用、旧前端兜底
+ToolOutcome.entities  ← 新增：结构化列表，不经过模型
+   ↓
+WS 事件 {"type":"list","kind":"device","items":[…]}
+   ↓
+前端 kind → 组件（一张映射表，不再做文本推断）
+```
+
+三个关键点：
+
+1. **不经过模型**。清单不再让模型复述，实体由工具直接产出，模型写得天花乱坠也不影响。
+2. **文本仍然保留**。history 要存（下一轮「第三个」靠它），旧前端也要能降级显示。
+3. **`kind` 是扩展点**。前端只认 `kind`，后端加一种业务类型（`person` / `vehicle` / `space`）
+   只是多填一个字段，协议不变。
+
+代码在 `agent/loop/entities.py`（`Entity` / `EntityList`）。
+
+### 21.3 协议
+
+`{"event":"custom","data":{…}}`，`data.type == "list"`：
+
+```json
+{
+  "type": "list",
+  "kind": "device",
+  "title": "14 台设备，楼层 5F",
+  "items": [
+    {"kind": "device", "id": "jk_zl_5f_0006", "label": "5F客梯厅",
+     "attrs": {"code": "jk_zl_5f_0006", "type": "监控", "space": "园区/科研办公楼/5F", "status": "启用"}}
+  ],
+  "total": 268,
+  "truncated": false
+}
+```
+
+| 字段 | 含义 |
+|---|---|
+| `kind` | 业务类型，前端据此选组件。目前只实现了 `device` |
+| `title` | 一句话概括，和文本首行是同一句话（都出自 `_summary()`） |
+| `items[].id` | 点击后回传的标识。设备就是点位编号，等于场景下发的 tag |
+| `items[].label` | 按钮文字 |
+| `items[].attrs` | `kind` 私有字段，前端不认识可以忽略 |
+| `total` | 过滤前的总量（园区共 N 台） |
+| `truncated` / `note` | 是否截断 + 提示语，超过 `MAX_ROWS=60` 时出现 |
+
+发送时机：
+
+- **L1 直出**（`passthrough`）：先发 `answer`（整段文本，兼容旧前端），再发 `list`；
+- **L2 loop**：工具执行完立刻发 `list`（`LoopAgent` 的 `entities` 内部事件 → `ws_bridge` 翻译成 `list`），
+  比最终回答先到，前端可以先渲染卡片再等结论。
+
+### 21.4 前端怎么改
+
+现在那套文本推断（`DEVICE_WORD_RE` / `nameIndex` / `parsePipeEntry` / `convertDeviceTable` …）
+可以整体退役，换成一个分支：
+
+```ts
+case 'list':
+  // 有结构化数据就以它为准：渲染卡片，不再走 markdown 文本增强
+  renderEntityList(data.kind, data.title, data.items, data.note)
+  break
+```
+
+```ts
+const COMPONENTS = { device: DeviceCard }   // 以后加 person: PersonCard
+```
+
+点击行为：`onClick(id)` → 把 `id` 当设备编号（tag）下发场景，和现在 `<device code>` 完全一致。
+
+**建议保留旧路径做灰度**：`list` 事件没来时（老后端 / 其他入口）继续走原来的文本增强。
+前端按「收到 `list` 用结构化渲染，没收到退回正则」切换，两边不用同时上线。
+
+### 21.5 扩展新业务类型
+
+以人员列表为例，后端只需要：
+
+```python
+EntityList(
+    kind="person",
+    title="5F 在岗 3 人",
+    items=[Entity(kind="person", id="zhangsan", label="张三",
+                  attrs={"dept": "物业", "phone": "138…"})],
+)
+```
+
+协议、事件、`ws_bridge` 一行都不用改。前端加 `person: PersonCard` 即可。
+
+### 21.6 未做
+
+1. **行内引用**：模型自由回答里提到某台设备时走
+   `[5F客梯厅](entity:device/jk_zl_5f_0006)` 这种 markdown 链接（`Entity.to_link()` 已实现），
+   前端渲染器认 `entity:` scheme 即可转成同一组件。暂不启用——点不动是小事，
+   "一块列表整片漏掉"才是痛点。
+2. **其余 12 个域**：只有 `device_query__list` 填了 `entities`，人员/车辆/告警等域要在各自
+   工具里补，协议不变（见 TODO T17）。
+3. **动态发现的 21 个工具**：返回 MCP 原始 JSON，没有实体语义，不填 `entities`
+   （前端继续按文本渲染）。

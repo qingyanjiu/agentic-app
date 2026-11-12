@@ -26,6 +26,7 @@
 | T14 | **上下文压缩优化**（4 个缺陷 + 缓存命中断裂） | P2 | 2~3 天 | T12 完成 + 全量切 loop | 高 |
 | T15 | **全局 history 与会话记忆**（跨进程/跨副本） | P2 | 2 天 | 与 T6 合并实施 | 高 |
 | T16 | **会话池容量与过期回收**（含 `session_state` 真泄漏） | P3 | 半天 | 无 | 中 |
+| T17 | **其余业务域接入结构化实体**（person/vehicle/告警 + 行内 `entity:` 链接） | P2 | 每域半天 | 前端 `list` 事件落地后 | 中 |
 
 **顺序建议**：T1 → 等业务语料（T2）→ T3 → T4 → 用 T1 数据决定是否做 T5。
 
@@ -546,6 +547,24 @@ if state and (time.time() - state.last_update_time) > self.timeout:
 
 **优先级**：P3。单实例演示规模影响很小，但第 1 条是**真 bug**，
 可以顺手先修；2、3 建议和 T15 的 `SessionStore` 抽象一起做，不要分三次改。
+
+### 6.7 T17 细节：其余业务域接入结构化实体
+
+`list` 事件（见改造文档第 21 节）已经在 `device_query__list` 上跑通：工具产
+`ToolOutcome.entities`，`ws_bridge` 翻成前端事件，全程不走模型。剩下的活是复制这个模式：
+
+1. **人员列表**：`person_status` 查到人之后填 `kind="person"`；
+2. **车辆列表**：`vehicle_status` 填 `kind="vehicle"`；
+3. **告警/工单**：`security_status` / `emergency_*` 这类返回多条记录的同样可以给实体；
+4. **动态发现的 21 个工具**：返回 MCP 原始 JSON，没有实体语义，**不填**——
+   要接得先给每个工具配字段映射，收益不明确，先不做。
+
+顺手要做的两件事：
+
+- 前端 `kind → 组件` 映射表落地后，逐步停用 `AiChatDialog` 里那套文本推断；
+- **行内 `entity:` 链接**（`Entity.to_link()` 已实现）：模型自由回答里提到单台设备/单个人时用
+  `[张三](entity:person/zhangsan)`。这要改 system prompt 并验证模型不会编 id，
+  建议等 `list` 事件在线上稳定后再开。
 
 
 ---

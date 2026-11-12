@@ -16,6 +16,7 @@ import logging
 from dataclasses import dataclass, field
 
 from .composer import Composer, ask_text
+from .entities import EntityList
 from .executor import Executor
 from .router import Pending, Router
 
@@ -53,15 +54,20 @@ class PipelineResult:
     stop_reason: str      # answered / asked / handoff / loop_unavailable / aborted / error
     tool_calls: list[dict] = field(default_factory=list)
     escalated: bool = False
+    # 结构化清单（设备列表这类），L1 直出时由工具产出，供 ws_bridge 发 list 事件
+    entities: EntityList | None = None
 
     def to_dict(self) -> dict:
-        return {
+        data = {
             "text": self.text,
             "level": self.level,
             "stop_reason": self.stop_reason,
             "tool_calls": self.tool_calls,
             "escalated": self.escalated,
         }
+        if self.entities:
+            data["entities"] = self.entities.to_dict()
+        return data
 
 
 class ChatPipeline:
@@ -157,6 +163,7 @@ class ChatPipeline:
                 level=plan.level,
                 stop_reason="answered",
                 tool_calls=tool_records,
+                entities=outcome.entities,
             )
 
         text = await self.composer.compose(

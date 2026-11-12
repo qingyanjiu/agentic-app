@@ -33,6 +33,7 @@ import time
 
 from agent.intent.slots import DEVICE_TYPE_DICT, extract_device_query_slots
 
+from ..entities import KIND_DEVICE, Entity, EntityList
 from ..govern import govern
 from ..registry import DomainSpec
 from ..runtime import McpToolbox
@@ -266,6 +267,36 @@ def _rows_of(raw_text: str) -> list[dict]:
     return walk(data)
 
 
+_STATUS_TEXT = {"0": "停用", "1": "启用", "2": "维修", "3": "报废"}
+
+
+def _status_text(status: object) -> str:
+    return _STATUS_TEXT.get(str(status), str(status or ""))
+
+
+def _summary(
+    rows: list[dict],
+    *,
+    total: int | None = None,
+    floor: str | None = None,
+    keyword: str | None = None,
+) -> str:
+    """一句话概括这批结果，比如「14 台设备，楼层 5F」。
+
+    文本回答的首行和结构化列表的 title 都取这里，保证两边说的是同一件事。
+    """
+    parts: list[str] = []
+    if total is not None and total != len(rows):
+        parts.append(f"{len(rows)} 台设备（园区共 {total} 台）")
+    else:
+        parts.append(f"{len(rows)} 台设备")
+    if floor:
+        parts.append(f"楼层 {floor}")
+    if keyword:
+        parts.append(f"关键词「{keyword}」")
+    return "，".join(parts)
+
+
 def _format_rows(
     rows: list[dict],
     *,
@@ -284,18 +315,9 @@ def _format_rows(
             head += "）"
         return head
 
-    parts: list[str] = []
-    if total is not None and total != len(rows):
-        parts.append(f"{len(rows)} 台设备（园区共 {total} 台）")
-    else:
-        parts.append(f"{len(rows)} 台设备")
-    if floor:
-        parts.append(f"楼层 {floor}")
-    if keyword:
-        parts.append(f"关键词「{keyword}」")
     # 这段文本会原样展示给用户（list 工具是 passthrough），
     # 不要塞"status 不是在线状态"这类给模型看的注解——那是 tool description 的职责。
-    header = "，".join(parts) + "："
+    header = _summary(rows, total=total, floor=floor, keyword=keyword) + "："
 
     lines = [header]
     for row in rows[:MAX_ROWS]:
@@ -303,10 +325,7 @@ def _format_rows(
         code = row.get("code") or ""
         device_id = row.get("id") or ""
         space = row.get("spaceName") or ""
-        status = row.get("status")
-        status_text = {"0": "停用", "1": "启用", "2": "维修", "3": "报废"}.get(
-            str(status), str(status or "")
-        )
+        status_text = _status_text(row.get("status"))
         parts_row = [f"- {name}"]
         if code:
             parts_row.append(f"编号 {code}")
@@ -322,6 +341,61 @@ def _format_rows(
     if len(rows) > MAX_ROWS:
         lines.append(f"（其余 {len(rows) - MAX_ROWS} 台未展示，可加楼层或名称缩小范围）")
     return "\n".join(lines)
+
+
+def _entities(
+    rows: list[dict],
+    *,
+    total: int | None = None,
+    floor: str | None = None,
+    keyword: str | None = None,
+) -> EntityList | None:
+    """把同一批行转成结构化列表，供前端渲染可点控件。
+
+    `id` 用点位编号（就是场景下发要的 tag）；编号缺失时退用内部 id，
+    此时前端仍能点，但后端拿到的是内部 id，需要按 id 反查。
+    """
+    items: list[Entity] = []
+    for row in rows[:MAX_ROWS]:
+        code = str(row.get("code") or "")
+        device_id = str(row.get("id") or "")
+        target = code or device_id
+        if not target:
+            continue
+        attrs: dict = {}
+        if code:
+            attrs["code"] = code
+        type_name = _sync_source_name(row.get("syncSource"))
+        if type_name and type_name != "未知类型":
+            attrs["type"] = type_name
+        space = row.get("spaceName") or ""
+        if space:
+            attrs["space"] = str(space)
+        status_text = _status_text(row.get("status"))
+        if status_text:
+            attrs["status"] = status_text
+        items.append(
+            Entity(
+                kind=KIND_DEVICE,
+                id=target,
+                label=str(row.get("rawName") or row.get("name") or target),
+                attrs=attrs,
+            )
+        )
+    if not items:
+        return None
+    return EntityList(
+        kind=KIND_DEVICE,
+        title=_summary(rows, total=total, floor=floor, keyword=keyword),
+        items=items,
+        total=total,
+        truncated=len(rows) > MAX_ROWS,
+        note=(
+            f"其余 {len(rows) - MAX_ROWS} 台未展示，可加楼层或名称缩小范围"
+            if len(rows) > MAX_ROWS
+            else ""
+        ),
+    )
 
 
 def _build_list_args(slots: dict) -> dict:
@@ -444,7 +518,10 @@ def build_domain(toolbox: McpToolbox) -> DomainSpec:
             govern(
                 _format_rows(matched, total=total, floor=floor, keyword=keyword),
                 label="device_list",
-            )
+            ),
+            # 同一批数据再给一份结构化列表：前端直接渲染可点控件，
+            # 不用再猜"这段文本是不是设备清单"。
+            entities=_entities(matched, total=total, floor=floor, keyword=keyword),
         )
 
     async def device_detail(raw_args: dict) -> ToolOutcome:

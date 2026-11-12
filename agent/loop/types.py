@@ -15,6 +15,8 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
+from .entities import EntityList
+
 
 @dataclass(slots=True)
 class ToolOutcome:
@@ -29,6 +31,9 @@ class ToolOutcome:
     terminate: bool = False
     # 本工具搞不定、建议升级到 loop 重新选工具（参数不足不算，参数不足走追问）
     escalate: bool = False
+    # 结构化的清单结果（设备列表这类）。给前端渲染可点控件用，
+    # 不参与回填给模型（模型只看 text），也不经过模型转述。
+    entities: EntityList | None = None
 
 
 @dataclass(slots=True)

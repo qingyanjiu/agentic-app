@@ -345,6 +345,12 @@ class LoopAgent:
                         "preview": outcome.text[:200],
                     },
                 )
+                # 结构化清单：工具已经产出可点实体，直接给前端
+                # （文本里仍有逐行明细，供 history 和旧前端兜底）
+                if outcome.entities:
+                    await self._emit(
+                        handler, "entities", {"list": outcome.entities.to_dict()}
+                    )
 
             if all_terminate:
                 break

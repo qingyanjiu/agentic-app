@@ -157,6 +157,61 @@ function finishAiBubble() {
     currentAiRaw = '';
 }
 
+// 结构化清单卡片。后端用 list 事件明确告诉我们这是一块什么列表（kind），
+// 前端只做 kind → 样式 的映射，不再从文本里猜"这行是不是设备"。
+// 文本 answer 里也带着逐行明细（兼容还没升级的前端）：如果当前气泡正好是
+// 那段清单，直接丢掉气泡只留卡片，避免同一份内容显示两遍。
+function renderEntityList(d) {
+    if (currentAiBubble && currentAiRaw.trim()) {
+        if (currentAiRaw.trim().startsWith(d.title || '')) {
+            currentAiBubble.remove();
+        } else {
+            currentAiBubble.classList.remove('streaming');
+        }
+        currentAiBubble = null;
+        currentAiRaw = '';
+    }
+    removeTypingIndicator();
+
+    const card = document.createElement('div');
+    card.className = `msg msg-list msg-list--${d.kind || 'unknown'}`;
+
+    const title = document.createElement('div');
+    title.className = 'msg-list__title';
+    title.textContent = d.title || '';
+    card.appendChild(title);
+
+    const items = document.createElement('div');
+    items.className = 'msg-list__items';
+    (d.items || []).forEach((item) => {
+        const chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = 'msg-list__item';
+        chip.textContent = item.label || item.id;
+        const attrs = item.attrs || {};
+        chip.title = [attrs.type, attrs.space, attrs.status].filter(Boolean).join(' · ');
+        // 点击就是把这个点位填进输入框，用户接着输入动作（"打开xxx监控"）。
+        // 真正的场景下发仍然走场景通道，测试页不直接触发动作。
+        chip.addEventListener('click', () => {
+            inputEl.value = item.label || item.id;
+            inputEl.focus();
+            updateComposerState();
+        });
+        items.appendChild(chip);
+    });
+    card.appendChild(items);
+
+    if (d.note) {
+        const note = document.createElement('div');
+        note.className = 'msg-list__note';
+        note.textContent = d.note;
+        card.appendChild(note);
+    }
+
+    messagesEl.appendChild(card);
+    scrollToBottom(true);
+}
+
 // 过程稿：模型调工具前说的那段话。落成独立气泡并弱化，避免和最终回答混成一坨
 function markProcessBubble() {
     if (!currentAiBubble) return;
@@ -369,6 +424,11 @@ function handleCustomEvent(d) {
             markProcessBubble();
             if (d.name || d.tool) currentToolNames.push(d.name || d.tool);
             setStatus(`正在调用工具 · ${d.name || d.tool || ''}`);
+            break;
+        case 'list':
+            // 结构化清单：后端明确说了「这是一块 device 列表」，不用再从文本里猜
+            renderEntityList(d);
+            clearStatus();
             break;
         case 'done':
             finishTurn();

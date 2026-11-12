@@ -149,6 +149,15 @@ async def handle_chat(
                     "data": {"type": "tool", "name": data.get("name") or ""},
                 },
             )
+        elif kind == "entities":
+            # 结构化清单（设备列表这类）：前端直接渲染可点控件。
+            # 文本回答里也带着逐行明细（旧前端能继续用），这份是为准的。
+            payload = data.get("list")
+            if payload:
+                await _send(
+                    websocket,
+                    {"event": "custom", "data": {"type": "list", **payload}},
+                )
         elif kind == "error":
             logger.warning(f"[loop] loop 内部错误：{data.get('message')}")
 
@@ -160,6 +169,14 @@ async def handle_chat(
         # 场景控制等专用链路，交回旧流程
         logger.info(f"[loop] handoff to legacy: {query[:40]}")
         return False
+
+    # L1 直出：结构化清单单独发一个 list 事件（文本已经按追加语义发过了）。
+    # L2 的清单是执行工具时就发出去的，不在这里重复。
+    if result.entities:
+        await _send(
+            websocket,
+            {"event": "custom", "data": {"type": "list", **result.entities.to_dict()}},
+        )
 
     if result.stop_reason == "asked":
         # 前端读的是 question 字段，不是 content
