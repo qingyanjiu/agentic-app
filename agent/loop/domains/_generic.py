@@ -43,7 +43,14 @@ class QueryDomain:
 
     def resolve(self, query: str) -> tuple[str, str | None, dict, list[str]]:
         slots = self.extract_slots(query) or {}
-        query_type = slots.get("query_type") or self.default_type
+        # 子类型字段两套写法并存：slots.py 里一半抽取器给 query_type，
+        # 另一半给 event_type（会议/食堂/信息发布/安防）。只读前者会让后四个域
+        # 永远落到 default_type —— 表现就是"不管问什么，都打同一个 MCP 工具"。
+        query_type = (
+            slots.get("query_type")
+            or slots.get("event_type")
+            or self.default_type
+        )
         tool = self.tool_map.get(query_type)
         missing = [k for k in self.required.get(query_type, ()) if not slots.get(k)]
         args = self.args_builder(slots) if self.args_builder else {}

@@ -1289,7 +1289,8 @@ def extract_meeting_status_slots(query: str) -> dict:
     统一抽取会议管理相关的所有 slot
     """
     slots = {
-        "event_type": "count",
+        # 兜底用「会议统计」——tool_map 里没有 count，用 count 会让工具解析成 None
+        "event_type": "meeting_statistics",
         "date": parse_time_slot(query),
     }
 
@@ -1311,21 +1312,22 @@ def extract_meeting_status_slots(query: str) -> dict:
     ):
         slots["event_type"] = "high_freq_meeting_rooms"
 
-    # 3. 会议室状态
+    # 3. 会议室一览 / 使用情况：问的是"每间会议室怎么样"，不是某一间此刻的状态。
+    #    必须排在状态判定之前——原先的 `会议室.*使用` 会把「使用情况」抢成 status。
     elif re.search(
-        r"会议室.*状态|会议室.*空闲|会议室.*占用|哪些会议室.*可用|"
-        r"会议室.*使用|空闲.*会议室",
-        q,
-    ):
-        slots["event_type"] = "meeting_room_status"
-
-    # 4. 会议室一览
-    elif re.search(
-        r"会议室.*一览|会议室.*情况|会议室.*概览|会议室.*分布|"
-        r"会议室.*统计",
+        r"会议室.*(一览|概览|情况|分布|统计|使用情况|使用率|使用状况)|"
+        r"各会议室|所有会议室|全部会议室",
         q,
     ):
         slots["event_type"] = "meeting_room_overview"
+
+    # 4. 会议室当前状态（空闲/占用/有人）
+    elif re.search(
+        r"会议室.*(状态|使用中|有人|没人|空着)|会议室.*空闲|会议室.*占用|"
+        r"哪些会议室.*可用|空闲.*会议室",
+        q,
+    ):
+        slots["event_type"] = "meeting_room_status"
 
     # 5. 会议数量
     elif re.search(

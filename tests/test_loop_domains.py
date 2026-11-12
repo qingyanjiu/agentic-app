@@ -53,3 +53,65 @@ def test_unknown_subtype_returns_empty_tool():
     """人态势的 location/trace 后端未接入，应返回空 tool（走 L2 或直接告知）。"""
     plan = DOMAIN_PLANNERS["person_status"]("张三现在在哪里")
     assert plan.tool in ("", "person_status__query")
+
+
+# ------------------------------------------------------------------
+# 子类型 → MCP 工具 的映射（线上问题：问什么都打同一个 MCP 工具）
+#
+# 根因：slots.py 里一半抽取器给 query_type，另一半给 event_type，
+# 而 _generic.QueryDomain.resolve 只读 query_type → 会议/食堂/信息发布/安防
+# 四个域永远落到 default_type。表现就是"走的 MCP 不对"。
+# ------------------------------------------------------------------
+def test_meeting_subtype_maps_to_expected_mcp_tool():
+    from agent.loop.domains import meeting_status as domain
+
+    cases = {
+        "列出各会议室使用情况": ("meeting_room_overview", "meeting:getMeetingRoomOverview"),
+        "各会议室使用情况": ("meeting_room_overview", "meeting:getMeetingRoomOverview"),
+        "会议室概览": ("meeting_room_overview", "meeting:getMeetingRoomOverview"),
+        "会议室现在有人吗": ("meeting_room_status", "meeting:getMeetingRoomStatus"),
+        "今天的会议列表": ("room_meet_list_by_day", "meeting:getRoomMeetListByDay"),
+        "哪个会议室用得最多": ("high_freq_meeting_rooms", "meeting:getHighFrequencyMeetingRooms"),
+    }
+    for query, (expected_type, expected_tool) in cases.items():
+        query_type, tool, _args, _missing = domain.CONFIG.resolve(query)
+        assert query_type == expected_type, query
+        assert tool == expected_tool, query
+
+
+def test_meeting_types_are_not_all_the_same_tool():
+    """所有子类型塌成一个工具，是这次 bug 的症状。"""
+    from agent.loop.domains import meeting_status as domain
+
+    tools = {
+        domain.CONFIG.resolve(q)[1]
+        for q in [
+            "列出各会议室使用情况",
+            "会议室现在有人吗",
+            "今天的会议列表",
+            "哪个会议室用得最多",
+        ]
+    }
+    assert len(tools) >= 4
+
+
+def test_event_type_domains_resolve_distinct_tools():
+    """用 event_type 的四个域都不能塌到 default_type。"""
+    from agent.loop.domains import canteen_status, meeting_status, security_status
+
+    # 食堂：三种问法三种工具（原先全部是 week_menu）
+    canteen = {canteen_status.CONFIG.resolve(q)[1] for q in [
+        "今天食堂多少人", "本周菜谱", "什么菜最受欢迎",
+    ]}
+    assert len(canteen) == 3
+
+    # 会议：概览与状态必须分开
+    assert (
+        meeting_status.CONFIG.resolve("会议室概览")[1]
+        != meeting_status.CONFIG.resolve("会议室现在有人吗")[1]
+    )
+
+    # 安防：至少不会因为字段名不认而全部落空
+    for query in ["今天的告警", "巡检趋势"]:
+        _query_type, tool, _args, _missing = security_status.CONFIG.resolve(query)
+        assert tool, query

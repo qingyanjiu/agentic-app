@@ -1219,3 +1219,50 @@ AI：这个条件匹配到 … 台设备，请补充设备类型…
 测试：`test_followup_escapes_when_user_says_nothing_pickable`、
 `test_followup_accepts_ordinal_and_full_name`、`test_first_time_ambiguity_still_lists_candidates`、
 `test_pronoun_with_multiple_candidates_escapes_followup`。
+
+### 21.11 修复：子类型字段两套写法，导致「走的 MCP 不对」
+
+现场：「列出各会议室使用情况」打到了 `meeting:getMeetingStatistics`（返回预约数/平均时长），
+而它应该打 `meeting:getMeetingRoomOverview`（返回各类会议室数量）。
+
+**根因在通用域工厂，不在会议域**：
+
+```python
+# agent/loop/domains/_generic.py（修复前）
+query_type = slots.get("query_type") or self.default_type
+```
+
+`agent/intent/slots.py` 里的抽取器**两套写法并存**：
+
+| 用 `query_type` | 用 `event_type` |
+|---|---|
+| compositive_overview / device_query / device_status / emergency_fire / emergency_perimeter / energy_status / person_status / twins_inspection / vehicle_status | **canteen_status / information_status / meeting_status / security_status** |
+
+后四个域的 `tool_map` 因此永远是死代码：不管问什么，`query_type` 都取不到 →
+一律落到 `default_type` → 永远打同一个 MCP 工具。除会议外，食堂也是全打 `getWeekMenu`。
+
+修：
+
+1. `_generic.QueryDomain.resolve()` 同时认 `query_type` 和 `event_type`；
+2. 会议抽取器：`会议室.*使用` 收窄为 `使用中/有人/没人/空着`，把
+   「使用情况/使用率/各会议室」判给 `meeting_room_overview`，且**排在状态判定之前**；
+3. 会议兜底 `event_type` 从 `count` 改成 `meeting_statistics` —— `count` 不在 `tool_map` 里，
+   会让工具解析成 `None`（「会议室现在有人吗」原本就卡在这）。
+
+修复前后（实测，真 MCP）：
+
+```
+修复前 列出各会议室使用情况 → meeting:getMeetingStatistics   {"reservations":34,"avgDuration":0}
+修复后 列出各会议室使用情况 → meeting:getMeetingRoomOverview  [{"普通会议室":10},{"中型会议室":10}…]
+
+食堂：今天食堂多少人/本周菜谱/什么菜最受欢迎 → getDiningCount / getWeekMenu / getDishPopularity
+```
+
+测试：`test_meeting_subtype_maps_to_expected_mcp_tool`、
+`test_meeting_types_are_not_all_the_same_tool`、`test_event_type_domains_resolve_distinct_tools`。
+
+**同类隐患（未改，属关键词质量问题而非字段问题）**：
+
+- `安防概览` → 仍是 `security:getSecurityAlarmList`（抽取器没有「概览」关键词）；
+- `今天开了多少会` → `room_meet_list_by_day`（规则的 `今天.*会` 抢在「会议数量」之前）；
+- `本月电费` → `energy_status` 抽到 `count`，不在 `tool_map` → 工具解析为 `None`。
