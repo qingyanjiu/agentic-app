@@ -139,6 +139,8 @@ def test_list_devices_returns_entities():
     assert first["attrs"]["code"] == "jk_zl_5f_0006"
     assert first["attrs"]["status"] == "启用"
     assert first["attrs"]["space"] == "园区/科研办公楼/5F"
+    # 楼层单独给短写法，前端场景聚焦只认 5F / -1F
+    assert first["attrs"]["floor"] == "5F"
 
 
 def test_list_devices_without_match_has_no_entities():

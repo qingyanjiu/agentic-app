@@ -371,6 +371,11 @@ def _entities(
         space = row.get("spaceName") or ""
         if space:
             attrs["space"] = str(space)
+        # 楼层单独给：前端要做场景聚焦时只认 "5F" / "-1F" 这种短写法，
+        # 直接传 spaceName（园区/科研办公楼/5F）它解析不了。
+        floors = sorted(_floors_in_row(row))
+        if len(floors) == 1:
+            attrs["floor"] = floors[0]
         status_text = _status_text(row.get("status"))
         if status_text:
             attrs["status"] = status_text

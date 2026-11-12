@@ -1001,7 +1001,7 @@ WS 事件 {"type":"list","kind":"device","items":[…]}
   "title": "14 台设备，楼层 5F",
   "items": [
     {"kind": "device", "id": "jk_zl_5f_0006", "label": "5F客梯厅",
-     "attrs": {"code": "jk_zl_5f_0006", "type": "监控", "space": "园区/科研办公楼/5F", "status": "启用"}}
+     "attrs": {"code": "jk_zl_5f_0006", "type": "监控", "space": "园区/科研办公楼/5F", "floor": "5F", "status": "启用"}}
   ],
   "total": 268,
   "truncated": false
@@ -1014,7 +1014,7 @@ WS 事件 {"type":"list","kind":"device","items":[…]}
 | `title` | 一句话概括，和文本首行是同一句话（都出自 `_summary()`） |
 | `items[].id` | 点击后回传的标识。设备就是点位编号，等于场景下发的 tag |
 | `items[].label` | 按钮文字 |
-| `items[].attrs` | `kind` 私有字段，前端不认识可以忽略 |
+| `items[].attrs` | `kind` 私有字段，前端不认识可以忽略。`device` 目前有 `code` / `type` / `space` / `floor` / `status`；`floor` 是 `5F` / `-1F` 短写法，可直接做场景聚焦 |
 | `total` | 过滤前的总量（园区共 N 台） |
 | `truncated` / `note` | 是否截断 + 提示语，超过 `MAX_ROWS=60` 时出现 |
 
