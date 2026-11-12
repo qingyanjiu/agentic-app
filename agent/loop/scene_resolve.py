@@ -23,6 +23,7 @@ import logging
 import re
 
 from .domains.device_query import find_devices
+from .entities import KIND_DEVICE, Entity, EntityList
 from .runtime import McpToolbox
 
 logger = logging.getLogger(__name__)
@@ -63,6 +64,54 @@ def _question(rows: list[dict], scope: str) -> str:
         f"{scope}匹配到 {len(rows)} 台设备，请补充设备类型（监控/门禁/广播等）"
         f"或直接说序号/编号：\n"
         + "\n".join(_candidate_line(row) for row in rows)
+    )
+
+
+def clarify_headline(clarify: str | None) -> str:
+    """追问话术的第一句（去掉候选明细行）。
+
+    候选明细改由 `list` 事件下发（可点），文本里再列一遍用户会看到两份。
+    拿不到结构化候选时（有的设备没有编号）调用方应原样发完整话术。
+    """
+    if not clarify:
+        return ""
+    lines = [
+        line.strip()
+        for line in clarify.splitlines()
+        if line.strip() and not line.lstrip().startswith(("-", "•", "*"))
+    ]
+    return " ".join(lines)
+
+
+def candidate_entities(rows: list[dict], scope: str = "") -> EntityList | None:
+    """把追问候选转成前端可点的结构化列表（kind=device）。"""
+    items: list[Entity] = []
+    for row in rows:
+        code = str(row.get("code") or "").strip()
+        target = code or str(row.get("id") or "").strip()
+        if not target:
+            continue
+        attrs: dict = {}
+        if code:
+            attrs["code"] = code
+        space = row.get("spaceName") or ""
+        if space:
+            attrs["space"] = str(space)
+        items.append(
+            Entity(
+                kind=KIND_DEVICE,
+                id=target,
+                label=str(row.get("name") or row.get("rawName") or target),
+                attrs=attrs,
+            )
+        )
+    if not items:
+        return None
+    prefix = f"{scope}匹配到 {len(items)} 台设备" if scope else f"匹配到 {len(items)} 台设备"
+    return EntityList(
+        kind=KIND_DEVICE,
+        title=f"{prefix}，请选择",
+        items=items,
     )
 
 

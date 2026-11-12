@@ -81,6 +81,16 @@ _DATA_VETO = re.compile(
     r"数据|统计|数量|多少|在线率|占比|排名|趋势|报表|明细|清单|列表|记录|日志|台账|情况"
 )
 
+# 「有哪些/几个/都有」= 要一份清单，既不是开关画面，也不是在补答场景追问。
+# 实测「7楼有哪些监控」在场景追问态里被拼回场景通道，结果给用户弹「选哪台设备」，
+# 而他要的是列表。这条在任何一处抢走之前先兜住。
+_LIST_QUESTION = re.compile(r"有哪些|哪些|有什么|多少个|多少|几个|几台|都有")
+
+
+def asks_for_list(query: str) -> bool:
+    """用户是不是在要一份清单（「有哪些」「几个」），而不是要开画面/补参数。"""
+    return bool(_LIST_QUESTION.search(query or ""))
+
 # 「监控/摄像头」后面直接跟了具体设备名或编号 → 用户问的是这台设备，不是开关画面。
 #   「查看 监控5F客梯厅」  → 命中 → 不算场景，走设备查询
 #   「打开5F客梯厅的监控」  → 类型词在句末，不命中 → 仍是场景指令
@@ -218,6 +228,7 @@ class Router:
             )
             and not _DATA_VETO.search(query)
             and not specific_device
+            and not asks_for_list(query)
         ):
             return RoutePlan(
                 level="L0",
@@ -243,7 +254,12 @@ class Router:
         try:
             from agent.intent.classifier import should_route_scene
 
-            if should_route_scene(info, query) and not _DATA_VETO.search(query) and not specific_device:
+            if (
+                should_route_scene(info, query)
+                and not _DATA_VETO.search(query)
+                and not specific_device
+                and not asks_for_list(query)
+            ):
                 logger.info(f"[route] 场景向量兜底，交回旧链路：{query}")
                 return RoutePlan(
                     level="L0",

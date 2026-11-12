@@ -177,3 +177,35 @@ def test_open_monitor_with_trailing_type_word_hands_off():
     assert plan.level == "L0"
     assert plan.domain == "scene"
     assert plan.reason == "scene_monitor"
+
+
+# ---------------------------------------------------------------- 清单类问句
+def test_asks_for_list_truth_table():
+    from agent.loop.router import asks_for_list
+
+    for query in [
+        "7楼有哪些监控", "5楼的监控有多少", "3楼有几个门禁", "都有哪些设备",
+    ]:
+        assert asks_for_list(query) is True, query
+    for query in [
+        "打开7F西侧监控", "关闭监控窗口", "第三个", "3楼", "7F中通道东向西",
+    ]:
+        assert asks_for_list(query) is False, query
+
+
+def test_list_question_is_not_hijacked_by_scene():
+    """线上：「7楼有哪些监控」被场景通道抢走，回了一句"选哪台设备"。"""
+    # 即便分类器把场景分给得很高，问清单的话也不能进 L0
+    plan = asyncio.run(_router("other", 0.30, 0.95).route("7楼有哪些监控"))
+
+    assert plan is None or plan.domain != "scene"
+
+
+def test_open_monitor_with_direction_word_still_scene():
+    """放宽清单问句后，「打开7F西侧监控」仍要进场景（不能被误放回业务）。"""
+    plan = asyncio.run(_router("other", 0.30, 0.20).route("打开7F西侧监控"))
+
+    assert plan is not None
+    assert plan.level == "L0"
+    assert plan.domain == "scene"
+    assert plan.reason == "scene_monitor"

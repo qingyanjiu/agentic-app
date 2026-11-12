@@ -1876,6 +1876,12 @@ def _scene_followup_pending(user_id: str, session_id: str, query: str) -> bool:
     text = (query or "").strip()
     if not text:
         return False
+    # 「7楼有哪些监控」也是短句，但它是在要清单、不是在补答参数。
+    # 放给 loop，否则会被拼回场景通道，回用户一句"选哪台设备"。
+    from agent.loop.router import asks_for_list
+
+    if asks_for_list(text):
+        return False
     # 短句（「第三个」「7F中通道东向西」）或序号/指代开头，都算补答
     return len(text) <= 12 or bool(re.match(r"^(第|这|那|\d)", text))
 
@@ -1915,6 +1921,9 @@ async def run_scene_control_graph(websocket, query: str, user_id: str, session_i
     :param query: 本轮要规划的话术（追问轮由调用方把上一轮原话拼进来）
     :param scene_session_id: 前端声明的场景页面会话，逐请求注入 X-Session-Id
     """
+    # 追问时把候选转成结构化列表（可点），见下面的 clarify 分支
+    from agent.loop.scene_resolve import candidate_entities, clarify_headline
+
     graph = await get_scene_graph()
     if graph is None:
         await websocket.send_text(json.dumps({
@@ -1961,6 +1970,15 @@ async def run_scene_control_graph(websocket, query: str, user_id: str, session_i
         if clarify:
             if candidates:
                 scene_slots["device_candidates"] = candidates
+                # 候选也给结构化列表：前端渲染成可点设备标签，点一下直接开画面。
+                # 同时把追问话术里的候选明细行去掉，避免和标签重复。
+                entities = candidate_entities(candidates)
+                if entities:
+                    await websocket.send_text(json.dumps({
+                        "event": "custom",
+                        "data": {"type": "list", **entities.to_dict()},
+                    }, ensure_ascii=False))
+                    clarify = clarify_headline(clarify) or clarify
             await websocket.send_text(json.dumps({
                 "event": "custom", "data": {"type": "ask", "question": clarify},
             }, ensure_ascii=False))
@@ -2197,6 +2215,13 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
                     except Exception:
                         other_intent = "other"
                     route_to_scene = other_intent not in MODULE_HANDLERS
+
+                # 「7楼有哪些监控」这类是在要清单，不是补答场景追问：
+                # 不拦的话会拿上一轮场景上下文再问一次"选哪台设备"。
+                from agent.loop.router import asks_for_list
+
+                if route_to_scene and asks_for_list(query):
+                    route_to_scene = False
 
                 if route_to_scene:
                     scene_query = merged_query

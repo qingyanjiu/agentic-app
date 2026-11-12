@@ -233,6 +233,18 @@ def _row_matches_floor(row: dict, floor: str) -> bool:
     return floor in _floors_in_row(row)
 
 
+# 方位词归一：「7F西侧」不是任何设备名的子串（数据里是「7F西通道西向东」），
+# 严格匹配必然 0 台。去掉「侧/面/边/向」后再匹配，至少能把候选列出来；
+# 多台仍然走追问，不猜。
+_DIRECTION_LOOSEN = re.compile(r"([东西南北])\s*(?:侧|面|边儿|边|方向|向)")
+
+
+def _loosen_keyword(keyword: str) -> str | None:
+    """「7F西侧」→「7F西」。没有方位词或没变化时返回 None。"""
+    loosened = _DIRECTION_LOOSEN.sub(r"\1", keyword or "").strip(" -_")
+    return loosened if loosened and loosened != keyword else None
+
+
 def _row_matches_keyword(row: dict, keyword: str) -> bool:
     kw = keyword.strip().lower()
     if not kw:
@@ -431,7 +443,20 @@ def _filter_rows(
     if floor:
         rows = [row for row in rows if _row_matches_floor(row, floor)]
     if keyword:
-        rows = [row for row in rows if _row_matches_keyword(row, keyword)]
+        matched = [row for row in rows if _row_matches_keyword(row, keyword)]
+        if not matched:
+            # 方位词对不上设备名（「7F西侧」vs「7F西通道西向东」）：放宽一次，
+            # 多台就交给调用方追问，总比回「没有找到」强。
+            loose = _loosen_keyword(keyword)
+            if loose:
+                matched = [row for row in rows if _row_matches_keyword(row, loose)]
+                if matched:
+                    logger.info(
+                        f"[device_query] 关键词「{keyword}」无命中，"
+                        f"按「{loose}」匹配到 {len(matched)} 台"
+                    )
+                    keyword = loose
+        rows = matched
     return rows, floor, keyword
 
 

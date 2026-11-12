@@ -167,3 +167,43 @@ def test_device_list_refetches_once_then_says_not_found(monkeypatch):
 
     assert box.calls == 2                      # 未命中 → 强制重拉一次
     assert "没有找到" in out.text and "5F客梯厅" in out.text
+
+
+# ---------------------------------------------------------------- 方位词归一
+def test_loosen_keyword_strips_orientation_suffix():
+    import agent.loop.domains.device_query as dq
+
+    assert dq._loosen_keyword("7F西侧") == "7F西"
+    assert dq._loosen_keyword("7F西面") == "7F西"
+    assert dq._loosen_keyword("东侧") == "东"
+    assert dq._loosen_keyword("7F西通道") is None      # 没方位后缀，不用放宽
+    assert dq._loosen_keyword("") is None
+
+
+def test_direction_word_loosens_to_candidates(monkeypatch):
+    """「打开7F西侧监控」：数据里叫「7F西通道西向东」，严格匹配 0 台，放宽后给候选。"""
+    import agent.loop.domains.device_query as dq
+
+    def camera_7f(name, code):
+        return {
+            "id": f"id-{code}", "name": name, "rawName": name, "code": code,
+            "spaceName": "园区/科研办公楼/7F", "status": "1", "syncSource": "3",
+        }
+
+    monkeypatch.setattr(dq, "_CACHE_TTL", 300.0)
+    clear_device_cache()
+
+    box = _FakeToolbox([
+        camera_7f("7F西通道西向东", "jk_zl_7f_0002"),
+        camera_7f("7F西通道东向西", "jk_zl_7f_0004"),
+        camera_7f("7F中通道西向东", "jk_zl_7f_0003"),
+    ])
+    tool = _list_tool(box)
+
+    out = asyncio.run(tool.execute({"query": "打开7F西侧监控"}))
+
+    assert "没有找到" not in out.text
+    assert "2 台设备" in out.text                  # 只放宽到「7F西」，不带中通道
+    assert "jk_zl_7f_0002" in out.text and "jk_zl_7f_0004" in out.text
+    assert out.entities is not None
+    assert [item.id for item in out.entities.items] == ["jk_zl_7f_0002", "jk_zl_7f_0004"]
