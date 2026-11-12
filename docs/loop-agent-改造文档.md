@@ -1634,3 +1634,46 @@ ERROR: Exception in ASGI application
 
 测试：`test_request_stop_interrupts_running_turn`（模拟卡住的一轮，置 cancel 后
 返回「已取消本轮查询。」）、`test_request_stop_without_running_turn`。
+
+#### 事故回放：停止按钮第一版把整条连接弄坏了
+
+第一版实现是"本轮跑的时候顺手再读一次 socket"：
+
+```python
+recv = asyncio.create_task(websocket.receive_text())
+done, _ = await asyncio.wait({turn_task, recv}, FIRST_COMPLETED)
+if recv in done: ...
+else:                       # 本轮先结束
+    recv.cancel()           # ← 致命
+```
+
+`recv` 还挂在 `websocket.receive_text()` 上就被 cancel 了。Starlette 的 receive
+通道被取消之后整条连接就废了 —— 之后每次提问前端都是
+**「连接已断开，请稍后重试」**（用户实测三连）。
+
+**正确做法**：收包交给独立 task，主循环只操作队列。
+
+```python
+inbox = asyncio.Queue()
+
+async def _pump_incoming():
+    try:
+        while True:
+            await inbox.put(await websocket.receive_text())
+    except Exception:
+        await inbox.put(None)      # 断开 → 让主循环退出
+
+pump_task = asyncio.create_task(_pump_incoming())
+...
+raw = await inbox.get()            # 主循环只读队列
+```
+
+跑一轮时等的是 `inbox.get()`，取消它**只是取消一次队列读取**，不碰 socket。
+
+这段逻辑抽到 `agent/loop/ws_flow.py::await_turn_with_stop()`，因为
+`app.py` 导不进来（加载模型 + MCP），而这段一错就是"整个功能不可用"，
+必须有单测：`tests/test_loop_ws_flow.py` 里用一个"被 cancel 就记仇"的假 socket
+断言 `cancelled_receive is False`，并验证一轮结束后**第二轮还能收到消息**。
+
+教训：`asyncio.wait` + `cancel()` 看着很自然，但**取消对象必须是自己的中间件**
+（这里是 `Queue.get()`），不能是框架的 IO 原语（`receive_text()`）。

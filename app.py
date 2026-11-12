@@ -2084,45 +2084,6 @@ async def upload_image(file: UploadFile = File(...)):
 user_id - 用户id，必填
 session_id - 会话id，可以为空，为空就新建session
 '''
-async def _await_turn_with_stop(
-    websocket: WebSocket,
-    turn_task: "asyncio.Task",
-    user_id: str,
-    session_id: str,
-    pending_payloads: list,
-):
-    """等这一轮跑完，期间继续读 socket，好让用户能"停止"。
-
-    收到 {"type": "stop"} → 置该轮的 cancel 事件（LoopAgent 在下一个检查点退出）；
-    收到别的消息（用户抢着又发一句）→ 排队，本轮结束后再处理，不丢消息。
-    """
-    from agent.loop.ws_bridge import request_stop
-
-    while not turn_task.done():
-        recv = asyncio.create_task(websocket.receive_text())
-        done, _ = await asyncio.wait({turn_task, recv}, return_when=asyncio.FIRST_COMPLETED)
-        if recv in done:
-            try:
-                payload = json.loads(recv.result() or "{}")
-            except Exception:
-                payload = {}
-            if str(payload.get("type") or "").lower() == "stop":
-                handled = request_stop(user_id, session_id)
-                logging.info(
-                    f"[loop] 收到停止请求 handled={handled} -- {user_id}-{session_id}"
-                )
-                continue
-            pending_payloads.append(payload)
-            continue
-        # 本轮先结束：丢掉这次挂起的 receive，消息下轮还会再读
-        recv.cancel()
-        try:
-            await recv
-        except BaseException:
-            pass
-    return turn_task.result()
-
-
 @app.websocket("/chat/{user_id}/{session_id}")
 async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str] = None):
     await websocket.accept()# 接受客户端WebSocket连接
@@ -2170,14 +2131,35 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
  # 持续监听客户端消息（WebSocket长连接循环）
     # 上一轮执行期间又收到的消息（用户抢着补一句），按顺序在这一轮结束后处理
     pending_payloads: list = []
+    # 收包单独一个 task，主循环只从队列取：本轮还在跑时也能读到 stop，
+    # 而且取消的只是 Queue.get()，不会损坏 socket（见 _await_turn_with_stop 注释）
+    inbox: asyncio.Queue = asyncio.Queue()
+
+    async def _pump_incoming() -> None:
+        try:
+            while True:
+                await inbox.put(await websocket.receive_text())
+        except Exception:
+            # 客户端断开 / 连接异常：塞一个 None 让主循环退出
+            await inbox.put(None)
+
+    pump_task = asyncio.create_task(_pump_incoming())
     while True:
         try:
             if pending_payloads:
                 payload = pending_payloads.pop(0)
+                if payload is None:
+                    logging.info(f"客户端已断开 -- {user_id}-{session_id}")
+                    pump_task.cancel()
+                    return
             else:
                 # 接收客户端发送的JSON数据（格式：{"query": "用户问题"}）
-                data = await websocket.receive_text()
-                payload = json.loads(data)
+                raw = await inbox.get()
+                if raw is None:
+                    logging.info(f"客户端已断开 -- {user_id}-{session_id}")
+                    pump_task.cancel()
+                    return
+                payload = json.loads(raw)
             # 停止指令不是一轮查询：本轮之外收到就直接告诉用户没有在跑的请求
             if str(payload.get("type") or "").lower() == "stop":
                 await websocket.send_text(json.dumps({
@@ -2237,8 +2219,10 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
                                 websocket, query, user_id, str(session_id), llm, loop_decision
                             )
                         )
-                        loop_handled = await _await_turn_with_stop(
-                            websocket, turn_task, user_id, str(session_id), pending_payloads
+                        from agent.loop.ws_flow import await_turn_with_stop
+
+                        loop_handled = await await_turn_with_stop(
+                            turn_task, user_id, str(session_id), inbox, pending_payloads
                         )
                         if loop_handled:
                             continue
