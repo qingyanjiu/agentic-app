@@ -1604,11 +1604,18 @@ ERROR: Exception in ASGI application
 `agent_ws` 顶部也处理了"本轮之外收到 stop"：回一句
 「已收到停止请求，当前没有进行中的查询。」再 `done`。
 
-**③ 前端：按钮**
+**③ 前端：一个按钮切换（发送 ↔ 停止）**
 
-`AiChatDialog` 输入框旁新增「停止」（仅 `turnActive` 时出现），点击发 `{type:"stop"}`；
-`stopping` 状态防重复点击，`finishTurn/failTurn` 里复位。
-后端收到后 `LoopAgent` 在下一个检查点退出并回「已取消本轮查询。」
+不做第二个按钮，直接把发送按钮改造成双态：
+
+| 状态 | 图标 | 点击行为 |
+|---|---|---|
+| 空闲 | 原发送图标（`icon_send.png` / 语音模式的键盘图标） | `sendMessage()` |
+| 本轮进行中 | **CSS 画的方块**（`.send-btn--stop::before`） | `stopTurn()` 发 `{type:"stop"}` |
+| 停止中 | 方块变淡、禁用 | 防重复点击 |
+
+`turnActive` 由 `done`/`failTurn` 复位，所以**停止成功**和**正常回答完毕**都会自动变回发送图标。
+停止请求发出后 `stopping=true` 并显示「正在停止…」，等后端的 `done` 到了再解锁。
 
 **能停在哪一步（重要）**
 
