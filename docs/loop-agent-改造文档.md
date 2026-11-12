@@ -1434,3 +1434,45 @@ tool_start → device_query__list 执行 → entities 事件 → list（前端�
 
 测试：`test_passthrough_tool_ends_run_without_model_restating`（断言只调一次模型）、
 `test_passthrough_does_not_end_run_on_error`（出错仍回模型）。
+
+#### 设计取舍：tool message 要不要带清单明细（别随手改）
+
+`passthrough` 工具的 tool message **仍然是完整清单文本**（`_format_rows` 的输出），
+不是"已展示给用户"的短提示。这是有意的：
+
+**为什么保留完整明细**
+
+1. **history 需要它**。`session.add_turn(query, text)` 存的是这份文本，
+   下一轮追问（「这两台里哪台在线」）靠它提供上下文；塞一句"已展示"就断链了。
+2. **旧前端 / 旧链路需要它**。没升级的前端只认 `answer` 文本，靠正则把行转成设备标签。
+3. **21.13 之后模型其实看不到它**。L2 里 `passthrough` 工具产 `entities` 就直接收尾，
+   模型根本不会被调用，所以"完整明细"不会诱发复述。
+
+**什么时候必须改**
+
+如果将来某个 `passthrough` 工具**需要模型接着补充说明**（即不能直接收尾），
+模型手里又拿着完整清单 + system prompt 第 7 条"逐行列出"，就会照抄一遍。
+那时要把 tool message 换成短提示，改法在 `agent.py` 回填 messages 的那一处：
+
+```python
+messages.append({
+    "role": "tool",
+    "tool_call_id": tc.id,
+    "content": "[清单已直接展示给用户，不要重复列出；只在需要补充说明时再作答]",
+})
+```
+
+代价：这一轮模型看不到清单内容，后续追问只能重新调工具查，不能靠上文回忆。
+
+**结论**：现状（保留完整明细 + `passthrough` 直接收尾）是最省事且不丢上下文的组合，
+不要因为"怕模型复述"就把明细从 tool message 里删掉。
+
+#### 契约：文本首行与 `list.title` 必须互为前缀
+
+前端的去重靠 `answer 文本.startsWith(list.title)`：
+
+- 后端 `_format_rows` 的首行是 `_summary(...) + "："`，
+- `_entities` 的 title 是 `_summary(...)`（无冒号）。
+
+两者必须出自同一个 `_summary()`，且 title 是文本首行的前缀。改动任一处都要同步，
+`test_gate_list_query_returns_both_devices` 里有一条断言专门锁这个关系。
