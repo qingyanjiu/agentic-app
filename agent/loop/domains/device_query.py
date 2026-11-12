@@ -47,6 +47,14 @@ TOOL_DETAIL = "device_query:getDeviceDetail"
 
 # 返回给模型的行数上限（超出的走 govern 落盘）
 MAX_ROWS = 60
+# list 事件最多带几项：前端是标签墙，几十个已经没人看，只会把单帧撑大
+MAX_LIST_ITEMS = 30
+# 没有任何过滤条件（楼层/关键词/地点）却超过这个数：不列明细，直接让用户缩小范围。
+# 「园区有哪些监控」= 268 台，逐条列 60 行既没用又容易撑爆一帧。
+BROAD_RESULT_LIMIT = 80
+
+# 范围词：园区/整栋/全楼… 是"多大范围"，不是某个设备/地点名，不能当关键词
+_SCOPE_AREA = re.compile(r"^(?:园区|整栋|全楼|整个|全部|所有|大楼|全层|园区内)$")
 
 _QUERY_PARAM = {
     "query": {
@@ -454,7 +462,7 @@ def _entities(
     此时前端仍能点，但后端拿到的是内部 id，需要按 id 反查。
     """
     items: list[Entity] = []
-    for row in rows[:MAX_ROWS]:
+    for row in rows[:MAX_LIST_ITEMS]:
         code = str(row.get("code") or "")
         device_id = str(row.get("id") or "")
         target = code or device_id
@@ -492,10 +500,10 @@ def _entities(
         title=_summary(rows, total=total, floor=floor, keyword=keyword),
         items=items,
         total=total,
-        truncated=len(rows) > MAX_ROWS,
+        truncated=len(rows) > MAX_LIST_ITEMS,
         note=(
-            f"其余 {len(rows) - MAX_ROWS} 台未展示，可加楼层或名称缩小范围"
-            if len(rows) > MAX_ROWS
+            f"其余 {len(rows) - MAX_LIST_ITEMS} 台未展示，可加楼层或名称缩小范围"
+            if len(rows) > MAX_LIST_ITEMS
             else ""
         ),
     )
@@ -535,7 +543,7 @@ def _filter_rows(
         # 「大门口有哪些门禁」：area 不是楼层（大门口/南门/园区），
         # 但它是地点，能匹配 spaceName。不当关键词用就会被忽略、列出全部门禁。
         area = (slots.get("area") or "").strip()
-        if area and not normalize_floor(area):
+        if area and not normalize_floor(area) and not _SCOPE_AREA.match(area):
             keyword = area
     if floor:
         rows = [row for row in rows if _row_matches_floor(row, floor)]
@@ -654,6 +662,16 @@ def build_domain(toolbox: McpToolbox) -> DomainSpec:
             return ToolOutcome(
                 f"没有找到名称或编号包含「{keyword}」的设备。"
                 f"请确认设备名称/编号，或去掉名称、只按楼层或类型查询。"
+            )
+
+        # 没有任何过滤条件却一大堆：别列明细。
+        # 「园区有哪些监控」= 268 台，逐条列 60 行既没用，单帧也能到 12KB，
+        # 弱网/代理下容易把连接拖断。
+        if not floor and not keyword and len(matched) > BROAD_RESULT_LIMIT:
+            type_name = _sync_source_name(matched[0].get("syncSource")) if matched else "设备"
+            return ToolOutcome(
+                f"园区共 {len(matched)} 台{type_name}，范围太大，没法逐条列。"
+                f"请按楼层或具体区域缩小范围，例如「5楼的监控」「南门的门禁」。"
             )
 
         return ToolOutcome(

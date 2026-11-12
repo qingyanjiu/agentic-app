@@ -419,3 +419,71 @@ def test_place_in_query_and_terms():
     # 原词优先，别名兜底
     assert dq._place_terms("大门口") == ("大门口", "南门")
     assert dq._place_terms("南门") == ("南门",)
+
+
+# ---------------------------------------------------------------- 范围太大 / 载荷上限
+def _many_monitors(n, floor="2F"):
+    return [
+        {"id": f"m{i}", "name": f"{floor}监控{i}", "rawName": f"{floor}监控{i}",
+         "code": f"jk_{floor.lower()}_{i:04d}", "spaceName": f"园区/科研办公楼/{floor}",
+         "status": "1", "syncSource": "3"}
+        for i in range(n)
+    ]
+
+
+def test_broad_query_does_not_list_details(monkeypatch):
+    """「园区有哪些监控」= 268 台：别逐条列（一帧 12KB，弱网容易断）。"""
+    import agent.loop.domains.device_query as dq
+
+    monkeypatch.setattr(dq, "_CACHE_TTL", 300.0)
+    clear_device_cache()
+    tool, _ = _gate_tool(_many_monitors(120))
+
+    out = asyncio.run(tool.execute({"query": "园区有哪些监控"}))
+
+    assert "范围太大" in out.text
+    assert "120 台" in out.text
+    assert out.entities is None                     # 不发清单，前端也就不会渲染一大片标签
+    assert len(out.text) < 120                      # 一句话，不是 60 行
+
+
+def test_narrow_query_still_lists_details(monkeypatch):
+    """有楼层就照常列，不受 BROAD_RESULT_LIMIT 影响。"""
+    import agent.loop.domains.device_query as dq
+
+    monkeypatch.setattr(dq, "_CACHE_TTL", 300.0)
+    clear_device_cache()
+    tool, _ = _gate_tool(_many_monitors(120))
+
+    out = asyncio.run(tool.execute({"query": "2楼的监控"}))
+
+    assert out.entities is not None
+    assert out.text.splitlines()[0].startswith("120 台设备")
+
+
+def test_scope_area_is_not_used_as_keyword():
+    """「园区」是范围词，不是地点名，不能当关键词（否则 250/268 台全中）。"""
+    import agent.loop.domains.device_query as dq
+
+    rows = _many_monitors(5)
+    matched, floor, keyword = dq._filter_rows(rows, {"area": "园区"}, "园区有哪些监控")
+
+    assert keyword is None
+    assert floor is None
+    assert len(matched) == 5
+
+
+def test_list_items_are_capped(monkeypatch):
+    """list 事件最多 30 项，超了给 note，别把前端撑爆。"""
+    import agent.loop.domains.device_query as dq
+
+    monkeypatch.setattr(dq, "_CACHE_TTL", 300.0)
+    clear_device_cache()
+    tool, _ = _gate_tool(_many_monitors(100))
+
+    out = asyncio.run(tool.execute({"query": "2楼的监控"}))
+
+    data = out.entities.to_dict()
+    assert len(data["items"]) == dq.MAX_LIST_ITEMS
+    assert data["truncated"] is True
+    assert "其余" in data["note"]
