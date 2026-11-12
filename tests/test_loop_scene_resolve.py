@@ -143,16 +143,18 @@ def test_pronoun_with_single_candidate(monkeypatch):
     assert clarify is None
 
 
-def test_pronoun_with_multiple_candidates_asks_again(monkeypatch):
-    """候选多台时「这个」有歧义，再问一次，不猜。"""
+def test_pronoun_with_multiple_candidates_escapes_followup(monkeypatch):
+    """候选多台时说「这个」等于没选：跳出追问，不再二连问绕圈子。"""
+    from agent.loop.scene_resolve import ESCAPE_CLARIFY
+
     _fresh(monkeypatch)
     box = _FakeToolbox([])
 
     tag, clarify, candidates = _resolve(box, "打开这个监控", _six_candidates())
 
     assert tag is None
-    assert "哪一台" in clarify
-    assert len(candidates) == 3
+    assert clarify == ESCAPE_CLARIFY
+    assert candidates == []          # 候选一并清掉，调用方据此清会话态
 
 
 def test_ordinal_out_of_range_falls_through(monkeypatch):
@@ -358,3 +360,55 @@ def test_floor_without_type_asks_for_type(monkeypatch):
     _, clarify, _ = _resolve(box, "打开7楼的")
 
     assert "补充设备类型" in clarify_headline(clarify)
+
+
+# ------------------------------------------------------------ 追问出口（防死循环）
+def test_followup_escapes_when_user_says_nothing_pickable(monkeypatch):
+    """追问态下只说「打开7F监控」「切回整栋楼」之类 → 跳出，不再追问第二遍。"""
+    from agent.loop.scene_resolve import ESCAPE_CLARIFY
+
+    _fresh(monkeypatch)
+    box = _FakeToolbox(_ten_cameras_7f())
+    pool = _six_candidates()
+
+    for query in [
+        "打开7F监控",      # 楼层级请求，没说具体点位
+        "切回整栋楼",      # 视角指令
+        "看下8楼",         # 换楼层
+        "这个",            # 多台时指代等于没选
+    ]:
+        tag, clarify, candidates = _resolve(box, query, pool)
+        assert tag is None, query
+        assert clarify == ESCAPE_CLARIFY, query
+        assert candidates == [], query      # 候选清空 → 调用方清会话态
+
+
+def test_followup_accepts_ordinal_and_full_name(monkeypatch):
+    """追问态下只认序号和设备名，其余都跳出。"""
+    box = _FakeToolbox(_ten_cameras_7f())
+    pool = _six_candidates()          # 7F西通道西向东 / 7F中通道西向东 / 7F中通道东向西
+
+    for query, expected in [
+        ("第三个", "jk_zl_7f_0001"),
+        ("第2个", "jk_zl_7f_0003"),
+        ("3", "jk_zl_7f_0001"),
+        ("打开7F西通道西向东", "jk_zl_7f_0002"),
+        ("7F东步梯间", "jk_zl_7f_0007"),
+    ]:
+        _fresh(monkeypatch)
+        tag, clarify, _ = _resolve(box, query, pool)
+        assert tag == expected, query
+        assert clarify is None, query
+
+
+def test_first_time_ambiguity_still_lists_candidates(monkeypatch):
+    """没有追问态时（第一次就歧义）仍要列候选，别一上来就跳出。"""
+    from agent.loop.scene_resolve import ESCAPE_CLARIFY
+
+    _fresh(monkeypatch)
+    box = _FakeToolbox(_ten_cameras_7f())
+
+    _, clarify, candidates = _resolve(box, "打开7F监控")
+
+    assert clarify != ESCAPE_CLARIFY
+    assert len(candidates) == 10

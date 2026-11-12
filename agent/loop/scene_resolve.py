@@ -61,6 +61,13 @@ def _ordinal_index(query: str) -> int | None:
 
 
 _TYPE_WORD_RE = re.compile(r"监控|摄像头|画面|视频|门禁|道闸|梯控|广播|电表|水表")
+
+# 追问态出口话术：用户既没给序号、也没说出设备名 → 不再猜，直接放开追问。
+# 调用方（app.py）看到这句要清掉会话态，否则下一句还会被当成补答。
+ESCAPE_CLARIFY = (
+    "我没听明白你要看哪台设备。请直接给出完整的要求，"
+    "比如「打开7F西通道西向东的监控」，或者用「第三个」这样选。"
+)
 # 动作词：判断「这句话除动作之外还说了什么」时要先剥掉
 _STRIP_ACTION = re.compile(
     r"^(?:切回|切到|切换到|切换|回到|返回|退出|关闭|关掉|打开|开启|查看|调出|显示|展示|看看|看一下|看下|看)+"
@@ -86,6 +93,20 @@ def has_device_reference(query: str) -> bool:
     if len(residual) < 3 or _SCOPE_WORD.search(residual):
         return False
     return True
+
+
+def _answers_pick(query: str, keyword: str | None) -> bool:
+    """追问态下，这句话有没有在回答"选哪一台"。
+
+    只认两种：序号（「第三个」「3」），或者说得出的设备名/编号
+    （`_filter_rows` 会把它落到 keyword 上）。
+
+    多台候选时说「这个」不算 —— 它等于没选，再问一遍只会绕圈子；
+    候选只有一个时「这个」在前面就被处理掉了。
+    """
+    if _ordinal_index(query) is not None:
+        return True
+    return bool(keyword)
 
 
 def _question(
@@ -193,11 +214,17 @@ async def resolve_scene_device_tag(
             return code, None, pool
         return None, "这台设备没有设备编号，无法作为场景点位 tag。", pool
 
-    if pool and _PRONOUN_RE.search(query) and len(pool) > 1:
-        return None, _question(pool, "你指的是哪一台？", hint="请说序号，或直接说点位名称"), pool
+    # 多台候选时说「这个/那个」等于没选：交给下面的 _answers_pick 判定为跳出，
+    # 不再二次追问（问一遍「你指的是哪一台」用户还是不知道从哪选）。
 
     # 2) 正常按名称查台账
     _, matched, floor, keyword = await find_devices(toolbox, query)
+
+    # 追问态出口：既没给序号/指代，也没说出设备名 → 不再追问第二遍。
+    # 这一条是"防止追问无限循环"的总闸：否则用户说什么都会被当成补答。
+    if pool and not _answers_pick(query, keyword):
+        logger.info(f"[scene] 追问态下没识别出设备，跳出追问：{query[:30]}")
+        return None, ESCAPE_CLARIFY, []
 
     if not matched:
         hint = f"「{keyword}」" if keyword else ""

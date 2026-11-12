@@ -1184,3 +1184,38 @@ AI：这个条件匹配到 … 台设备，请补充设备类型…
 **仍未解决（产品级）**：「打开7F监控」在直觉上是"看这一层的监控画面"（监控墙/楼层视图），
 而场景通道只有 `scene_show_camera(tag)` 单点位能力。现在只能降级成"列出该层点位让你选一个"。
 要做真·楼层级画面，得在 scene 侧加能力，不是话术能补的（见 TODO T19）。
+
+### 21.10 追问出口：答不上来就跳出，不再二次追问
+
+21.9 之后仍然存在一个体验坑：**追问态一旦开启，用户说什么都会被当成"补答设备名"**。
+修法不再靠猜，直接定规则：
+
+> 追问态下只接受两种回答——**序号**（「第三个」「3」）和**说得出的设备名/编号**。
+> 其余一律跳出：清掉会话态，回一句「请给出完整的要求描述」，本轮结束。
+
+实现（`scene_resolve` / `app.py`）：
+
+- `ESCAPE_CLARIFY`：跳出话术常量，调用方靠它识别"这是出口不是追问"；
+- `_answers_pick(query, keyword)`：`_ordinal_index` 命中，或台账里落到了 `keyword` → 算答上来；
+- `resolve_scene_device_tag` 在 `find_devices` 之后判断：`pool` 非空且 `not _answers_pick(...)`
+  → 返回 `(None, ESCAPE_CLARIFY, [])`，候选一并清空；
+- `app.py` 看到 `ESCAPE_CLARIFY` → `session_state.clear()` → 发 `ask`（提示）→ 发 `done` → `return`；
+- 多台候选时说「这个/那个」算没选（原先是二次追问"你指的是哪一台"，只会绕圈子）。
+
+行为矩阵（10 台 7F 监控的候选池）：
+
+| 用户说 | 结果 |
+|---|---|
+| `第三个` / `3` | 下发 `jk_zl_7f_0002` |
+| `打开7F西通道西向东` / `7F西消防电梯厅` | 下发对应 tag |
+| `打开7F监控` | **跳出**：清状态 + 「请给出完整的要求…」 |
+| `切回整栋楼` | **跳出** |
+| `看下8楼` | **跳出** |
+| `这个` | **跳出** |
+
+退出后下一句按全新请求走，不会继承任何候选——这比"再问一遍"好，因为用户根本不知道自己
+被困在了追问里。
+
+测试：`test_followup_escapes_when_user_says_nothing_pickable`、
+`test_followup_accepts_ordinal_and_full_name`、`test_first_time_ambiguity_still_lists_candidates`、
+`test_pronoun_with_multiple_candidates_escapes_followup`。

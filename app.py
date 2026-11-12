@@ -1927,7 +1927,7 @@ async def run_scene_control_graph(websocket, query: str, user_id: str, session_i
     """
     # 追问时把候选转成结构化列表（可点），见下面的 clarify 分支
     from agent.loop.scene_resolve import clarify_entities, clarify_headline
-    from agent.loop.scene_resolve import has_device_reference
+    from agent.loop.scene_resolve import ESCAPE_CLARIFY, has_device_reference
 
     graph = await get_scene_graph()
     if graph is None:
@@ -1974,6 +1974,17 @@ async def run_scene_control_graph(websocket, query: str, user_id: str, session_i
             logger.warning(f"[场景] 设备名称解析失败，交给场景图追问: {e}")
             device_tag, clarify, candidates = None, None, prev_candidates
         if clarify:
+            # 追问出口：用户既没说序号也没说设备名 → 清状态、放开追问，
+            # 否则下一句又会被当成补答，形成死循环。
+            if clarify == ESCAPE_CLARIFY:
+                session_state.clear(user_id, session_id)
+                await websocket.send_text(json.dumps({
+                    "event": "custom", "data": {"type": "ask", "question": clarify},
+                }, ensure_ascii=False))
+                await websocket.send_text(json.dumps({
+                    "event": "custom", "data": {"type": "done"},
+                }, ensure_ascii=False))
+                return
             if candidates:
                 scene_slots["device_candidates"] = candidates
                 # 候选也给结构化列表：前端渲染成可点设备标签，点一下直接开画面。
