@@ -36,6 +36,20 @@ SESSION_TTL = float(os.getenv("SESSION_TTL_SECONDS") or 1800)
 
 _pipeline: ChatPipeline | None = None
 
+# 正在跑的轮次：key = user_id:session_id → 该轮的 cancel 事件。
+# 前端点"停止"时通过 request_stop() 置位，LoopAgent 在下一个检查点退出。
+_active_cancels: dict[str, asyncio.Event] = {}
+
+
+def request_stop(user_id: str, session_id: str) -> bool:
+    """请求中断某个会话正在执行的这一轮；没有在跑就返回 False。"""
+    event = _active_cancels.get(f"{user_id}:{session_id}")
+    if event is None:
+        return False
+    event.set()
+    logger.info(f"[loop] 收到停止请求，已通知本轮退出 -- {user_id}:{session_id}")
+    return True
+
 
 async def _send(websocket: Any, payload: dict) -> bool:
     """发一帧；客户端已断开时返回 False 并静默。
@@ -129,6 +143,7 @@ async def handle_chat(
     pipeline = get_pipeline(llm)
     session = get_session(user_id, session_id)
     cancel = asyncio.Event()
+    _active_cancels[f"{user_id}:{session_id}"] = cancel
     streamed_chars = 0
 
     async def on_delta(text: str) -> None:
@@ -173,9 +188,13 @@ async def handle_chat(
         elif kind == "error":
             logger.warning(f"[loop] loop 内部错误：{data.get('message')}")
 
-    result: PipelineResult = await pipeline.handle(
-        query, session, cancel=cancel, on_delta=on_delta, on_event=on_event
-    )
+    try:
+        result: PipelineResult = await pipeline.handle(
+            query, session, cancel=cancel, on_delta=on_delta, on_event=on_event
+        )
+    finally:
+        # 本轮结束（正常/异常/被停止）都要摘掉，否则 request_stop 会打到已结束的轮次
+        _active_cancels.pop(f"{user_id}:{session_id}", None)
 
     if result.stop_reason == "handoff":
         # 场景控制等专用链路，交回旧流程

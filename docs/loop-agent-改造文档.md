@@ -1573,3 +1573,57 @@ ERROR: Exception in ASGI application
 `_PLACE_WORDS` 里加，不用改逻辑。测试：`test_place_alias_resolves_to_south_gate`、
 `test_place_alias_does_not_leak_into_other_types`、`test_place_in_query_and_terms`
 （用带 syncSource 过滤的假 MCP，模拟服务端口径）。
+
+### 21.16 停止按钮：中断正在执行的一轮
+
+需求：loop agent 卡住时，点一下立刻停止。
+
+原来 `LoopAgent` 的 cancel 通道是**通的但接不上**：`ws_bridge.handle_chat` 内部建了
+`cancel = asyncio.Event()`，但没有任何代码能 set 它 —— 因为 `agent_ws` 的
+`while True: data = await websocket.receive_text(); await loop_handle_chat(...)`
+在这一轮跑完之前根本读不到新消息。
+
+改动分三层：
+
+**① 后端：让"停止"能到达正在跑的那一轮**
+
+- `ws_bridge` 新增进程级注册表 `_active_cancels[user_id:session_id] = cancel`，
+  `handle_chat` 开始时登记、`finally` 里摘掉（正常/异常/被停止都摘）；
+- 新增 `request_stop(user_id, session_id) -> bool`，置位即通知本轮退出。
+
+**② 后端：主循环这一轮改成"边跑边收消息"**
+
+`app.py` 新增 `_await_turn_with_stop()`：本轮放 `asyncio.Task` 里跑，
+同时 `asyncio.wait({turn_task, recv_task}, FIRST_COMPLETED)`：
+
+- 先到的是 `{"type":"stop"}` → `request_stop()`，继续等本轮收尾；
+- 先到的是别的消息（用户抢着补一句）→ 进入 `pending_payloads` 队列，
+  本轮结束后按顺序处理，**不丢消息**；
+- 本轮先结束 → 取消这次挂起的 receive，回到正常循环。
+
+`agent_ws` 顶部也处理了"本轮之外收到 stop"：回一句
+「已收到停止请求，当前没有进行中的查询。」再 `done`。
+
+**③ 前端：按钮**
+
+`AiChatDialog` 输入框旁新增「停止」（仅 `turnActive` 时出现），点击发 `{type:"stop"}`；
+`stopping` 状态防重复点击，`finishTurn/failTurn` 里复位。
+后端收到后 `LoopAgent` 在下一个检查点退出并回「已取消本轮查询。」
+
+**能停在哪一步（重要）**
+
+`LoopAgent` 只在**检查点**看 cancel：每次模型调用之前、每个工具执行之前。
+所以：
+
+| 卡在 | 停止延迟 |
+|---|---|
+| 模型流式输出中 | 这一轮流式输出结束（通常 1~3 秒） |
+| MCP 工具调用中 | 该工具超时/返回（受 `tool_timeout`，默认 30s 限制） |
+| 多步循环之间 | 立即 |
+
+要做到"立刻断"需要 `task.cancel()` 打进去，但那样 MCP 的
+`anyio cancel scope` 会抛 `CancelledError` 穿透（这条链路以前踩过，见 8.x），
+所以这里选了"检查点退出"：安全、可预测，最坏情况是等一个工具超时。
+
+测试：`test_request_stop_interrupts_running_turn`（模拟卡住的一轮，置 cancel 后
+返回「已取消本轮查询。」）、`test_request_stop_without_running_turn`。
