@@ -83,6 +83,18 @@ def clarify_headline(clarify: str | None) -> str:
     return " ".join(lines)
 
 
+def clarify_entities(clarify: str | None, rows: list[dict], scope: str = "") -> EntityList | None:
+    """只有「多台命中、请用户选」这类追问才配可点候选。
+
+    「没有找到 X」的追问也把上一轮候选带回来了（供「第二个」继续用），
+    但那批候选和本轮这句话无关 —— 发出去就是「请选择 3 台」+「没有找到 X」
+    自相矛盾，线上已经踩过。
+    """
+    if not clarify or "匹配到" not in clarify:
+        return None
+    return candidate_entities(rows, scope)
+
+
 def candidate_entities(rows: list[dict], scope: str = "") -> EntityList | None:
     """把追问候选转成前端可点的结构化列表（kind=device）。"""
     items: list[Entity] = []

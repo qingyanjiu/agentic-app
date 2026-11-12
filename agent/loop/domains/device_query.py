@@ -89,6 +89,27 @@ _NAME_BEFORE_TYPE_RE = re.compile(
 )
 
 
+# 候选清洗：类型词后面可能跟着动词或整句（上游把两轮话拼成一句时尤其明显），
+# 「监控 打开7F西通道西向东监控」曾因此把整句当成设备名，永远匹配不到。
+_LEADING_ACTION = re.compile(r"^(?:打开|开启|查看|查一下|查|调出|切到|切换到|显示|展示|看看|看一下|看下|看)+")
+_INLINE_ACTION = re.compile(r"打开|开启|查看|调出|切到|切换到|显示|展示")
+# 类型词是描述，不是名字的一部分：「7F西通道西向东监控」→「7F西通道西向东」
+_TRAILING_TYPE = re.compile(
+    r"(?:监控|摄像头|画面|视频|门禁|道闸|梯控|广播|电表|水表|设备)$"
+)
+
+
+def _clean_candidate(raw: str) -> str | None:
+    """把正则捕到的一段整理成设备名：去动词、去尾部类型词、过滤泛称。"""
+    text = _LEADING_ACTION.sub("", (raw or "").strip())
+    text = _INLINE_ACTION.split(text)[0]
+    text = text.strip(" -_")
+    text = _TRAILING_TYPE.sub("", text).strip(" -_")
+    if len(text) < 2 or text in _NAME_STOP:
+        return None
+    return text
+
+
 def _name_fallback(query: str) -> str | None:
     """slots 抽不到设备名时的兜底，三种说法都要认。
 
@@ -104,8 +125,8 @@ def _name_fallback(query: str) -> str | None:
         match = pattern.search(query)
         if not match:
             continue
-        candidate = match.group(1).strip(" -_")
-        if candidate and candidate not in _NAME_STOP:
+        candidate = _clean_candidate(match.group(1))
+        if candidate:
             return candidate
     return None
 
@@ -243,6 +264,25 @@ def _loosen_keyword(keyword: str) -> str | None:
     """「7F西侧」→「7F西」。没有方位词或没变化时返回 None。"""
     loosened = _DIRECTION_LOOSEN.sub(r"\1", keyword or "").strip(" -_")
     return loosened if loosened and loosened != keyword else None
+
+
+def _name_in_text(query: str, rows: list[dict]) -> str | None:
+    """query 里**直接出现**的设备全名，取最长的那个。
+
+    覆盖「打开 7F西通道西向东」（带空格、没有类型词、没有横线）这类说法：
+    正则抽不出来，但台帐里就有这个名字，直接反查最稳，也不会误伤短词。
+    """
+    text = (query or "").lower()
+    if not text:
+        return None
+    best: str | None = None
+    for row in rows:
+        for key in ("rawName", "name"):
+            name = str(row.get(key) or "").strip()
+            if len(name) >= 4 and name.lower() in text:
+                if best is None or len(name) > len(best):
+                    best = name
+    return best
 
 
 def _row_matches_keyword(row: dict, keyword: str) -> bool:
@@ -440,6 +480,8 @@ def _filter_rows(
         # slots 抽不到「3F-主楼梯MJ」「5F客梯厅」这类名称，这里兜底
         keyword = _name_fallback(query)
 
+    if not keyword:
+        keyword = _name_in_text(query, rows)
     if floor:
         rows = [row for row in rows if _row_matches_floor(row, floor)]
     if keyword:

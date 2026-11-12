@@ -1914,15 +1914,19 @@ async def _resolve_scene_device_tag(
     return await resolve_scene_device_tag(_scene_device_toolbox, query, candidates)
 
 async def run_scene_control_graph(websocket, query: str, user_id: str, session_id,
-                                  scene_session_id: Optional[str] = None) -> None:
+                                  scene_session_id: Optional[str] = None,
+                                  resolve_query: Optional[str] = None) -> None:
     """
     执行一轮 UE 场景控制。
 
-    :param query: 本轮要规划的话术（追问轮由调用方把上一轮原话拼进来）
+    :param query: 本轮要规划的话术（追问轮由调用方把上一轮原话拼进来，给规划器看）
     :param scene_session_id: 前端声明的场景页面会话，逐请求注入 X-Session-Id
+    :param resolve_query: 解析设备名用的话术，默认同 query。
+        追问轮里 query 是拼接句（「打开7F西侧的监控 打开7F西通道西向东监控」），
+        拿它去抽设备名会抽出整句、永远匹配不到，所以必须传本轮原话。
     """
     # 追问时把候选转成结构化列表（可点），见下面的 clarify 分支
-    from agent.loop.scene_resolve import candidate_entities, clarify_headline
+    from agent.loop.scene_resolve import clarify_entities, clarify_headline
 
     graph = await get_scene_graph()
     if graph is None:
@@ -1962,7 +1966,7 @@ async def run_scene_control_graph(websocket, query: str, user_id: str, session_i
     if needs_device and not _DEVICE_CODE_HINT.search(query):
         try:
             device_tag, clarify, candidates = await _resolve_scene_device_tag(
-                query, prev_candidates
+                resolve_query or query, prev_candidates
             )
         except Exception as e:
             logger.warning(f"[场景] 设备名称解析失败，交给场景图追问: {e}")
@@ -1972,7 +1976,7 @@ async def run_scene_control_graph(websocket, query: str, user_id: str, session_i
                 scene_slots["device_candidates"] = candidates
                 # 候选也给结构化列表：前端渲染成可点设备标签，点一下直接开画面。
                 # 同时把追问话术里的候选明细行去掉，避免和标签重复。
-                entities = candidate_entities(candidates)
+                entities = clarify_entities(clarify, candidates)
                 if entities:
                     await websocket.send_text(json.dumps({
                         "event": "custom",
@@ -2260,7 +2264,9 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
 
             if route_to_scene:
                 await run_scene_control_graph(
-                    websocket, scene_query, user_id, session_id, scene_session_id
+                    websocket, scene_query, user_id, session_id, scene_session_id,
+                    # 设备名一律用本轮原话解析：scene_query 可能是拼接句
+                    resolve_query=query,
                 )
                 continue
 

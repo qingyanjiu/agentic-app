@@ -207,3 +207,34 @@ def test_direction_word_loosens_to_candidates(monkeypatch):
     assert "jk_zl_7f_0002" in out.text and "jk_zl_7f_0004" in out.text
     assert out.entities is not None
     assert [item.id for item in out.entities.items] == ["jk_zl_7f_0002", "jk_zl_7f_0004"]
+
+
+# ---------------------------------------------------------------- 名称抽取清洗
+def test_clean_candidate_strips_verbs_and_trailing_type_word():
+    import agent.loop.domains.device_query as dq
+
+    assert dq._clean_candidate("打开7F西通道西向东监控") == "7F西通道西向东"
+    assert dq._clean_candidate("7F西通道西向东监控") == "7F西通道西向东"
+    assert dq._clean_candidate("监控") is None
+    assert dq._clean_candidate("") is None
+    assert dq._clean_candidate("设备") is None
+
+
+def test_name_fallback_ignores_previous_turn_text(monkeypatch):
+    """追问轮拼出来的两句串：类型词后面的整句不能被当成设备名。"""
+    import agent.loop.domains.device_query as dq
+
+    merged = "打开7F西侧的监控 打开7F西通道西向东监控"
+    assert dq._name_fallback(merged) == "7F西通道西向东"
+
+
+def test_name_in_text_finds_full_name_with_spaces():
+    """「打开 7F西通道西向东」：没有类型词、没有横线，靠台帐里的全名反查。"""
+    import agent.loop.domains.device_query as dq
+
+    rows = [
+        {"name": "7F西通道西向东", "rawName": "7F西通道西向东", "code": "jk_zl_7f_0002"},
+        {"name": "7F西通道", "rawName": "7F西通道", "code": "short"},
+    ]
+    assert dq._name_in_text("打开 7F西通道西向东", rows) == "7F西通道西向东"  # 取最长的
+    assert dq._name_in_text("打开监控", rows) is None

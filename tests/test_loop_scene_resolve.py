@@ -257,3 +257,53 @@ def test_orientation_word_falls_back_to_candidates(monkeypatch):
     assert tag is None
     assert clarify and "没有找到" not in clarify
     assert [c["code"] for c in candidates] == ["jk_zl_7f_0002", "jk_zl_7f_0004"]
+
+
+def test_clarify_entities_skips_candidates_when_not_found():
+    """「没有找到 X」时不要把上一轮候选当可点清单发出去（线上出现过自相矛盾的输出）。"""
+    from agent.loop.scene_resolve import clarify_entities
+
+    rows = [_row("7F西通道西向东", "jk_zl_7f_0002")]
+    assert clarify_entities("没有找到「打开X」对应的设备", rows) is None
+    assert clarify_entities("这台设备没有设备编号", rows) is None
+
+    multi = "「7F西」匹配到 2 台设备，请补充设备类型（监控/门禁/广播等）或直接说序号/编号：\n- a"
+    assert clarify_entities(multi, rows) is not None
+
+
+def test_specific_name_resolves_after_a_clarify(monkeypatch):
+    """线上问题：追问过一次之后，说完整设备名仍然定位不到（拼接句把名称带歪了）。"""
+    _fresh(monkeypatch)
+    box = _FakeToolbox([
+        _row("7F西消防电梯厅", "jk_zl_7f_0004"),
+        _row("7F西通道西向东", "jk_zl_7f_0002"),
+        _row("7F西步梯间", "jk_zl_7f_0009"),
+    ])
+
+    tag, clarify, candidates = _resolve(box, "打开7F西侧的监控")
+    assert tag is None and len(candidates) == 3
+
+    for query in [
+        "打开7F西通道西向东监控",
+        "打开 7F西通道西向东 监控",
+        "打开 7F西通道西向东",
+        "打开监控7F西通道西向东",
+    ]:
+        _fresh(monkeypatch)
+        tag, clarify, _ = _resolve(box, query, candidates)
+        assert tag == "jk_zl_7f_0002", query
+        assert clarify is None, query
+
+
+def test_merged_query_still_resolves(monkeypatch):
+    """防御：万一上游仍然把上一轮原话拼进来，也要能解析出来。"""
+    _fresh(monkeypatch)
+    box = _FakeToolbox([
+        _row("7F西消防电梯厅", "jk_zl_7f_0004"),
+        _row("7F西通道西向东", "jk_zl_7f_0002"),
+    ])
+
+    tag, clarify, _ = _resolve(box, "打开7F西侧的监控 打开7F西通道西向东监控")
+
+    assert tag == "jk_zl_7f_0002"
+    assert clarify is None
