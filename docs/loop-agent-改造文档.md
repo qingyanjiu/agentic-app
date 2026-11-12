@@ -776,3 +776,171 @@ LOOP_DISCOVER=0
    不能像 `device_query__list` 那样直出。
 4. **只覆盖了 devicequery**：其余 server 没有空缺，扩不了。真正想"少写代码"，
    要等 MCP 侧新增工具时才有素材。
+
+---
+
+## 20. 2026-11-11 增补：设备定位与场景联动
+
+这一轮围绕一个真实问题展开：**用户说「打开7F西通道监控」，系统要么拉全量设备列一遍，
+要么直接说"没有控制类工具"**。排查下来是四个独立的问题叠在一起，逐条记录。
+
+### 20.1 模型配置统一（`models/llm.py`）
+
+原来 `model_confs` 里写死两组配置（`deepseek` / `local`），`LLM_BASE_URL`
+`LLM_MODEL` 这些环境变量主服务**根本不读**；`LLM_THINKING` / `LLM_REASONING_EFFORT`
+读了但被配置里的硬编码值遮蔽，等于无效。
+
+现在改成**单一配置，全部走环境变量 + 默认值**：
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `LLM_TYPE` | `openai` | `openai` / `ollama`，决定用哪个客户端类 |
+| `LLM_BASE_URL` | openai: `https://api.deepseek.com/v1`<br>ollama: `http://localhost:11434` | |
+| `LLM_MODEL` | openai: `deepseek-flash`<br>ollama: `qwen3:8b` | |
+| `LLM_API_KEY` | 回退 `OPENAI_API_KEY` | |
+| `LLM_REASONING_EFFORT` | `low` | `off` 表示不传该字段 |
+| `LLM_THINKING` | `disabled` | `off` 表示不传该字段 |
+
+两条规则：**空串按"未设置"处理**（compose 的 `${VAR:-}` 会传空串）；`LLM_TYPE` 拼错直接抛错。
+`app.py` 启动时打一行 `[startup] 模型 openai / deepseek-flash @ ...`，方便核对实际生效值。
+
+### 20.2 灰度变量精简（`agent/loop/rollout.py`）
+
+`LOOP_ROLLOUT_ENABLED` 和 `AGENT_MODE` 表达同一件事，已删除。现在：
+**`LOOP_ROLLOUT_PERCENT > 0` 或 `LOOP_ROLLOUT_USERS` 非空即视为开启**，两者都空等价于关闭。
+`AGENT_MODE` 的三档语义不变。
+
+### 20.3 MCP 地址外置（`mcp_client/mcp_config.py`）
+
+新增 `resolve_base_url()`：**环境变量 `MCP_BASE_URL` 优先于 yaml 的 `mcp_base_url`**。
+`mcp_config.load_servers()` 和 `mcp_loader.load_mcp_config()` 两个入口共用，部署时不用再改仓库里的 yaml。
+
+### 20.4 设备查询：名称抽取与清单缓存（`agent/loop/domains/device_query.py`）
+
+**名称抽取**原来只认两种说法，中文最自然的第三种全漏：
+
+| 说法 | 改前 | 改后 |
+|---|---|---|
+| `3F-主楼梯MJ` | ✅ | ✅ |
+| `监控5F客梯厅`（类型词在前） | ✅ | ✅ |
+| `打开7F西通道监控`（类型词在句末） | ❌ 空 | ✅ `7F西通道` |
+
+新增 `_NAME_BEFORE_TYPE_RE` 覆盖句末式；`_NAME_STOP` 补了指代词（这个/那个/这台…），
+避免把代词当设备名。
+
+**清单缓存**：一次全量 `listDeviceOnly` 约 1.3MB，字段 30 多个，但只有 7 个有用。
+现在按 `syncSource` 分桶缓存，只留 `id/code/name/rawName/spaceName/status/syncSource`，
+TTL 由 `DEVICE_CACHE_TTL` 控制（默认 300 秒）。给了名称/楼层却没命中时，**强制重拉一次**再过滤，
+仍没有就明说"没有找到"，不再把全量倒给用户。
+
+抽出 `find_devices()` 供设备查询和场景定位共用。
+
+### 20.5 路由：分清"问设备"和"开画面"
+
+`_SCENE_MONITOR_CUE` 原来的 `.{0,4}` 太宽，把「查看 监控5F客梯厅」这类**问设备**的话
+也判成场景指令，导致 handoff 回旧链路拉全量。现在要求「监控/摄像头」之后只有可选的
+窗口词或语气词（即落在句末）。
+
+另外补了两条：
+
+- `_SCENE_OPEN_MONITOR`：打开类动词 + 监控词，**允许中间夹设备名**（`打开7F西通道监控`）
+- `_SCENE_OPEN_VERB` + `_device_target()`：带「打开/调出/切到」的一律不否决场景；
+  只有「查看/查询」类才可能被当成设备查询
+
+> **一条已撤回的弯路**：曾试图在 loop 里加 `scene__show_camera` 工具（L1 直连）直接下发。
+> 实测不可行——`scene` 是 `direct_client: true`，只能由 `SceneMcpClient` 带逐请求
+> `X-Session-Id` 调用，且动作类工具**不能重试**（会重复下发）。已删除该工具和对应路由。
+
+### 20.6 场景：设备名称 → 点位 tag（`agent/loop/scene_resolve.py`）
+
+`scene_show_camera` 的 `tag` 是设备编号（`jk_zl_7f_0002`），用户说不出来。
+新增解析层，在 **app.py 场景分支**（不是 loop）里做：
+
+```
+打开7F西通道监控
+  → 设备台账模糊匹配 → tag=jk_zl_7f_0002
+  → 注入 slots.device_tag
+  → scene_control_langgraph.plan_action 把它拼进规划 query（「… 编号:jk_zl_7f_0002」）
+  → _extract_tag 和 LLM 提示都能取到 → scene_show_camera(tag=…)
+```
+
+多台命中时**不下发**，而是追问并列出候选，引导用户补设备类型或编号。
+解析不出来也不再让服务端按名字匹配（服务端不分设备类型，会误命中非监控点位）。
+
+### 20.7 会话记忆：候选列表与序号解析
+
+排查「第三个」失败时发现，**三套记忆互不相通**：
+
+| 记忆 | 位置 | key | 默认存活 | 持久化 |
+|---|---|---|---|---|
+| 场景/业务追问态 | `memory/session_state.py` | `user_id:session_id` | 300s → **1800s** | ❌ 进程内存 |
+| loop 会话 | `agent/loop/ws_bridge.py` | `user_id:session_id` | 300s → **1800s** | ❌ 进程内存 |
+| 旧链路历史 | `memory/memory_persistor_*` | `user_id:session_id` | 长期 | ✅ 只有这套落盘 |
+
+**都不是全局的**，按用户+会话隔离；前两套重启即丢。
+
+改动：
+
+1. 追问时把候选写进 `IntentState.slots["device_candidates"]`
+2. 下一轮支持「第三个」「第2个」「3」按序号取候选；「这个」在候选唯一时直接用，
+   多台时再问一次（不猜）；序号越界不瞎取
+3. `_scene_followup_pending()`：场景追问态下，短句/序号开头的输入**不让 loop 抢走**——
+   这是「第三个」被 L2 模型回成"没有可对应的清单内容"的直接原因
+4. 两处 TTL 统一读 `SESSION_TTL_SECONDS`，默认 1800 秒
+
+**「之前为什么没记忆」**：loop 的 `Session.history` 只存 user/assistant 纯文本，
+工具结果从不入 history；场景追问态虽存在但只存了 `scene_session_id`，没存候选；
+再加上 loop 抢在场景分支之前。三件事叠加，与模型配置无关。
+
+### 20.8 尚未解决
+
+1. **「西侧」≠「西通道」**：用户说方位词，数据里是通道名，子串匹配必然失败。
+   需要方位词归一（西侧/西面/西边→西）或字符重合度打分兜底。
+2. **纯设备名不含动词时不抽取**：`7F中通道东向西` 这种没有「打开/查看」的话，
+   `_name_fallback` 返回 None。目前靠模型兜。
+3. **多副本不共享会话**：见 TODO 的 T6 / T15。
+
+### 20.9 会话池监控（`app.py`）
+
+会话池有两处，都没有容量上限（见 TODO T16）。启动时挂一个 60 秒的后台任务打一行：
+
+```
+[session] states=3 loop_sessions=2
+```
+
+`states` 是 `session_state.states`（场景/业务追问态），`loop_sessions` 是
+`ws_bridge._sessions`（loop 会话）。
+
+不挂在 `_start_prewarm()` 里：预热可以被 `PREWARM_ON_STARTUP=0` 关掉，监控要一直开，
+所以在 `startup()` 里单独 append 到 `_prewarm_tasks`（只是借用这个列表存引用，
+否则任务对象会被 GC；关机时并不 cancel 它）。
+
+**为什么现在需要这个数字**：`SESSION_TTL_SECONDS` 从 300 提到 1800 之后，
+同一时刻驻留的会话数大约是原来的 6 倍，而 `session_state` 的过期只在被访问时才清理。
+有了这行日志才能区分"真泄漏"和"只是 TTL 变长"。上了 Redis（T15）之后可以删。
+
+### 20.10 上下文压缩与 prompt cache（结论）
+
+**结论：记忆策略和压缩策略动的是同一段前缀，必须一起设计。** 详细方案见 TODO 的 T14 ④。
+
+事实（`agent/loop/validate.py:60`）：
+
+1. `messages[i] = {**messages[i], "content": placeholder}` 是**就地改写**历史消息；
+2. 遍历 `tool_indexes` **从最早的一条开始压** —— 改动点越靠前，失效的缓存后缀越长，
+   这是最坏的方向；
+3. 它在 `while` 循环里**每一步都跑**（`agent.py:236`）：新工具结果累积到超预算就再压一条，
+   于是断点不是断一次，而是每步往前挪一次。
+
+现状里本来是好的部分：`messages[0]` 恒为 system（`agent.py:223`）、history 只追加、
+工具 schema 与 system prompt 在进程内只构造一次（`agent.py:79`）。这个前缀**本来稳定可缓存**，
+压缩是唯一的破坏源。
+
+另一处会平移前缀的是 `pipeline.py:42`：`self.history = self.history[-24:]` 超限就从头部砍一条，
+砍完立刻发请求。单条粒度越细，平移越频繁 —— 应按整块对齐砍（比如一次砍 6 条）。
+
+**先加观测**：DeepSeek 报 `usage.prompt_cache_hit_tokens`、OpenAI 报
+`usage.prompt_tokens_details.cached_tokens`，两者目前都没读。命中与否只体现在账单和
+首字延迟上，"优化有没有用"没有数字就只能靠猜。
+
+方向：压缩**单调化**（压过就保持，别每步重判）；优先压靠后的长结果，或一次性压"最早的一段"，
+把断点次数压到每会话个位数。—— 未实施，等 T12/T14 一起做。

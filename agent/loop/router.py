@@ -64,15 +64,69 @@ CROSS_DOMAIN_HINTS = (
 # 连带 is_business_query 里「明确场景动作优先于问句」也失效，
 # 「能打开监控吗」被当成业务查询。
 # 存量分类器被 13 张旧图共用，这里不动它，只在新链路的 L0 判定里补一份。
+#
+# 匹配要求「监控/摄像头」之后只有可选的窗口词或疑问语气词，也就是句末才收。
+# 早先的 `.{0,4}` 太宽，把「查看 监控5F客梯厅」「查看 监控 jk_zl_5f_0006」
+# 这类**问设备**的话也吞成了场景指令，导致它们 handoff 回旧链路、拉全量设备。
 _SCENE_MONITOR_CUE = re.compile(
     r"(查看|看一下|看下|看看|看|打开|调出|显示|展示|切到)"
-    r".{0,4}(监控|摄像头|画面|视频)"
+    r"(?:一下|下)?\s*"
+    r"(监控|摄像头|画面|视频)"
+    r"(?:\s*(?:窗口|页面|画面|大屏|界面))?"
+    r"\s*[吗嘛呢吧]?\s*$"
 )
 
 # 出现这些词说明用户在问数据，不是要看画面（「看摄像头在线率」不能被抢到场景）
 _DATA_VETO = re.compile(
     r"数据|统计|数量|多少|在线率|占比|排名|趋势|报表|明细|清单|列表|记录|日志|台账|情况"
 )
+
+# 「监控/摄像头」后面直接跟了具体设备名或编号 → 用户问的是这台设备，不是开关画面。
+#   「查看 监控5F客梯厅」  → 命中 → 不算场景，走设备查询
+#   「打开5F客梯厅的监控」  → 类型词在句末，不命中 → 仍是场景指令
+#   「关闭监控窗口」        → 后面是"窗口"，在停用词里 → 仍是场景指令
+_SCENE_DEVICE_TARGET = re.compile(
+    r"(?:监控|摄像头|画面|视频)\s*[:：]?\s*"
+    r"((?:-?\d+[Ff])?[\u4e00-\u9fa5A-Za-z][\u4e00-\u9fa5A-Za-z0-9\-_]{1,19})"
+)
+_SCENE_DEVICE_STOP = frozenset({
+    "窗口", "页面", "画面", "大屏", "界面", "视频",
+    "设备", "详情", "信息", "状态", "情况", "列表",
+    "清单", "数据", "统计", "数量", "在线率", "记录",
+})
+
+
+# 「打开类」动词是操作意图：哪怕后面跟了设备名（「打开监控7F西通道西向东」），
+# 也是在开画面，不能被上面那条否决规则拦成设备查询。
+_SCENE_OPEN_VERB = re.compile(r"打开|开启|调出|切到|切换到|切换|显示|展示")
+
+# 打开类动词 + 监控词，允许后面继续跟设备名（区别于 查看类 的严格尾部匹配）
+# 打开类动词 + 监控词。中间允许夹设备名/楼层——“打开7F西通道监控”
+# （类型词在句末）比“打开监控7F西通道”更自然，两种都要认。
+_SCENE_OPEN_MONITOR = re.compile(
+    r"(?:打开|开启|调出|切到|切换到|切换|显示|展示)\s*(?:一下|下)?\s*"
+    r".{0,20}?"
+    r"(?:监控|摄像头|画面|视频)"
+)
+
+
+def _device_target(query: str) -> str | None:
+    """取出「监控/摄像头」后面跟的具体设备名或编号；命中的是泛称时返回 None。"""
+    match = _SCENE_DEVICE_TARGET.search(query)
+    if not match:
+        return None
+    candidate = match.group(1).strip(" -_")
+    return candidate if candidate not in _SCENE_DEVICE_STOP else None
+
+
+def _asks_specific_device(query: str) -> bool:
+    """判断用户是不是在问某台具体设备（而不是要开关监控画面）。
+
+    只对「查看/查询」这类说法生效；带「打开/调出/切到」的一律交给场景通道。
+    """
+    if _SCENE_OPEN_VERB.search(query):
+        return False
+    return _device_target(query) is not None
 
 
 @dataclass(slots=True)
@@ -133,12 +187,16 @@ class Router:
         if pending is not None:
             return await self._merge_pending(pending, query)
 
+        # 用户在问某台具体设备（「查看 监控5F客梯厅」）时，场景判定一律让位给设备查询：
+        # 这类话要的是「这台设备在哪、编号多少」，不是开关画面。
+        specific_device = _asks_specific_device(query)
+
         # ② L0：场景控制（破坏性动作）暂不接管，交给旧链路
         # 口径与项目现有分流一致：有明确场景动作词，且不是"查询+数据词"
         try:
             from agent.intent.classifier import has_strong_scene_cue, is_business_query
 
-            if has_strong_scene_cue(query) and not is_business_query(query):
+            if has_strong_scene_cue(query) and not is_business_query(query) and not specific_device:
                 return RoutePlan(
                     level="L0",
                     domain="scene",
@@ -153,7 +211,14 @@ class Router:
         # ②.5 监控/摄像头类场景指令（补存量正则失效的那条分支）
         # 与 ② 分开是因为这里要额外排除数据问法：用户可能问「看摄像头在线率」，
         # 那属于业务，不能因为出现「看+摄像头」就被送进场景。
-        if _SCENE_MONITOR_CUE.search(query) and not _DATA_VETO.search(query):
+        if (
+            (
+                _SCENE_MONITOR_CUE.search(query)
+                or _SCENE_OPEN_MONITOR.search(query)
+            )
+            and not _DATA_VETO.search(query)
+            and not specific_device
+        ):
             return RoutePlan(
                 level="L0",
                 domain="scene",
@@ -178,7 +243,7 @@ class Router:
         try:
             from agent.intent.classifier import should_route_scene
 
-            if should_route_scene(info, query) and not _DATA_VETO.search(query):
+            if should_route_scene(info, query) and not _DATA_VETO.search(query) and not specific_device:
                 logger.info(f"[route] 场景向量兜底，交回旧链路：{query}")
                 return RoutePlan(
                     level="L0",

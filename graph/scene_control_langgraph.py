@@ -709,6 +709,13 @@ def build_scene_control_graph(client: Any, llm: Any = None) -> StateGraph:
     async def plan_action(state: SceneControlGraphState) -> dict:
         query = state.get("original_query") or ""
 
+        # 设备名称已在 app.py 侧解析成点位 tag（scene_show_camera 要的是设备编号）。
+        # 直接拼进规划用的 query：LLM 提示和 `_extract_tag` 都能取到，
+        # 不用改各自的取值逻辑（`_extract_tag` 认「编号:xxx」这种写法）。
+        device_tag = (state.get("slots") or {}).get("device_tag")
+        if device_tag and device_tag not in query:
+            query = f"{query} 编号:{device_tag}"
+
         try:
             catalog_text, tool_map = await _load_catalog()
         except Exception as e:

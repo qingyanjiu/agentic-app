@@ -1,7 +1,13 @@
 """设备楼层/关键词过滤的单元测试（纯函数）。"""
+import asyncio
+import json
+
 from agent.loop.domains.device_query import (
+    _name_fallback,
     _row_matches_floor,
     _row_matches_keyword,
+    build_domain,
+    clear_device_cache,
     normalize_floor,
 )
 
@@ -77,3 +83,87 @@ def test_format_rows_header_is_user_facing():
     assert "关键词「主楼梯」" in lines[0]
     assert lines[1].startswith("- 3F-主楼梯MJ")
     assert "状态 启用" in lines[1]
+
+
+# ------------------------------------------------------------
+# 名称兜底：「查看 监控5F客梯厅」要能定位到这台设备
+# ------------------------------------------------------------
+def test_name_fallback_extracts_typed_device_name():
+    assert _name_fallback("查看 监控5F客梯厅") == "5F客梯厅"
+    assert _name_fallback("查看 监控 5F客梯厅") == "5F客梯厅"
+    assert _name_fallback("看看门禁3F大厅") == "3F大厅"
+
+
+def test_name_fallback_keeps_dashed_floor_name():
+    assert _name_fallback("查看 监控5F-主楼梯MJ") == "5F-主楼梯MJ"
+
+
+def test_name_fallback_ignores_generic_words_and_pure_queries():
+    """「查看监控」「5楼有哪些监控」不能被当成设备名。"""
+    assert _name_fallback("查看监控") is None
+    assert _name_fallback("5楼有哪些监控") is None
+    assert _name_fallback("园区有多少监控") is None
+    assert _name_fallback("查看监控设备") is None
+
+
+# ------------------------------------------------------------
+# 设备清单缓存
+# ------------------------------------------------------------
+class _FakeToolbox:
+    def __init__(self, rows):
+        self.rows = rows
+        self.calls = 0
+
+    async def call(self, server, tool, args):
+        self.calls += 1
+        return json.dumps(self.rows, ensure_ascii=False)
+
+
+def _camera(name, code):
+    """一条模拟的设备行，故意带上缓存要裁掉的多余字段。"""
+    return {
+        "id": f"id-{code}", "name": name, "rawName": name, "code": code,
+        "spaceName": "园区/科研办公楼/5F", "status": "1", "syncSource": "3",
+        "price": "9999", "rawId": "raw", "manufacture": "hik",
+    }
+
+
+def _list_tool(box):
+    domain = build_domain(box)
+    return next(t for t in domain.tools if t.name == "device_query__list")
+
+
+def test_device_list_caches_and_slims_rows(monkeypatch):
+    import agent.loop.domains.device_query as dq
+
+    monkeypatch.setattr(dq, "_CACHE_TTL", 300.0)
+    clear_device_cache()
+
+    box = _FakeToolbox([_camera("5F客梯厅", "jk_zl_5f_0006")])
+    tool = _list_tool(box)
+
+    first = asyncio.run(tool.execute({"query": "查看 监控5F客梯厅"}))
+    asyncio.run(tool.execute({"query": "查看 监控5F客梯厅"}))
+
+    assert box.calls == 1                      # 第二次命中缓存，没有再拉
+    assert "5F客梯厅" in first.text
+    assert "1 台设备" in first.text
+
+    cached = dq._CACHE["list:3"][1][0]         # 只保留精简字段
+    assert cached["code"] == "jk_zl_5f_0006"
+    assert "price" not in cached and "manufacture" not in cached
+
+
+def test_device_list_refetches_once_then_says_not_found(monkeypatch):
+    import agent.loop.domains.device_query as dq
+
+    monkeypatch.setattr(dq, "_CACHE_TTL", 300.0)
+    clear_device_cache()
+
+    box = _FakeToolbox([_camera("别处的摄像头", "jk_zl_5f_0001")])
+    tool = _list_tool(box)
+
+    out = asyncio.run(tool.execute({"query": "查看 监控5F客梯厅"}))
+
+    assert box.calls == 2                      # 未命中 → 强制重拉一次
+    assert "没有找到" in out.text and "5F客梯厅" in out.text

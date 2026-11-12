@@ -23,7 +23,9 @@
 | T11 | **MCP 参数白名单校验**（参数漂移检测） | P1 | 半小时 | 无 | 低 |
 | T12 | **上下文预算可配**（`LOOP_CONTEXT_BUDGET`） | P1 | 半天 | 无 | 中 |
 | T13 | **旧链路历史无上限**（persistor 语义不一致） | P1 | 1 小时 | 无 | 高 |
-| T14 | **上下文压缩优化**（含 3 个现存缺陷） | P2 | 2~3 天 | T12 完成 + 全量切 loop | 中 |
+| T14 | **上下文压缩优化**（4 个缺陷 + 缓存命中断裂） | P2 | 2~3 天 | T12 完成 + 全量切 loop | 高 |
+| T15 | **全局 history 与会话记忆**（跨进程/跨副本） | P2 | 2 天 | 与 T6 合并实施 | 高 |
+| T16 | **会话池容量与过期回收**（含 `session_state` 真泄漏） | P3 | 半天 | 无 | 中 |
 
 **顺序建议**：T1 → 等业务语料（T2）→ T3 → T4 → 用 T1 数据决定是否做 T5。
 
@@ -286,7 +288,9 @@ for words, bad_domain in VETO:
 | T11 | MCP 参数白名单 | `McpToolbox.call` 原样透传，参数名漂移不会早失败（见 6.1） |
 | T12 | 上下文预算可配 | `context_budget` 写死 60000 **字符**，且 `ws_bridge` 没传，线上无法调；接本地模型会超窗（见 6.2） |
 | T13 | 旧链路历史无上限 | JSON persistor 覆盖写（只记 1 轮），MySQL/SQLite 追加写且 load **无 LIMIT**（无限增长），见 6.3 |
-| T14 | 上下文压缩优化 | spill 死提示 + 不清理 + Composer 无预算三个 bug，外加 token 计量 / 结构感知截断等 6 个方案；**等全量切 loop 再做**（见 6.4） |
+| T14 | 上下文压缩优化 | spill 死提示 + 不清理 + Composer 无预算三个 bug，外加 token 计量 / 结构感知截断等方案；**压缩就地改写最早的消息会打断 prompt cache**（见 6.4 ④）；**等全量切 loop 再做** |
+| T15 | 全局 history 与会话记忆 | 三套记忆互不相通，`session_state` 和 `ws_bridge._sessions` 都是进程内存；抽 `SessionStore` + 落 Redis（与 T6 合并），见 6.5 |
+| T16 | 会话池容量与回收 | `session_state.states` 只在访问时清自己，过期后不访问就**永不释放**；两处都无容量上限，`_sessions` 每次 get 全量扫，见 6.6。启动日志已有 `[session] states=N loop_sessions=N`（60s 一次），可先用它判断是否真增长 |
 
 
 ### 6.1 T11 细节：MCP 参数白名单校验
@@ -385,7 +389,7 @@ INFO 日志。新链路没继承——这是重构时漏掉的一层。
 > **前置条件**：等全部流量切到 loop（`AGENT_MODE=loop`）之后再动。
 > 现在两条链路并行，压缩策略一改，对比和回滚都会变复杂。
 
-#### 先修三个现存缺陷（是 bug，不是优化）
+#### 先修四个现存缺陷（是 bug，不是优化）
 
 **① "已落盘"是死信息**
 
@@ -407,6 +411,24 @@ L1 直连链路里 `tool_text` 只过 `govern`（≤50KB），再加最多 24 �
 整个 prompt 没有上限。`LoopAgent` 至少还有 `context_budget`，Composer 是裸的。
 → 给 Composer 也接预算，超了先截 `tool_text`。
 
+**④ 压缩方向本身是反的（缓存命中断裂）**
+
+`compress_tool_messages` 是**就地改写**历史消息，而且**从最早的一条开始压**。
+模型侧的 prompt cache 是前缀匹配：改动点越靠前，失效的后缀越长 —— 这是最坏的方向。
+它还在 `while` 里**每步都跑**（`agent.py:236`），所以断点不是断一次，
+而是每步往前挪一次。
+
+好的一面：`messages[0]` 恒为 system、history 只追加、工具 schema 和 system prompt
+在进程内只构造一次（`agent.py:79`）——这个前缀本来是稳定可缓存的，压缩是唯一的破坏源。
+
+**先加观测再优化**：DeepSeek 在 `usage.prompt_cache_hit_tokens`、OpenAI 在
+`usage.prompt_tokens_details.cached_tokens` 报命中量，现在两个都没读。
+没有这个数字，"优化有没有用"只能靠猜。
+
+**和记忆（T15）的关系**：history 怎么追加/截断，和压缩怎么改写，动的是**同一段前缀**。
+`pipeline.py:42` 超限时从头部砍一条就立刻发请求，等于每次把前缀平移一格，
+应改成按整块对齐砍（比如一次砍 6 条）。这两件事要一起设计，不要分两次改。
+
 #### 再按性价比做优化
 
 | # | 方案 | 成本 | 收益 | 备注 |
@@ -417,6 +439,7 @@ L1 直连链路里 `tool_text` 只过 `govern`（≤50KB），再加最多 24 �
 | D | 工具返回层瘦身：默认聚合、细节二次调 | 每域半天 | 治本 | `device_query` 已部分这么做，其余 12 个域仍原样转发 MCP 响应 |
 | E | 语义摘要（即 T8） | 半天 | 比 B 更省 | 多一次 LLM 调用；本地模型上建议只对 >20KB 的结果用 |
 | F | 跨轮摘要代替直接丢弃 | 半天 | 长会话不丢早期上下文 | 现在 `max_history=12` 超了直接丢，第 1 轮说的"我在 5 楼"永久丢失 |
+| G | **压缩单调化 + 缓存命中观测** | 半天 | 直接决定长会话的成本和首字延迟 | 一旦压过就保持压过的形态，别每步重判；见上 ④。优先级应排在 A/B 之前 |
 
 **B 的具体想法**——按返回形态分支，而不是一刀切取前 300 字符：
 
@@ -426,10 +449,104 @@ L1 直连链路里 `tool_text` 只过 `govern`（≤50KB），再加最多 24 �
 # 统计类      → {count, name} 这种本来就不大，原样保留，不压
 ```
 
-**推荐顺序**：先修 ①②③（2 小时，纯 bug）→ A+B（1~2 天，核心收益）→ C → D → E/F。
+**推荐顺序**：先修 ①②③（2 小时，纯 bug）→ ④ 缓存观测 + G 单调化（半天，先能看见再谈优化）
+→ A+B（1~2 天，核心收益）→ C → D → E/F。
 
 **和 T8 的关系**：T8 就是这里的 E 方案。重新排序后它的定位变了——语义摘要不是
 第一选择，结构感知截断（B）性价比更高，只有结果特别长时才轮到摘要。
+
+### 6.5 T15 细节：全局 history 与记忆
+
+**问题**：现在有三套"记忆"，互不相通，而且两套是进程内存。
+
+| 记忆 | 位置 | key | 默认存活 | 持久化 |
+|---|---|---|---|---|
+| 场景/业务追问态 | `memory/session_state.py` | `user_id:session_id` | 1800s | ❌ 进程内存 |
+| loop 会话 | `agent/loop/ws_bridge.py` | `user_id:session_id` | 1800s | ❌ 进程内存 |
+| 旧链路历史 | `memory/memory_persistor_*` | `user_id:session_id` | 长期 | ✅ 只有这套落盘 |
+
+后果：
+
+1. **重启即失忆**：服务重启后"第三个""这个"全部失效；
+2. **多副本不共享**：请求打到不同实例，追问态就断；
+3. **两条链路各记各的**：loop 的 `Session.history` 只存 user/assistant 纯文本，
+   工具结果（候选清单）从不入 history，模型看不到上一轮列了什么；
+4. **无法跨天**：用户上午问过的设备，下午还得重新说。
+
+**做法**（按依赖顺序）：
+
+1. **抽会话存储接口**：现在 `ws_bridge._sessions` 和 `session_state.states`
+   各写一套 dict + TTL + 过期清理，先统一成一个 `SessionStore` 抽象
+   （get / set / touch / expire），进程内实现作为默认
+2. **落 Redis**：key 形如 `chat:{user_id}:{session_id}`，TTL 用 `SESSION_TTL_SECONDS`。
+   这一步和 **T6 是同一件事**，做完 T6 就等于完成 T15 的 80%
+3. **两条链路共享同一份会话**：loop 的 `Session`（history + pending）和
+   场景的 `IntentState`（追问态 + 候选）都挂在同一个 key 下，
+   按 `module` 分区，切换链路时不会互相覆盖
+4. （可选）**工具结果入 history 摘要**：把「上一轮列了哪些候选」压成一两行进 history，
+   让模型也有上下文，而不只依赖我们自己的 slots
+5. （长期）**接 memory_persistor**：让"上次说到哪台设备"跨天可用，
+   这时才需要考虑隐私与清理策略
+
+**验收**：
+
+- 重启服务后，用户 10 分钟内说「第三个」仍然能取到候选；
+- 两个 Python 实例轮询接收请求，追问态不断；
+- `SESSION_TTL_SECONDS=60` 时，61 秒后状态自动失效（已验证读取生效，
+  需补一个真实过期的用例）。
+
+**优先级**：P2。现在单实例 + 演示环境能跑，但一旦上多副本就必须做。
+和 T6 合并实施最省事。
+
+### 6.6 T16 细节：会话池容量与过期回收
+
+**问题**：两处会话存储都没有容量上限，过期回收还各有一个缺陷。
+
+| 存储 | 过期回收 | 容量上限 |
+|---|---|---|
+| `ws_bridge._sessions` | `get_session()` 每次**全量扫** `_touched`，能清掉 | ❌ |
+| `session_state.states` | **只在访问某个 key 时判断该 key**，没人再访问就**永不回收** | ❌ |
+
+第二条是**真泄漏**，不是理论风险：
+
+```python
+# memory/session_state.py  get()
+state = self.states.get(key)
+if state and (time.time() - state.last_update_time) > self.timeout:
+    self.clear(user_id, session_id)   # 只清"这次请求的那个 key"
+    return None
+```
+
+`clear()` 的调用点（`app.py` 4 处、`person_status_pipeline.py` 1 处）都是
+业务流程主动清（任务完成/放弃/跑题）。**过期之后没人再访问的 `IntentState`
+会一直留在字典里**，TTL 对它形同虚设。
+
+**为什么现在才显出来**：`SESSION_TTL_SECONDS` 从 300s 上调到 1800s，
+同一时刻驻留的会话数是原来的约 6 倍。
+
+**做法**：
+
+1. `session_state` 补一个全局 `sweep()`：遍历 `states`，删掉 `last_update_time` 超时的；
+   在 startup 里起一个 asyncio 后台任务每 60s 跑一次
+2. 两处都加容量上限 + LRU：`OrderedDict`，超过 N（比如 2000）淘汰最旧的；
+   N 走环境变量
+3. `get_session()` 的全量扫描改成"每 N 次调用扫一次"，避免高并发下每次请求
+   都遍历整个会话池（会话越多越慢，是 O(n)）
+4. 上 Redis 后（T15）由 `maxmemory-policy allkeys-lru` 兜底，这条自动缓解
+
+**验收**：
+
+- 造 5000 个 session，进程 RSS 不再单调上涨；
+- `SESSION_TTL_SECONDS=5` 时，10 秒后 `len(session_state.states)` 回落到接近 0
+  （当前版本不访问就不会掉）。
+
+**现状**：启动时挂了一个 60 秒的后台任务打 `[session] states=%d loop_sessions=%d`
+（`app.py` 的 `_watch_session_pool`）。第 1 条修完前后的曲线可以直接用它对比，
+不用先造压测。
+
+**优先级**：P3。单实例演示规模影响很小，但第 1 条是**真 bug**，
+可以顺手先修；2、3 建议和 T15 的 `SessionStore` 抽象一起做，不要分三次改。
+
 
 ---
 

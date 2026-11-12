@@ -161,6 +161,8 @@ async def startup():
     except Exception as e:  # noqa: BLE001 日志不该带崩启动
         logger.warning(f"[startup] 读取路由模式失败: {type(e).__name__} {e}")
     _start_prewarm()
+    # 会话池监控：与预热无关，PREWARM_ON_STARTUP=0 时也要开
+    _prewarm_tasks.append(asyncio.create_task(_watch_session_pool()))
 
 
 @app.on_event("shutdown")
@@ -1806,6 +1808,28 @@ _BUSINESS_GRAPH_GETTERS = (
 )
 
 
+async def _watch_session_pool() -> None:
+    """每分钟打一次会话池大小（T16 的临时观察手段）。
+
+    两处会话存储都没有容量上限；`session_state` 的过期只在**被访问时**才清理，
+    过期后没人再访问的会话不会释放。有这行日志就能看出是真增长还是理论风险。
+    上了 Redis（T15）之后可以删掉。
+    """
+    from agent.loop import ws_bridge
+    from memory.session_state import session_state
+
+    while True:
+        await asyncio.sleep(60)
+        try:
+            logger.info(
+                "[session] states=%d loop_sessions=%d",
+                len(session_state.states),
+                len(ws_bridge._sessions),
+            )
+        except Exception as e:  # 统计失败不能影响服务
+            logger.warning(f"[session] 会话池统计失败（忽略）: {e}")
+
+
 def _start_prewarm() -> None:
     if os.getenv("PREWARM_ON_STARTUP", "1").strip().lower() in ("0", "false", "off", "no"):
         logger.info("[startup] PREWARM_ON_STARTUP 已关闭，跳过预热")
@@ -1840,6 +1864,49 @@ async def _prewarm_business_graphs() -> None:
         await asyncio.sleep(0)
 
 
+def _scene_followup_pending(user_id: str, session_id: str, query: str) -> bool:
+    """上一轮场景追问还没结束、本轮像是补答 → 交回场景通道处理。
+
+    loop 链路在场景分支之前，不挡一下会把「第三个」「这个」当成新问题，
+    模型手上没有候选清单，只能回一句"没有可对应的内容"。
+    """
+    prev = session_state.get(user_id, session_id)
+    if prev is None or prev.module != "scene_control" or prev.done:
+        return False
+    text = (query or "").strip()
+    if not text:
+        return False
+    # 短句（「第三个」「7F中通道东向西」）或序号/指代开头，都算补答
+    return len(text) <= 12 or bool(re.match(r"^(第|这|那|\d)", text))
+
+
+# 场景动作常以设备名称指代点位（「打开7F西通道监控」），而 scene_show_camera
+# 要的是点位 tag = 设备编号。这里用设备台账（走 device_query 的缓存）把名字换成编号：
+#   唯一命中 → 注入 slots.device_tag，场景图直接用，不再追问；
+#   多台/没有 → 回一句追问，引导用户补设备类型或编号。
+_SCENE_DEVICE_HINT = re.compile(r"监控|摄像头|画面|视频")
+# 话术里已经有设备编码的，不用再解析
+_DEVICE_CODE_HINT = re.compile(r"[A-Za-z][A-Za-z0-9_\-]{2,}")
+_scene_device_toolbox = None
+
+
+async def _resolve_scene_device_tag(
+    query: str,
+    candidates: Optional[list] = None,
+) -> tuple[Optional[str], Optional[str], list]:
+    """把场景话术里的设备名解析成点位 tag（逻辑见 agent/loop/scene_resolve.py）。
+
+    :param candidates: 上一轮追问时列给用户的候选，用来解析「第三个」「这个」
+    :return: (tag, 追问话术, 候选列表)，tag 与追问话术互斥。
+    """
+    global _scene_device_toolbox
+    from agent.loop.runtime import McpToolbox
+    from agent.loop.scene_resolve import resolve_scene_device_tag
+
+    if _scene_device_toolbox is None:
+        _scene_device_toolbox = McpToolbox()
+    return await resolve_scene_device_tag(_scene_device_toolbox, query, candidates)
+
 async def run_scene_control_graph(websocket, query: str, user_id: str, session_id,
                                   scene_session_id: Optional[str] = None) -> None:
     """
@@ -1871,8 +1938,51 @@ async def run_scene_control_graph(websocket, query: str, user_id: str, session_i
         if not scene_session_id:
             scene_session_id = (prev.slots or {}).get("scene_session_id")
 
+    # 名称 → 点位 tag：scene_show_camera 要的是设备编号，用户通常只说名字。
+    # 解析不出来（多台/没有）就发一句追问，让用户补设备类型或编号，别让场景图瞎猜。
+    # 追问时把候选存进 slots，用户下一轮说「第三个」「这个」时据此解析。
+    scene_slots = {"scene_session_id": scene_session_id} if scene_session_id else {}
+    prev_candidates = []
+    if prev is not None and prev.module == "scene_control":
+        prev_candidates = (prev.slots or {}).get("device_candidates") or []
+
+    # 有候选时也要走解析：用户可能只回「第三个」，句子里没有设备类型词
+    needs_device = bool(query) and (
+        bool(_SCENE_DEVICE_HINT.search(query)) or bool(prev_candidates)
+    )
+    if needs_device and not _DEVICE_CODE_HINT.search(query):
+        try:
+            device_tag, clarify, candidates = await _resolve_scene_device_tag(
+                query, prev_candidates
+            )
+        except Exception as e:
+            logger.warning(f"[场景] 设备名称解析失败，交给场景图追问: {e}")
+            device_tag, clarify, candidates = None, None, prev_candidates
+        if clarify:
+            if candidates:
+                scene_slots["device_candidates"] = candidates
+            await websocket.send_text(json.dumps({
+                "event": "custom", "data": {"type": "ask", "question": clarify},
+            }, ensure_ascii=False))
+            await websocket.send_text(json.dumps({
+                "event": "custom", "data": {"type": "done"},
+            }, ensure_ascii=False))
+            session_state.set(user_id, session_id, IntentState(
+                module="scene_control",
+                slots=dict(scene_slots),
+                missing_params=[],
+                ask_count=ask_count,
+                unrelated_count=0,
+                last_question=clarify,
+                original_query=persist_query,
+                done=False,
+            ))
+            return
+        if device_tag:
+            scene_slots["device_tag"] = device_tag
+
     graph_input = {
-        "slots": {"scene_session_id": scene_session_id} if scene_session_id else {},
+        "slots": scene_slots,
         "missing_params": [],
         "ask_count": ask_count,
         "unrelated_count": 0,
@@ -2028,7 +2138,11 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
                     loop_decision = get_rollout().decide(
                         user_id, str(session_id), payload.get("mode")
                     )
-                    if loop_decision.enabled:
+                    # 场景追问态（上轮列了候选等用户选）优先交回场景通道：
+                    # 否则 loop 会把「第三个」「这个」当成新问题，模型手上没有清单。
+                    if loop_decision.enabled and not _scene_followup_pending(
+                        user_id, session_id, query
+                    ):
                         loop_handled = await loop_handle_chat(
                             websocket, query, user_id, str(session_id), llm, loop_decision
                         )

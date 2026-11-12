@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 from typing import Any
 
@@ -29,8 +30,9 @@ logger = logging.getLogger(__name__)
 _sessions: dict[str, Session] = {}
 _touched: dict[str, float] = {}
 
-# 空闲多久回收（秒）
-SESSION_TTL = 300.0
+# 空闲多久回收（秒）。默认 30 分钟：追问/指代（「第三个」「这个」）常常要跨几分钟，
+# 5 分钟太短，用户回来就失忆了。与场景追问态共用 SESSION_TTL_SECONDS。
+SESSION_TTL = float(os.getenv("SESSION_TTL_SECONDS") or 1800)
 
 _pipeline: ChatPipeline | None = None
 

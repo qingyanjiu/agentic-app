@@ -1,3 +1,4 @@
+import os
 import time
 from typing import Dict, Optional
 from dataclasses import dataclass, field
@@ -100,5 +101,9 @@ class SessionStateManager:
         self.states.pop(self._key(user_id, session_id), None)
 
 
-# 全局单例，供整个项目使用
-session_state = SessionStateManager()
+# 全局单例，供整个项目使用。
+# 空闲有效期与 loop 会话共用 SESSION_TTL_SECONDS，默认 30 分钟——
+# 追问态要跨几分钟（用户去确认设备名再回来），5 分钟太短。
+session_state = SessionStateManager(
+    timeout=float(os.getenv("SESSION_TTL_SECONDS") or 1800)
+)

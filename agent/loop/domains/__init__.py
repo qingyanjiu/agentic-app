@@ -51,4 +51,8 @@ def build_default_domains(toolbox: McpToolbox | None = None) -> list[DomainSpec]
 
 
 # dry-run 用的"不调 MCP、不调 LLM"的参数预览器
-PREVIEWERS = {module.CONFIG.name if hasattr(module, "CONFIG") else module.__name__.rsplit(".", 1)[-1]: module.preview_plan for module in _MODULES}
+PREVIEWERS = {
+    (module.CONFIG.name if hasattr(module, "CONFIG") else module.__name__.rsplit(".", 1)[-1]): module.preview_plan
+    for module in _MODULES
+    if hasattr(module, "preview_plan")
+}

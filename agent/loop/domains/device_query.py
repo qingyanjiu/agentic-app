@@ -27,7 +27,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
+import time
 
 from agent.intent.slots import DEVICE_TYPE_DICT, extract_device_query_slots
 
@@ -58,6 +60,109 @@ _FLOOR_RE = re.compile(r"(?<![\w])(-?\d+)\s*[Ff](?![\w])")
 # 带楼层前缀的设备名，如 "3F-主楼梯MJ" / "-1F-电梯厅MJ"。
 # 现有 slots 的 device_keyword 抽不到这种，这里做兜底。
 _DEVICE_NAME_RE = re.compile(r"-?\d+[Ff]-[\u4e00-\u9fa5A-Za-z0-9]+")
+
+# 类型词后面直接跟设备名，如「监控5F客梯厅」「监控 5F客梯厅」「摄像头-1F电梯厅」。
+# 数据里的设备名就是 `5F客梯厅` 这种（楼层和名称之间**没有横线**），
+# 上面 `_DEVICE_NAME_RE` 要求带横线，所以这类名字全被漏掉——
+# 结果就是「查看 监控5F客梯厅」不按名称过滤，直接列出该类型全部设备。
+_DEVICE_TYPED_NAME_RE = re.compile(
+    r"(?:监控|摄像头|门禁|道闸|梯控|广播|电表|水表|设备)\s*[:：]?\s*"
+    r"((?:-?\d+[Ff])?[\u4e00-\u9fa5A-Za-z][\u4e00-\u9fa5A-Za-z0-9\-_]{1,19})"
+)
+
+# 类型词后面跟的是泛称，不是设备名
+_NAME_STOP = frozenset({
+    "设备", "画面", "视频", "详情", "信息", "状态", "情况",
+    "列表", "清单", "记录", "数据", "统计", "数量", "在线率",
+    # 指代词：没有具体对象时不能当名称，交给追问
+    "这个", "那个", "这台", "那台", "这台设备", "那台设备", "它", "该设备",
+})
+
+# 「名称 + 类型词在句末」：打开7F西通道监控 / 打开7f西侧监控 / 看看A栋的摄像头
+# 这是中文里最自然的说法，而上面两条正则都要求类型词在前，全漏。
+_NAME_BEFORE_TYPE_RE = re.compile(
+    r"(?:打开|开启|查看|查|调出|切到|切换到|显示|展示|看看|看一下|看下|看)"
+    r"\s*[:：]?\s*"
+    r"([^\s，,。；;:：]{2,20}?)"
+    r"\s*(?:的)?\s*(?:监控|摄像头|画面|视频)\s*[吗嘛呢吧]?\s*$"
+)
+
+
+def _name_fallback(query: str) -> str | None:
+    """slots 抽不到设备名时的兜底，三种说法都要认。
+
+    1. 「3F-主楼梯MJ」——带横线的楼层前缀名称
+    2. 「监控5F客梯厅」——类型词在前
+    3. 「打开7F西通道监控」——类型词在句末（最自然的中文说法）
+    """
+    match = _DEVICE_NAME_RE.search(query)
+    if match:
+        return match.group(0)
+
+    for pattern in (_DEVICE_TYPED_NAME_RE, _NAME_BEFORE_TYPE_RE):
+        match = pattern.search(query)
+        if not match:
+            continue
+        candidate = match.group(1).strip(" -_")
+        if candidate and candidate not in _NAME_STOP:
+            return candidate
+    return None
+
+
+# ==================================================================
+# 设备清单缓存
+# ==================================================================
+# 一次全量 listDeviceOnly 是 ~1.3MB JSON，但字段有 30 多个，
+# 其中只有下面几个对「过滤 + 展示 + 查详情」有用。缓存前先精简，
+# 579 条从 1.3MB 降到几十 KB，内存和后续遍历都便宜。
+
+_CACHE_TTL = float(os.getenv("DEVICE_CACHE_TTL") or 300)   # 秒，0 表示不缓存
+_SLIM_FIELDS = ("id", "code", "name", "rawName", "spaceName", "status", "syncSource")
+_CACHE: dict[str, tuple[float, list[dict]]] = {}
+
+
+def _slim(rows: list[dict]) -> list[dict]:
+    return [
+        {key: row.get(key) for key in _SLIM_FIELDS if key in row}
+        for row in rows
+    ]
+
+
+def _cache_get(key: str) -> list[dict] | None:
+    item = _CACHE.get(key)
+    if not item:
+        return None
+    expire_at, rows = item
+    if time.monotonic() > expire_at:
+        _CACHE.pop(key, None)
+        return None
+    return rows
+
+
+def clear_device_cache() -> None:
+    """测试用：清空设备清单缓存。"""
+    _CACHE.clear()
+
+
+async def _fetch_rows(
+    toolbox: McpToolbox,
+    args: dict,
+    *,
+    refresh: bool = False,
+) -> list[dict]:
+    """拿某类型的设备行；命中缓存就直接用，refresh=True 时强制重拉并回写。"""
+    cache_key = f"list:{args.get('syncSource', '*')}"
+    if not refresh and _CACHE_TTL > 0:
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            logger.info(f"[device_query] 缓存命中 {cache_key}，{len(cached)} 台")
+            return cached
+
+    raw = await toolbox.call(SERVER, TOOL_LIST, args)
+    rows = _slim(_rows_of(raw))
+    if _CACHE_TTL > 0:
+        _CACHE[cache_key] = (time.monotonic() + _CACHE_TTL, rows)
+    return rows
 
 _CN_DIGITS = {
     "一": 1, "二": 2, "三": 3, "四": 4, "五": 5,
@@ -241,10 +346,8 @@ def _filter_rows(
     floor = normalize_floor(query) or normalize_floor(slots.get("area"))
     keyword = (slots.get("device_keyword") or "").strip() or None
     if not keyword:
-        # slots 抽不到 "3F-主楼梯MJ" 这类带楼层前缀的名称，这里兜底
-        match = _DEVICE_NAME_RE.search(query)
-        if match:
-            keyword = match.group(0)
+        # slots 抽不到「3F-主楼梯MJ」「5F客梯厅」这类名称，这里兜底
+        keyword = _name_fallback(query)
 
     if floor:
         rows = [row for row in rows if _row_matches_floor(row, floor)]
@@ -256,14 +359,13 @@ def _filter_rows(
 def preview_plan(query: str) -> dict:
     """dry-run 用：展示会调用哪个 MCP 工具、带什么参数、本地怎么过滤。"""
     slots = extract_device_query_slots(query)
+    floor = normalize_floor(query) or normalize_floor(slots.get("area"))
+    keyword = (slots.get("device_keyword") or "").strip() or _name_fallback(query)
     return {
         "domain": "device_query",
         "tool": TOOL_LIST,
         "mcp_args": _build_list_args(slots),
-        "local_filter": {
-            "floor": normalize_floor(query) or normalize_floor(slots.get("area")),
-            "keyword": slots.get("device_keyword") or None,
-        },
+        "local_filter": {"floor": floor, "keyword": keyword},
         "note": "楼层/名称在工具内部过滤，不下发给 Java",
     }
 
@@ -287,29 +389,60 @@ def route_plan(query: str) -> DomainPlan:
     return DomainPlan(tool="device_query__list", args={"query": query})
 
 
+async def find_devices(
+    toolbox: McpToolbox,
+    query: str,
+) -> tuple[list[dict], list[dict], str | None, str | None]:
+    """按用户原句在设备清单里定位设备，返回 (全量行, 匹配行, 楼层, 关键词)。
+
+    两个工具共用这一套：设备清单查询、场景控制按名称定位点位。
+    给了名称或楼层却一条没命中时，会强制重拉一次缓存再过滤（台账可能刚更新）。
+    """
+    slots = extract_device_query_slots(query)
+    args = _build_list_args(slots)
+    rows = await _fetch_rows(toolbox, args)
+    matched, floor, keyword = _filter_rows(rows, slots, query)
+
+    if not matched and (keyword or floor):
+        try:
+            rows = await _fetch_rows(toolbox, args, refresh=True)
+        except Exception as exc:
+            logger.warning(f"[loop] 设备清单重拉失败：{exc}")
+        else:
+            matched, floor, keyword = _filter_rows(rows, slots, query)
+            logger.info(
+                f"[device_query] 缓存未命中，重拉后 {len(matched)}/{len(rows)} 台"
+            )
+    return rows, matched, floor, keyword
+
+
 def build_domain(toolbox: McpToolbox) -> DomainSpec:
     async def list_devices(raw_args: dict) -> ToolOutcome:
         query = str(raw_args.get("query") or "").strip()
         if not query:
             return ToolOutcome("缺少用户问题，无法解析查询条件。", is_error=True)
 
-        slots = extract_device_query_slots(query)
         try:
-            raw = await toolbox.call(SERVER, TOOL_LIST, _build_list_args(slots))
+            rows, matched, floor, keyword = await find_devices(toolbox, query)
         except Exception as exc:
             logger.warning(f"[loop] 设备列表查询失败：{exc}")
             return ToolOutcome(f"设备列表查询失败：{exc}", is_error=True)
 
-        rows = _rows_of(raw)
         total = len(rows)
-        rows, floor, keyword = _filter_rows(rows, slots, query)
         logger.info(
-            f"[device_query] 全量 {total} 台 → 过滤后 {len(rows)} 台"
+            f"[device_query] 全量 {total} 台 → 过滤后 {len(matched)} 台"
             f"（floor={floor}, keyword={keyword}）"
         )
+
+        if not matched and keyword:
+            return ToolOutcome(
+                f"没有找到名称或编号包含「{keyword}」的设备。"
+                f"请确认设备名称/编号，或去掉名称、只按楼层或类型查询。"
+            )
+
         return ToolOutcome(
             govern(
-                _format_rows(rows, total=total, floor=floor, keyword=keyword),
+                _format_rows(matched, total=total, floor=floor, keyword=keyword),
                 label="device_list",
             )
         )
@@ -320,7 +453,7 @@ def build_domain(toolbox: McpToolbox) -> DomainSpec:
             return ToolOutcome("缺少用户问题，无法解析查询条件。", is_error=True)
 
         slots = extract_device_query_slots(query)
-        keyword = (slots.get("device_keyword") or "").strip()
+        keyword = (slots.get("device_keyword") or "").strip() or _name_fallback(query)
         if not keyword:
             return ToolOutcome(
                 "缺少要查询的设备。请向用户确认设备名称或设备编号，拿到后再调用本工具。",
@@ -328,15 +461,27 @@ def build_domain(toolbox: McpToolbox) -> DomainSpec:
             )
 
         # 1) 先按类型 + 楼层缩小范围，再按关键词定位 id
+        args = _build_list_args(slots)
         try:
-            raw = await toolbox.call(SERVER, TOOL_LIST, _build_list_args(slots))
+            rows = await _fetch_rows(toolbox, args)
         except Exception as exc:
             logger.warning(f"[loop] 设备定位失败：{exc}")
             return ToolOutcome(f"设备定位失败：{exc}", is_error=True)
 
-        rows = _rows_of(raw)
         rows, floor, _ = _filter_rows(rows, {**slots, "device_keyword": ""}, query)
         matched = [row for row in rows if _row_matches_keyword(row, keyword)]
+
+        # 没匹配到 → 可能是缓存旧了，重拉一次再试
+        if not matched:
+            try:
+                fresh = await _fetch_rows(toolbox, args, refresh=True)
+            except Exception as exc:
+                logger.warning(f"[loop] 设备重拉失败：{exc}")
+            else:
+                fresh, floor, _ = _filter_rows(
+                    fresh, {**slots, "device_keyword": ""}, query
+                )
+                matched = [row for row in fresh if _row_matches_keyword(row, keyword)]
 
         if not matched:
             scope = f"{floor} " if floor else ""

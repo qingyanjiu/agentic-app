@@ -111,3 +111,69 @@ def test_data_query_about_camera_is_not_hijacked():
     plan = asyncio.run(_router("device_status", 0.93, 0.70).route("看摄像头在线率"))
 
     assert plan is None or plan.level != "L0"
+
+
+# ------------------------------------------------------------
+# 场景 vs 设备：类型词后面跟具体设备名，是问设备不是开关画面
+# ------------------------------------------------------------
+def test_device_name_after_monitor_is_not_scene():
+    """「查看 监控5F客梯厅」问的是这台设备，不能被判成场景指令。
+
+    线下实测：这条曾被 `_SCENE_MONITOR_CUE` 的 `.{0,4}` 吞掉，
+    判成 L0 → handoff 回旧链路 → 拉 268 台设备全量灌给模型。
+    """
+    for query in ("查看 监控5F客梯厅", "查看 监控 jk_zl_5f_0006"):
+        plan = asyncio.run(_router("other", 0.50, 0.70).route(query))
+        assert plan is None or plan.level != "L0", query
+
+
+def test_scene_command_ending_with_type_word_still_hands_off():
+    """「打开5F客梯厅的监控」类型词在句末，仍然是开画面的场景指令。"""
+    plan = asyncio.run(_router("other", 0.50, 0.70).route("打开5F客梯厅的监控"))
+
+    assert plan is not None and plan.level == "L0"
+
+
+def test_monitor_window_words_are_still_scene():
+    """「画面/窗口」这类泛称不能被当成设备名。"""
+    for query in ("调出监控画面", "关闭监控窗口"):
+        plan = asyncio.run(_router("other", 0.50, 0.70).route(query))
+        assert plan is not None and plan.level == "L0", query
+
+
+def test_open_monitor_with_device_name_is_scene_not_query():
+    """「打开监控7F西通道西向东」是开画面，不能因为带了设备名被判成查询。
+
+    回归点：`_asks_specific_device` 只应对「查看类」生效。线上实测过
+    「打开监控X」掉进 L2，模型只能回答"没有控制类工具"。
+    这里把场景分压到 0.30（向量兜不住），确保命中靠的是打开类正则。
+
+    注意：场景动作最终由 app.py 的 SceneMcpClient 下发（scene 是 direct_client，
+    需要逐请求 X-Session-Id），loop 这边只负责把话认出来并 handoff。
+    """
+    plan = asyncio.run(_router("other", 0.50, 0.30).route("打开监控7F西通道西向东"))
+
+    assert plan is not None
+    assert plan.level == "L0"
+    assert plan.domain == "scene"
+
+
+def test_open_monitor_without_device_still_hands_off():
+    """只说「打开监控」、没给设备 → 同样 handoff 给场景通道。"""
+    plan = asyncio.run(_router("other", 0.50, 0.30).route("打开监控"))
+
+    assert plan is not None and plan.level == "L0"
+
+
+def test_open_monitor_with_trailing_type_word_hands_off():
+    """「打开7F西通道监控」（类型词在句末）也要走场景通道。
+
+    线上实测过这条掉进 L2：那里只有查询工具，模型只能回答"没有控制类工具"。
+    句末式说法比「打开监控X」更自然，两种都要认。
+    """
+    plan = asyncio.run(_router("other", 0.50, 0.30).route("打开7F西通道监控"))
+
+    assert plan is not None
+    assert plan.level == "L0"
+    assert plan.domain == "scene"
+    assert plan.reason == "scene_monitor"
