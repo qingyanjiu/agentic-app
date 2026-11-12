@@ -1890,7 +1890,7 @@ def _scene_followup_pending(user_id: str, session_id: str, query: str) -> bool:
 # 要的是点位 tag = 设备编号。这里用设备台账（走 device_query 的缓存）把名字换成编号：
 #   唯一命中 → 注入 slots.device_tag，场景图直接用，不再追问；
 #   多台/没有 → 回一句追问，引导用户补设备类型或编号。
-_SCENE_DEVICE_HINT = re.compile(r"监控|摄像头|画面|视频")
+# 设备线索判定已挪到 scene_resolve.has_device_reference（要区分"视角指令"和"点设备"）
 # 话术里已经有设备编码的，不用再解析
 _DEVICE_CODE_HINT = re.compile(r"[A-Za-z][A-Za-z0-9_\-]{2,}")
 _scene_device_toolbox = None
@@ -1927,6 +1927,7 @@ async def run_scene_control_graph(websocket, query: str, user_id: str, session_i
     """
     # 追问时把候选转成结构化列表（可点），见下面的 clarify 分支
     from agent.loop.scene_resolve import clarify_entities, clarify_headline
+    from agent.loop.scene_resolve import has_device_reference
 
     graph = await get_scene_graph()
     if graph is None:
@@ -1960,9 +1961,10 @@ async def run_scene_control_graph(websocket, query: str, user_id: str, session_i
         prev_candidates = (prev.slots or {}).get("device_candidates") or []
 
     # 有候选时也要走解析：用户可能只回「第三个」，句子里没有设备类型词
-    needs_device = bool(query) and (
-        bool(_SCENE_DEVICE_HINT.search(query)) or bool(prev_candidates)
-    )
+    # 只有本轮真说了设备线索才去查台账。追问态下「切回整栋楼」这类视角指令
+    # 之前也会被拉去查全表，回用户一句「匹配到 268 台设备」。
+    asks_device = resolve_query or query
+    needs_device = bool(asks_device) and has_device_reference(asks_device)
     if needs_device and not _DEVICE_CODE_HINT.search(query):
         try:
             device_tag, clarify, candidates = await _resolve_scene_device_tag(

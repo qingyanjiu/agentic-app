@@ -238,3 +238,13 @@ def test_name_in_text_finds_full_name_with_spaces():
     ]
     assert dq._name_in_text("打开 7F西通道西向东", rows) == "7F西通道西向东"  # 取最长的
     assert dq._name_in_text("打开监控", rows) is None
+
+
+def test_pure_floor_is_not_a_device_name():
+    """「打开7F监控」抽出来的 7F 是范围，不是设备名。"""
+    import agent.loop.domains.device_query as dq
+
+    assert dq._name_fallback("打开7F监控") is None
+    assert dq._name_fallback("打开7楼的监控") is None
+    assert dq._name_fallback("打开负一层的监控") is None
+    assert dq._name_fallback("打开7F西通道监控") == "7F西通道"

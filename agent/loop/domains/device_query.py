@@ -97,6 +97,10 @@ _INLINE_ACTION = re.compile(r"打开|开启|查看|调出|切到|切换到|显�
 _TRAILING_TYPE = re.compile(
     r"(?:监控|摄像头|画面|视频|门禁|道闸|梯控|广播|电表|水表|设备)$"
 )
+# 纯楼层写法：7F / 7楼 / -1F / 负一层 / 地下一层
+_PURE_FLOOR = re.compile(
+    r"(?:-?\d+|负[一二三四五六七八九十]|地下[一二三四五六七八九十]?)\s*(?:[Ff]|楼|层)?"
+)
 
 
 def _clean_candidate(raw: str) -> str | None:
@@ -106,6 +110,10 @@ def _clean_candidate(raw: str) -> str | None:
     text = text.strip(" -_")
     text = _TRAILING_TYPE.sub("", text).strip(" -_")
     if len(text) < 2 or text in _NAME_STOP:
+        return None
+    # 纯楼层不算设备名：「打开7F监控」抽出来的 7F 是范围，不是哪一台设备。
+    # 楼层由 normalize_floor 单独处理，这里必须放过，否则会去匹配全层 10 台。
+    if _PURE_FLOOR.fullmatch(text):
         return None
     return text
 

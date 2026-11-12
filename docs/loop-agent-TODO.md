@@ -27,6 +27,8 @@
 | T15 | **全局 history 与会话记忆**（跨进程/跨副本） | P2 | 2 天 | 与 T6 合并实施 | 高 |
 | T16 | **会话池容量与过期回收**（含 `session_state` 真泄漏） | P3 | 半天 | 无 | 中 |
 | T17 | **其余业务域接入结构化实体**（person/vehicle/告警 + 行内 `entity:` 链接） | P2 | 每域半天 | 前端 `list` 事件落地后 | 中 |
+| T18 | **loop/graph 解耦**（删 legacy 的前置改造，见 `docs/loop-graph-解耦方案.md`） | **P1** | ≈ 5.5 人日（P0 已完成） | 无 | 中 |
+| T19 | **楼层级监控画面能力**（场景侧 `scene` 只有单点位 tag） | P2 | 待评估 | 与场景/UE 侧确认 | 中 |
 
 **顺序建议**：T1 → 等业务语料（T2）→ T3 → T4 → 用 T1 数据决定是否做 T5。
 
@@ -569,7 +571,42 @@ if state and (time.time() - state.last_update_time) > self.timeout:
 
 ---
 
-## 7. 明确不做的
+## 7. T18 loop / graph 解耦（删 legacy 的前置）
+
+### 7.1 要解决的问题
+
+最终形态是**保 loop、删 legacy**（13 张业务图 + `InfoDoubleCheckPipeline` + 13 个 Handler）。
+现在两条链路是"插在同一段代码里"的：`app.py` 的 `/chat` 端点 938 行里混装
+KB 分支、loop 分支、场景分流、业务状态机、多模态兜底。直接删会得到"端点半残"的状态。
+
+**做法**：把入口收成一个通道注册表（`agent/channels/`），legacy 变成可整体拔掉的目录；
+删除当天只改一行注册，`app.py` 与 `agent/loop` 不用动。
+
+### 7.2 必读文档
+
+| 文档 | 作用 |
+|---|---|
+| `docs/loop-graph-解耦方案.md` | **主文档**：目标结构、接缝契约（`TurnContext` / `ChannelResult`）、P0–P5 分步、实测工作量、删除演练清单 |
+| `docs/loop-agent-改造文档.md` §5.8 / §7 | 场景判定口径（`should_route_scene` 两层规则），抽场景通道时必须保持一致 |
+| `docs/问题排查记录.md` 案例 14 | 只发 `answer` 不发 `done` 会让前端永久转圈 —— 分发器必须负责补 `done` |
+
+### 7.3 进度
+
+| 步骤 | 状态 |
+|---|---|
+| P0 边界守卫测试（`tests/test_module_boundaries.py`，6 个用例） | ✅ 已完成 2026-11-12 |
+| P1 契约 + 分发器 | 未开始 |
+| P2 场景通道抽取 | 未开始 |
+| P3 状态机 / 13 个 flows 搬运 | 未开始 |
+| P4 注册表接 `LOOP_FALLBACK_MODE` | 未开始 |
+| P5 删除演练 + 冒烟 | 未开始 |
+
+**硬约束**：`agent/loop/**` 不许 import `graph` / `langchain*` / `langgraph`，
+`graph/**` 不许 import `agent.loop` —— 由 P0 的测试守着，新增即失败。
+
+---
+
+## 8. 明确不做的
 
 | 事项 | 原因 |
 |---|---|
@@ -577,11 +614,11 @@ if state and (time.time() - state.last_update_time) > self.timeout:
 | 把 scene 纳入 loop | 破坏性动作，需要显式确认，走专用通道 |
 | 把 knowledge（RAG）纳入 loop | 自带检索-生成流程，直接暴露 tool 反而更难控 |
 | 换更大的 embedding 模型 | 当前瓶颈是语料覆盖，不是模型容量 |
-| 全量删除旧图 | 等 T1 数据证明 L1/L2 稳定后再评估 |
+| 全量删除旧图 | 见 T18：先按 `docs/loop-graph-解耦方案.md` 解耦，再删 legacy |
 
 ---
 
-## 8. 与主文档的关系
+## 9. 与主文档的关系
 
 - 已完成内容见 `docs/loop-agent-改造文档.md`
 - 本文档只记录**未实施**的后续项

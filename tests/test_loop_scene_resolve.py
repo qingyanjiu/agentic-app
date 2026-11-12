@@ -73,7 +73,8 @@ def test_multiple_matches_return_candidates(monkeypatch):
     tag, clarify, candidates = _resolve(box, "打开7F西通道监控")
 
     assert tag is None
-    assert "补充设备类型" in clarify
+    # 用户已经说了「监控」，就别再让他补设备类型
+    assert "点位名称" in clarify
     assert [c["code"] for c in candidates] == ["jk_zl_7f_0002", "jk_zl_7f_0003"]
 
 
@@ -201,21 +202,22 @@ def test_seven_floor_monitor_question_returns_structured_candidates(monkeypatch)
     tag, clarify, candidates = _resolve(box, "7楼有哪些监控")
 
     assert tag is None
-    assert clarify and "补充设备类型" in clarify
-    assert len(candidates) == 6                     # MAX_CANDIDATES
+    assert clarify and "点位名称" in clarify
+    assert len(candidates) == 10                    # 7F 整层，MAX_CANDIDATES=12 不截断
     assert all(c["code"].startswith("jk_zl_7f_") for c in candidates)
 
     entities = candidate_entities(candidates)
     assert entities is not None
     data = entities.to_dict()
     assert data["kind"] == "device"
-    assert len(data["items"]) == 6
+    assert len(data["items"]) == 10
     assert data["items"][0]["id"] == candidates[0]["code"]
     assert data["items"][0]["label"] == candidates[0]["name"]
 
     # 文本只留标题句，候选明细交给 list 事件，避免同一个清单显示两遍
     headline = clarify_headline(clarify)
-    assert "匹配到 6 台设备" in headline
+    assert "匹配到 10 台设备" in headline
+    assert "7F" in headline
     assert "jk_zl_7f_" not in headline
     assert "\n" not in headline
 
@@ -307,3 +309,52 @@ def test_merged_query_still_resolves(monkeypatch):
 
     assert tag == "jk_zl_7f_0002"
     assert clarify is None
+
+
+# ------------------------------------------------------------ 楼层级请求 / 视角指令
+def test_has_device_reference_truth_table():
+    """追问态下要知道这句话有没有"具体设备"：视角指令不能被拿去查台账。"""
+    from agent.loop.scene_resolve import has_device_reference
+
+    for query in [
+        "打开7F监控", "第三个", "这个", "打开7F西通道西向东", "7楼有哪些监控",
+    ]:
+        assert has_device_reference(query) is True, query
+    for query in [
+        "切回整栋楼", "切回1楼", "全部楼层", "返回到园区",
+    ]:
+        assert has_device_reference(query) is False, query
+
+
+def test_floor_only_request_lists_whole_floor(monkeypatch):
+    """「打开7F监控」是看整层，不是选一台：把该层全部点位列出来，别只说 6 台。"""
+    from agent.loop.scene_resolve import clarify_entities, clarify_headline
+
+    _fresh(monkeypatch)
+    box = _FakeToolbox(_ten_cameras_7f())
+
+    tag, clarify, candidates = _resolve(box, "打开7F监控")
+
+    assert tag is None
+    assert len(candidates) == 10
+    headline = clarify_headline(clarify)
+    assert "10 台设备" in headline
+    assert "7F 楼层" in headline               # 说清是"这一层"，不是某个名字
+    # 用户已经说了「监控」，不该再让他补充设备类型
+    assert "补充设备类型" not in headline
+    assert "点位名称" in headline
+
+    entities = clarify_entities(clarify, candidates)
+    assert entities is not None and len(entities.items) == 10
+
+
+def test_floor_without_type_asks_for_type(monkeypatch):
+    """「打开7楼的」没说类型：这时让他补类型才是对的。"""
+    from agent.loop.scene_resolve import clarify_headline
+
+    _fresh(monkeypatch)
+    box = _FakeToolbox(_ten_cameras_7f())
+
+    _, clarify, _ = _resolve(box, "打开7楼的")
+
+    assert "补充设备类型" in clarify_headline(clarify)

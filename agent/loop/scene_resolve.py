@@ -28,8 +28,9 @@ from .runtime import McpToolbox
 
 logger = logging.getLogger(__name__)
 
-# 最多列出/记住几个候选（用户口头也只会数到前几个）
-MAX_CANDIDATES = 6
+# 一次最多列/记几个候选。7F 一层就有 10 台监控，6 台会把后面几台截掉，
+# 用户看得见却点不到；12 能覆盖单层常规数量。
+MAX_CANDIDATES = 12
 
 _CN_DIGITS = {
     "一": 1, "二": 2, "三": 3, "四": 4, "五": 5,
@@ -59,10 +60,47 @@ def _ordinal_index(query: str) -> int | None:
     return _CN_DIGITS.get(raw)
 
 
-def _question(rows: list[dict], scope: str) -> str:
+_TYPE_WORD_RE = re.compile(r"监控|摄像头|画面|视频|门禁|道闸|梯控|广播|电表|水表")
+# 动作词：判断「这句话除动作之外还说了什么」时要先剥掉
+_STRIP_ACTION = re.compile(
+    r"^(?:切回|切到|切换到|切换|回到|返回|退出|关闭|关掉|打开|开启|查看|调出|显示|展示|看看|看一下|看下|看)+"
+)
+# 范围词：整栋楼/全部楼层这种是场景视角，不是设备名
+_SCOPE_WORD = re.compile(r"整栋|全楼|整个|全部|所有|园区|整层|全层|楼层|大楼")
+
+
+def has_device_reference(query: str) -> bool:
+    """本轮话术里有没有"具体设备"的线索。
+
+    追问态下不能见到什么都去查台帐：`切回整栋楼` 没有设备线索，
+    之前却被拿去查全表，回了用户一句「匹配到 268 台设备」。
+    """
+    text = (query or "").strip()
+    if not text:
+        return False
+    if _ORDINAL_RE.search(text) or _PRONOUN_RE.search(text):
+        return True
+    if _TYPE_WORD_RE.search(text):
+        return True
+    residual = _STRIP_ACTION.sub("", text).strip(" 的，,。：:")
+    if len(residual) < 3 or _SCOPE_WORD.search(residual):
+        return False
+    return True
+
+
+def _question(
+    rows: list[dict],
+    scope: str,
+    *,
+    total: int | None = None,
+    hint: str | None = None,
+) -> str:
+    count = total if total is not None else len(rows)
+    head = f"{scope}匹配到 {count} 台设备"
+    if count > len(rows):
+        head += f"（先列出前 {len(rows)} 台）"
     return (
-        f"{scope}匹配到 {len(rows)} 台设备，请补充设备类型（监控/门禁/广播等）"
-        f"或直接说序号/编号：\n"
+        f"{head}。{hint or '请说序号/编号，或补充设备名称'}：\n"
         + "\n".join(_candidate_line(row) for row in rows)
     )
 
@@ -156,7 +194,7 @@ async def resolve_scene_device_tag(
         return None, "这台设备没有设备编号，无法作为场景点位 tag。", pool
 
     if pool and _PRONOUN_RE.search(query) and len(pool) > 1:
-        return None, _question(pool, "你指的是哪一台？"), pool
+        return None, _question(pool, "你指的是哪一台？", hint="请说序号，或直接说点位名称"), pool
 
     # 2) 正常按名称查台账
     _, matched, floor, keyword = await find_devices(toolbox, query)
@@ -174,5 +212,18 @@ async def resolve_scene_device_tag(
 
     # 3) 多台：给候选，后续可以按序号选
     rows = matched[:MAX_CANDIDATES]
-    scope = f"「{keyword}」" if keyword else "这个条件"
-    return None, _question(rows, scope), rows
+    typed = bool(_TYPE_WORD_RE.search(query))
+    if keyword:
+        scope = f"「{keyword}」"
+    elif floor:
+        # 「打开7F监控」这类：说了楼层和类型，没说具体点位
+        scope = f"{floor} 楼层"
+    else:
+        scope = "这个条件"
+    if typed and not keyword:
+        hint = "该层点位比较多，请说具体点位名称或序号"
+    elif typed:
+        hint = "请说具体点位名称或序号"
+    else:
+        hint = "请补充设备类型（监控/门禁/广播等），或直接说点位名称/序号"
+    return None, _question(rows, scope, total=len(matched), hint=hint), rows
