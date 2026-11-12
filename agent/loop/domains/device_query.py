@@ -97,6 +97,9 @@ _INLINE_ACTION = re.compile(r"打开|开启|查看|调出|切到|切换到|显�
 _TRAILING_TYPE = re.compile(
     r"(?:监控|摄像头|画面|视频|门禁|道闸|梯控|广播|电表|水表|设备)$"
 )
+# 疑问词：抽出来的"名字"里带这些，说明它根本不是设备名
+# （「道闸设备有哪些」曾把「设备有哪些」当设备名，直接 0 命中报"没找到"）
+_QUESTION_WORD = re.compile(r"有哪些|有什么|哪些|多少|几个|几台|几场|都有|什么")
 # 纯楼层写法：7F / 7楼 / -1F / 负一层 / 地下一层
 _PURE_FLOOR = re.compile(
     r"(?:-?\d+|负[一二三四五六七八九十]|地下[一二三四五六七八九十]?)\s*(?:[Ff]|楼|层)?"
@@ -110,6 +113,9 @@ def _clean_candidate(raw: str) -> str | None:
     text = text.strip(" -_")
     text = _TRAILING_TYPE.sub("", text).strip(" -_")
     if len(text) < 2 or text in _NAME_STOP:
+        return None
+    # 带疑问词的"名字"不是设备名：「道闸设备有哪些」别把「设备有哪些」当名称去匹配
+    if _QUESTION_WORD.search(text):
         return None
     # 纯楼层不算设备名：「打开7F监控」抽出来的 7F 是范围，不是哪一台设备。
     # 楼层由 normalize_floor 单独处理，这里必须放过，否则会去匹配全层 10 台。

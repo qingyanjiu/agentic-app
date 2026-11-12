@@ -248,3 +248,42 @@ def test_pure_floor_is_not_a_device_name():
     assert dq._name_fallback("打开7楼的监控") is None
     assert dq._name_fallback("打开负一层的监控") is None
     assert dq._name_fallback("打开7F西通道监控") == "7F西通道"
+
+
+def test_question_words_are_not_device_names():
+    """「道闸设备有哪些」曾把「设备有哪些」当设备名 → 0 命中 → 误报"没找到"。"""
+    import agent.loop.domains.device_query as dq
+
+    assert dq._name_fallback("道闸设备有哪些") is None
+    assert dq._name_fallback("门禁设备有哪些") is None
+    assert dq._name_fallback("监控有几个") is None
+    # 真名字照旧
+    assert dq._name_fallback("查看 监控5F客梯厅") == "5F客梯厅"
+
+
+def test_gate_list_query_returns_both_devices(monkeypatch):
+    import agent.loop.domains.device_query as dq
+
+    def gate(name, code):
+        return {
+            "id": f"id-{code}", "name": name, "rawName": name, "code": code,
+            "spaceName": "园区/南门", "status": "1", "syncSource": "1",
+        }
+
+    monkeypatch.setattr(dq, "_CACHE_TTL", 300.0)
+    clear_device_cache()
+
+    box = _FakeToolbox([
+        gate("南门道闸进口", "dz_park_0001"),
+        gate("南门道闸出口", "dz_park_0002"),
+    ])
+    tool = _list_tool(box)
+
+    out = asyncio.run(tool.execute({"query": "道闸设备有哪些"}))
+
+    assert "没有找到" not in out.text
+    assert out.text.splitlines()[0] == "2 台设备："
+    assert out.entities is not None
+    # 前端靠 text.startsWith(title) 去重，这段必须成立
+    assert out.text.strip().startswith(out.entities.to_dict()["title"])
+    assert [i.id for i in out.entities.items] == ["dz_park_0001", "dz_park_0002"]
