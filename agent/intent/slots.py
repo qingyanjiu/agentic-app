@@ -561,7 +561,10 @@ def extract_security_status_slots(query: str) -> dict:
     # 2. AI 告警总览：今日告警数、累计告警、算法类型数、识别准确率（无需时间）
     elif re.search(
         r"告警总览|AI告警概览|智能告警概览|今日告警数|今日告警.*多少|"
-        r"累计告警|算法类型|识别准确率",
+        r"累计告警|算法类型|识别准确率|"
+        # 「安防概览」这类笼统问法没有专属工具，落到覆盖面最广的告警总览，
+        # 而不是默认的告警列表（那会返回一堆明细，答不上"概览"）。
+        r"安防概览|安防总览|安全概览|安全总览|整体安全",
         q,
     ):
         slots["event_type"] = "ai_overview"
@@ -886,6 +889,7 @@ def extract_energy_status_slots(query: str) -> dict:
     统一抽取能源态势相关的所有 slot
     """
     slots = {
+        # count 是"没认出子类型"的标记，由 _generic.resolve 兜底成 default_type
         "query_type": "count",
         "date": parse_time_slot(query),
     }
@@ -942,7 +946,7 @@ def extract_energy_status_slots(query: str) -> dict:
     elif re.search(
         r"总体能耗|总能耗|能耗统计|用电.*统计|用水.*统计|年度.*能耗|今日.*能耗|"
         r"电.*统计|水.*统计|能源.*统计|能源.*概览|能耗.*概览|用电.*总量|用水.*总量|"
-        r"今天用.*电|今天用.*水|用电情况|用水情况",
+        r"今天用.*电|今天用.*水|用电情况|用水情况|电费|水费",
         q,
     ):
         slots["query_type"] = "overall_energy"
@@ -1289,15 +1293,23 @@ def extract_meeting_status_slots(query: str) -> dict:
     统一抽取会议管理相关的所有 slot
     """
     slots = {
-        # 兜底用「会议统计」——tool_map 里没有 count，用 count 会让工具解析成 None
-        "event_type": "meeting_statistics",
+        # count 是"没认出子类型"的标记：旧图/追问逻辑靠它反问，不要改成工具名
+        "event_type": "count",
         "date": parse_time_slot(query),
     }
 
     q = query
 
-    # 1. 当日会议安排
+    # 0. 会议数量：问的是"多少场"，不是要列表。
+    #    必须排在下面的 `今天.*会` 之前——否则「今天开了多少会」会被判成当日会议列表。
     if re.search(
+        r"多少.*会|几场会|几.*个会|会议.*(数量|场次)|会议量|开了.*会",
+        q,
+    ):
+        slots["event_type"] = "number_of_meetings"
+
+    # 1. 当日会议安排
+    elif re.search(
         r"当日.*会议|今天.*会议|今日.*会议|会议.*安排|会议.*列表|有什么会|"
         r"今天.*会|今日.*会|会议.*日程|会议.*计划",
         q,

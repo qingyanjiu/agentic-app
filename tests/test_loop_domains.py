@@ -115,3 +115,105 @@ def test_event_type_domains_resolve_distinct_tools():
     for query in ["今天的告警", "巡检趋势"]:
         _query_type, tool, _args, _missing = security_status.CONFIG.resolve(query)
         assert tool, query
+
+
+# ------------------------------------------------------------------
+# 子类型 → MCP 工具 全量矩阵
+#
+# 用真实说法（不是规则原文）当输入，锁住"这句话该打哪个 MCP 工具"。
+# 加新说法就往这张表里加一行——MISS 就说明规则漏了词或顺序被抢了。
+# ------------------------------------------------------------------
+def _configs():
+    from agent.loop.domains import (
+        canteen_status,
+        compositive_overview,
+        device_status,
+        emergency_fire,
+        emergency_perimeter,
+        energy_status,
+        information_status,
+        meeting_status,
+        security_status,
+        twins_inspection,
+        vehicle_status,
+    )
+
+    return {m.CONFIG.name: m.CONFIG for m in [
+        meeting_status, canteen_status, security_status, energy_status,
+        information_status, vehicle_status, twins_inspection,
+        emergency_fire, emergency_perimeter, compositive_overview, device_status,
+    ]}
+
+
+SUBTYPE_MATRIX = [
+    # 会议
+    ("meeting_status", "列出各会议室使用情况", "meeting_room_overview"),
+    ("meeting_status", "会议室概览", "meeting_room_overview"),
+    ("meeting_status", "会议室现在有人吗", "meeting_room_status"),
+    ("meeting_status", "哪些会议室空闲", "meeting_room_status"),
+    ("meeting_status", "今天开了多少会", "number_of_meetings"),
+    ("meeting_status", "今天有几场会", "number_of_meetings"),
+    ("meeting_status", "今天的会议列表", "room_meet_list_by_day"),
+    ("meeting_status", "今天有什么会", "room_meet_list_by_day"),
+    ("meeting_status", "哪个会议室用得最多", "high_freq_meeting_rooms"),
+    ("meeting_status", "会议室使用排行", "high_freq_meeting_rooms"),
+    ("meeting_status", "平均会议时长", "meeting_statistics"),
+    # 食堂
+    ("canteen_status", "今天食堂多少人", "dining_count"),
+    ("canteen_status", "本周菜谱", "week_menu"),
+    ("canteen_status", "什么菜最受欢迎", "dish_rank"),
+    # 安防
+    ("security_status", "今天的告警", "alarm_list"),
+    ("security_status", "安防概览", "ai_overview"),
+    ("security_status", "告警总览", "ai_overview"),
+    ("security_status", "安全指数", "security_index"),
+    ("security_status", "园区安全吗", "security_index"),
+    ("security_status", "告警趋势", "ai_trend"),
+    ("security_status", "巡查任务", "patrol"),
+    # 能源
+    ("energy_status", "今天用水多少", "realtime_water"),
+    ("energy_status", "本月电费", "overall_energy"),
+    ("energy_status", "总能耗", "overall_energy"),
+    ("energy_status", "用电排名", "electricity_rank"),
+    ("energy_status", "水表在线情况", "metering_equipment"),
+    # 其余域的关键子类型
+    ("information_status", "今天发了几条信息", "info_view"),
+    ("vehicle_status", "还剩多少停车位", "parking_space"),
+    ("vehicle_status", "今天的车辆通行记录", "traffic_flow"),
+    ("twins_inspection", "今天巡检任务", "today_tasks"),
+    ("twins_inspection", "巡检统计", "inspection_statistics"),
+    ("emergency_fire", "消防设备有多少", "fire_assets"),
+    ("emergency_perimeter", "周界告警统计", "perimeter_alarm_stats"),
+    ("compositive_overview", "园区基本情况", "basic_info"),
+    ("device_status", "设备健康度", "category_health"),
+]
+
+
+@pytest.mark.parametrize("domain, query, expected_type", SUBTYPE_MATRIX)
+def test_subtype_maps_to_expected_mcp_tool(domain, query, expected_type):
+    config = _configs()[domain]
+    query_type, tool, _args, _missing = config.resolve(query)
+
+    assert query_type == expected_type, (
+        f"{domain} / {query!r} 判成 {query_type}（期望 {expected_type}），"
+        f"会打到 {tool}"
+    )
+    # 抽出来的子类型必须真能映射到工具，否则等于"后端未接入"
+    assert tool == config.tool_map[expected_type]
+
+
+@pytest.mark.parametrize("domain", sorted({item[0] for item in SUBTYPE_MATRIX}))
+def test_neutral_query_falls_back_to_a_real_tool(domain):
+    """兜底子类型必须在 tool_map 里。
+
+    slots.py 里有 7 个抽取器的兜底原来写成 `count`，而 tool_map 从来没有 count，
+    结果"规则没命中"就变成工具解析成 None → 用户看到"后端暂未接入"。
+    """
+    config = _configs()[domain]
+
+    for probe in ["你好", "随便问问"]:
+        query_type, tool, _args, _missing = config.resolve(probe)
+        assert tool is not None, (
+            f"{domain} / {probe!r} 落到 {query_type}（不在 tool_map），"
+            f"default={config.default_type}"
+        )

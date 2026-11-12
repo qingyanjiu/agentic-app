@@ -1266,3 +1266,37 @@ query_type = slots.get("query_type") or self.default_type
 - `安防概览` → 仍是 `security:getSecurityAlarmList`（抽取器没有「概览」关键词）；
 - `今天开了多少会` → `room_meet_list_by_day`（规则的 `今天.*会` 抢在「会议数量」之前）；
 - `本月电费` → `energy_status` 抽到 `count`，不在 `tool_map` → 工具解析为 `None`。
+
+### 21.12 再修三处子类型判定（并补一张全量矩阵测试）
+
+21.11 之后又发现三处判定不准，同时确认「`count` 兜底」有两种截然不同的用法：
+
+| 问题 | 现象 | 修法 |
+|---|---|---|
+| 会议数量 | 「今天开了多少会」被判成当日会议列表（`今天.*会` 抢先） | 新增「会议数量」规则并**排在最前**：`多少.*会 / 几场会 / 会议.*数量 / 开了.*会` |
+| 安防概览 | 「安防概览」落到告警列表（返回一堆明细，答不上"概览"） | 关键词并入 AI 告警总览：`安防概览/安防总览/安全概览/整体安全` → `getAlarmView` |
+| 能源兜底 | 抽取器兜底 `count` 不在 `tool_map` → 工具解析成 `None` → 「本月电费」直接"后端暂未接入" | 不动抽取器，改在 `_generic.resolve` 兜底（见下） |
+
+**关于 `count`**：它在 fire / perimeter / inspection / vehicle / device / meeting / energy
+六个抽取器里都是兜底值，语义是"没认出子类型"。旧链路（13 张图）**依赖这个标记触发反问**
+（「查下最新的消防」→ 图会问"设备台账还是实时告警"），所以：
+- 抽取器保持 `count` 不变，旧链路行为零变化；
+- 只在 loop 的 `_generic.resolve` 里把不在 `tool_map` 的子类型**映射到 `default_type`**。
+
+一开始我把抽取器的 `count` 改成具体工具名，结果 `test_graphs` 的两轮反问流程直接挂了——
+这正是"低层标记被上层当业务语义用"的典型坑，记在这里。
+
+**新增测试矩阵**（`tests/test_loop_domains.py`）：
+
+- `SUBTYPE_MATRIX`：11 个域 × 35 句真实说法 → 期望子类型 → 期望 MCP 工具，
+  MISS 会直接打印"判成什么、会打哪个工具"；
+- `test_neutral_query_falls_back_to_a_real_tool`：每个域用「你好/随便问问」探一次，
+  断言 `resolve()` 一定拿得到工具——用来防 `count` 这类"兜底不在映射表"的坑。
+
+覆盖的域：meeting / canteen / security / energy / information / vehicle /
+twins_inspection / emergency_fire / emergency_perimeter / compositive_overview / device_status。
+
+**仍未解决**：`args_builder` 一个域都没用，MCP 调用的参数恒为 `{}`，
+所以「本月电费」虽然落到 `getOverallEnergyConsu`，返回的仍是接口默认口径
+（`todayElectricity/yearElectricity`），日期范围没生效。要按时间取数得先确认
+各 Java 工具是否接受 `startTime/endTime`。

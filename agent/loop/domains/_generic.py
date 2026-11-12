@@ -51,6 +51,10 @@ class QueryDomain:
             or slots.get("event_type")
             or self.default_type
         )
+        # `count` 是抽取器的"没认出子类型"标记（旧图靠它反问），它不在 tool_map 里。
+        # 到 loop 这一层必须落到域默认工具，否则工具解析成 None → 用户看到"后端暂未接入"。
+        if query_type not in self.tool_map:
+            query_type = self.default_type
         tool = self.tool_map.get(query_type)
         missing = [k for k in self.required.get(query_type, ()) if not slots.get(k)]
         args = self.args_builder(slots) if self.args_builder else {}
