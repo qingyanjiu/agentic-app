@@ -299,6 +299,37 @@ def _name_in_text(query: str, rows: list[dict]) -> str | None:
     return best
 
 
+# 地点词别名：用户口语 vs 台账里的名字
+#
+# 实测门禁 200 台里，南门那 8 台的名称是「南门人脸进口西」、空间名是「园区/园区南大门」——
+# 「大门口」「出入口」这些词在台账里**一个字都不存在**，直接匹配必然 0 命中。
+_PLACE_ALIAS: dict[str, tuple[str, ...]] = {
+    "大门口": ("南门",),
+    "出入口": ("南门",),
+    "门口": ("南门",),
+    "大门": ("南门",),      # 「大门」自己也能中「园区南大门」，别名是兜底
+}
+
+# 直接说得出地点名（南门/北门…）时，不用走别名，命中就能过滤
+_PLACE_WORDS = ("南门", "北门", "东门", "西门", "大门口", "出入口", "门口", "大门")
+
+
+def _place_in_query(query: str) -> str | None:
+    """query 里直接出现的地点词（南门/大门口…），取最长的一个。"""
+    text = query or ""
+    hits = [word for word in _PLACE_WORDS if word in text]
+    return max(hits, key=len) if hits else None
+
+
+def _place_terms(keyword: str) -> tuple[str, ...]:
+    """关键词 + 它的地点别名，匹配时依次尝试。"""
+    terms = [keyword]
+    for key, aliases in _PLACE_ALIAS.items():
+        if key in (keyword or ""):
+            terms.extend(a for a in aliases if a not in terms)
+    return tuple(terms)
+
+
 def _row_matches_keyword(row: dict, keyword: str) -> bool:
     kw = keyword.strip().lower()
     if not kw:
@@ -497,6 +528,9 @@ def _filter_rows(
 
     if not keyword:
         keyword = _name_in_text(query, rows)
+    if not keyword:
+        # 「南门有哪些门禁」：地点词本身就是过滤条件（台账里有「园区/园区南大门」）
+        keyword = _place_in_query(query)
     if not keyword and not floor:
         # 「大门口有哪些门禁」：area 不是楼层（大门口/南门/园区），
         # 但它是地点，能匹配 spaceName。不当关键词用就会被忽略、列出全部门禁。
@@ -507,6 +541,21 @@ def _filter_rows(
         rows = [row for row in rows if _row_matches_floor(row, floor)]
     if keyword:
         matched = [row for row in rows if _row_matches_keyword(row, keyword)]
+        if not matched:
+            # 地点口语 → 台账名：「大门口」「出入口」在台账里不存在，
+            # 但南门那几台叫「南门人脸进口西」/「园区/园区南大门」
+            aliases = _place_terms(keyword)[1:]
+            alias_hits = [
+                row for row in rows
+                if any(_row_matches_keyword(row, term) for term in aliases)
+            ]
+            if alias_hits:
+                logger.info(
+                    f"[device_query] 地点词「{keyword}」按「{aliases[0]}」"
+                    f"匹配到 {len(alias_hits)} 台"
+                )
+                keyword = aliases[0]
+                matched = alias_hits
         if not matched:
             # 方位词对不上设备名（「7F西侧」vs「7F西通道西向东」）：放宽一次，
             # 多台就交给调用方追问，总比回「没有找到」强。

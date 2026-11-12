@@ -322,3 +322,100 @@ def test_keyword_matches_space_name():
     assert dq._row_matches_keyword(row, "大门口") is True
     assert dq._row_matches_keyword(row, "南门") is True
     assert dq._row_matches_keyword(row, "5F") is False
+
+
+# ---------------------------------------------------------------- 地点词别名
+class _SyncAwareToolbox:
+    """按 syncSource 过滤，模拟 MCP 服务端的口径（真机就是这么筛的）。"""
+
+    def __init__(self, rows):
+        self.rows = rows
+        self.calls = []
+
+    async def call(self, server, tool, args=None):
+        self.calls.append(args)
+        want = (args or {}).get("syncSource")
+        rows = [r for r in self.rows if want in (None, "", str(r["syncSource"]))]
+        return json.dumps(rows, ensure_ascii=False)
+
+
+def _gate_rows():
+    """贴近真实台账：南门 8 台（名称带「南门」，空间名「园区/园区南大门」）。"""
+    rows = []
+    for index, name in enumerate(
+        ["南门人脸进口西", "南门人脸进口东", "南门人脸出口西", "南门人脸出口东"]
+    ):
+        rows.append({
+            "id": f"a{index}", "name": name, "rawName": name,
+            "code": f"mj_park_000{index + 1}",
+            "spaceName": "园区/园区南大门", "status": "1", "syncSource": "0",
+        })
+    # 另外 4 台没有空间名，靠名称命中
+    for index, name in enumerate(
+        ["南门人脸进口西", "南门人脸出口西", "南门人脸出口东", "南门人脸进口东"]
+    ):
+        rows.append({
+            "id": f"b{index}", "name": name, "rawName": name,
+            "code": f"DEFAULT-DAHUA-V5-01{index}", "spaceName": None,
+            "status": "1", "syncSource": "0",
+        })
+    for index in range(5):
+        rows.append({
+            "id": f"c{index}", "name": f"5F门禁{index}", "rawName": f"5F门禁{index}",
+            "code": f"mj_5f_{index}", "spaceName": "园区/科研办公楼/5F",
+            "status": "1", "syncSource": "0",
+        })
+    for index, name in enumerate(["南门道闸进口", "南门道闸出口"]):
+        rows.append({
+            "id": f"d{index}", "name": name, "rawName": name,
+            "code": f"dz_park_000{index + 1}", "spaceName": "园区/园区南大门",
+            "status": "1", "syncSource": "1",
+        })
+    return rows
+
+
+def _gate_tool(rows):
+    box = _SyncAwareToolbox(rows)
+    domain = build_domain(box)
+    return next(t for t in domain.tools if t.name == "device_query__list"), box
+
+
+def test_place_alias_resolves_to_south_gate(monkeypatch):
+    """「大门口」「出入口」在台账里不存在，回落成「南门」去查。"""
+    import agent.loop.domains.device_query as dq
+
+    monkeypatch.setattr(dq, "_CACHE_TTL", 300.0)
+    tool, _ = _gate_tool(_gate_rows())
+
+    for query in ["大门口有哪些门禁", "出入口有哪些门禁", "南门有哪些门禁"]:
+        clear_device_cache()
+        out = asyncio.run(tool.execute({"query": query}))
+        first = out.text.splitlines()[0]
+        assert "关键词「南门」" in first, (query, first)
+        assert len(out.entities.items) == 8, (query, len(out.entities.items))
+
+
+def test_place_alias_does_not_leak_into_other_types(monkeypatch):
+    """同一个地点词换成道闸，只应命中 2 台道闸（syncSource 由服务端筛）。"""
+    import agent.loop.domains.device_query as dq
+
+    monkeypatch.setattr(dq, "_CACHE_TTL", 300.0)
+    clear_device_cache()
+    tool, _ = _gate_tool(_gate_rows())
+
+    out = asyncio.run(tool.execute({"query": "南门有哪些道闸"}))
+
+    assert out.text.splitlines()[0] == "2 台设备，关键词「南门」："
+    assert [i.id for i in out.entities.items] == ["dz_park_0001", "dz_park_0002"]
+
+
+def test_place_in_query_and_terms():
+    import agent.loop.domains.device_query as dq
+
+    assert dq._place_in_query("南门有哪些门禁") == "南门"
+    assert dq._place_in_query("大门口有哪些门禁") == "大门口"
+    assert dq._place_in_query("5楼有哪些门禁") is None
+
+    # 原词优先，别名兜底
+    assert dq._place_terms("大门口") == ("大门口", "南门")
+    assert dq._place_terms("南门") == ("南门",)

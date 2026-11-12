@@ -1529,3 +1529,47 @@ ERROR: Exception in ASGI application
 
 测试：`test_place_word_filters_by_space_name`、`test_keyword_matches_space_name`、
 `test_empty_list_result_falls_back_to_model`、`test_send_failure_does_not_break_the_turn`。
+
+### 21.15 地点词别名：大门口 / 出入口 → 南门
+
+21.14 加了 `spaceName` 匹配后仍查不到，是因为**台账里压根没有「大门口」「出入口」这两个词**。
+
+实测门禁 200 台（`listDeviceOnly syncSource=0`）：
+
+```
+名称含南门的 8 台：
+  南门人脸进口西  mj_park_0001   园区/园区南大门
+  南门人脸进口东  mj_park_0002   园区/园区南大门
+  南门人脸出口西  mj_park_0003   园区/园区南大门
+  南门人脸出口东  mj_park_0004   园区/园区南大门
+  （另有 4 台同名的 DEFAULT-DAHUA-* 编号，spaceName 为空）
+
+其余 192 台：spaceName 是「园区/科研办公楼/1F」这类楼层，或为空
+```
+
+也就是说：**地点名是「南门」（空间名里写作「园区南大门」），道闸那两台也叫「南门道闸进口/出口」**。
+
+修法（都是确定性的，不引入模型判断）：
+
+1. `_PLACE_ALIAS`：`大门口 / 出入口 / 门口 / 大门 → 南门`。
+   匹配时**先试原词，0 命中再试别名**；文案会改成实际用的词
+   （「关键词『南门』」），日志也记一条 `地点词「大门口」按「南门」匹配到 8 台`。
+2. `_PLACE_WORDS` + `_place_in_query`：能直接说出「南门」的，压根不用走别名
+   （之前「南门有哪些门禁」抽不到关键词，会把 200 台全列出来）。
+3. `_filter_rows` 的 `area` 兜底：`area` 不是楼层时当关键词用（21.14）。
+
+实测（13 台门禁 + 2 台道闸的仿真台账）：
+
+```
+大门口有哪些门禁   → 8 台（园区共 13 台），关键词「南门」
+出入口有哪些门禁   → 8 台（园区共 13 台），关键词「南门」
+南门有哪些门禁    → 8 台（园区共 13 台），关键词「南门」   ← 之前 13 台全列
+5楼有哪些门禁     → 5 台（园区共 13 台），楼层 5F
+南门有哪些道闸    → 2 台，关键词「南门」
+道闸设备有哪些    → 2 台
+```
+
+**这张别名表是数据驱动的**：将来有北门/东门/西门，直接在 `_PLACE_ALIAS` /
+`_PLACE_WORDS` 里加，不用改逻辑。测试：`test_place_alias_resolves_to_south_gate`、
+`test_place_alias_does_not_leak_into_other_types`、`test_place_in_query_and_terms`
+（用带 syncSource 过滤的假 MCP，模拟服务端口径）。
