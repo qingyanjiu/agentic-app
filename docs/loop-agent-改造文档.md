@@ -1404,3 +1404,33 @@ twins_inspection / emergency_fire / emergency_perimeter / compositive_overview /
 2. 去 `agent/intent/slots.py` 对应抽取器补关键词，或调整规则**顺序**（顺序即优先级，
    21.11/21.12 的坑都在顺序上：`今天.*会` 抢了「多少会」、`会议室.*使用` 抢了「使用情况」）；
 3. 在 `SUBTYPE_MATRIX` 里加一行把它锁住，再跑 `pytest tests/test_loop_domains.py`。
+
+### 21.13 修复：清单被回答两遍（L2 里模型复述工具结果）
+
+现场：「有哪些道闸设备」→ 先出 `list`（2 台），又出一段 `2 台设备：` + 同样两行。
+
+**为什么会重复**：这条问句分类置信度不够，走的是 **L2**。顺序是：
+
+```
+tool_start → device_query__list 执行 → entities 事件 → list（前端渲染 2 个标签）
+           → 模型继续生成回答 → system prompt 第 7 条要求"把清单逐行原样列出来"
+           → 同一份清单又变成文本 → 前端 enhanceDeviceLines 再转成 2 个标签
+```
+
+`passthrough` 在 L1 里是"直出、不让模型复述"，但 **L2 之前完全没用上这个标记**。
+
+修两层：
+
+1. **后端（根）** `LoopAgent`：工具产出 entities 且 `spec.passthrough` 为真时
+   **直接收尾**，不再回到模型 —— 少一次 LLM 调用，也从源头消掉复述。
+   出错（`is_error`）时仍回到模型，错误文案是写给模型看的。
+2. **前端（兜）** `AiChatDialog`：记下本轮已渲染的 `list.title`；
+   - `answer` 先到（L1）：`flushAnswer` 前就丢弃（原有逻辑）
+   - `list` 先到（L2）：`flushAnswer` 里判断"文本以该 title 开头"→ 丢弃
+   - 已落成消息的也做就地替换，覆盖 `tool` 事件提前 flush 的情况
+
+两层都做是刻意的：后端保证不再浪费一次模型调用；前端保证**不管顺序如何**都不会显示两遍
+（老后端、老前端混跑时也不会）。
+
+测试：`test_passthrough_tool_ends_run_without_model_restating`（断言只调一次模型）、
+`test_passthrough_does_not_end_run_on_error`（出错仍回模型）。

@@ -387,3 +387,104 @@ def test_executor_cancelled_error_becomes_is_error():
     assert outcome.is_error is True
     assert outcome.escalate is False
     assert "中断" in outcome.text
+
+
+# ------------------------------------------------------------------
+# 清单类工具（passthrough）：产出了结构化清单就直接收尾
+#
+# 线上问题：L2 里模型照 system prompt 第 7 条把工具结果又逐行列了一遍，
+# 前端"清单一份 + 文本一份"，用户看到同一份设备列表出现两遍。
+# ------------------------------------------------------------------
+def _list_registry(executed: list):
+    from agent.loop.entities import KIND_DEVICE, Entity, EntityList
+
+    async def execute(args):
+        executed.append(args)
+        return ToolOutcome(
+            "2 台设备：\n- 南门道闸出口｜编号 dz_park_0002\n- 南门道闸进口｜编号 dz_park_0001",
+            entities=EntityList(
+                kind=KIND_DEVICE,
+                title="2 台设备",
+                items=[
+                    Entity(kind=KIND_DEVICE, id="dz_park_0002", label="南门道闸出口"),
+                    Entity(kind=KIND_DEVICE, id="dz_park_0001", label="南门道闸进口"),
+                ],
+            ),
+        )
+
+    registry = ToolRegistry()
+    registry.add_domain(
+        DomainSpec(
+            name="demo",
+            description="演示域",
+            tools=[
+                ToolSpec(
+                    name="demo__list",
+                    description="列设备",
+                    parameters=tool_schema({"query": {"type": "string"}}, ["query"]),
+                    execute=execute,
+                    passthrough=True,          # 关键：清单结果就是成品
+                )
+            ],
+        )
+    )
+    return registry
+
+
+def test_passthrough_tool_ends_run_without_model_restating():
+    executed: list = []
+    events: list = []
+    client = _FakeClient([
+        NS(
+            content="",
+            tool_calls=[_tool_call("demo__list", '{"query":"道闸设备有哪些"}')],
+        ),
+        # 这个分支不该被用到：清单已经直出，不需要模型再总结
+        NS(content="根据查询结果，共有 2 台道闸设备……", tool_calls=None),
+    ])
+    agent = LoopAgent(
+        client=client, model="fake", registry=_list_registry(executed), stream=False
+    )
+
+    result = asyncio.run(agent.run("道闸设备有哪些", on_event=events.append))
+
+    assert len(executed) == 1
+    # 只调了一次模型（第二次是复述清单）
+    assert len(client.chat.completions.calls) == 1
+    assert result.stop_reason == "answered"
+    assert result.text.startswith("2 台设备")
+    kinds = [getattr(e, "type", None) for e in events]
+    assert "entities" in kinds and "done" in kinds
+
+
+def test_passthrough_does_not_end_run_on_error():
+    """出错时不能直出（错误文案是写给模型看的），仍应回到模型。"""
+    async def execute(args):
+        return ToolOutcome("工具执行失败：连接超时", is_error=True)
+
+    registry = ToolRegistry()
+    registry.add_domain(
+        DomainSpec(
+            name="demo",
+            description="演示域",
+            tools=[
+                ToolSpec(
+                    name="demo__list",
+                    description="列设备",
+                    parameters=tool_schema({"query": {"type": "string"}}, ["query"]),
+                    execute=execute,
+                    passthrough=True,
+                )
+            ],
+        )
+    )
+    client = _FakeClient([
+        NS(content="", tool_calls=[_tool_call("demo__list", '{"query":"道闸"}')]),
+        NS(content="设备查询服务暂时不可用。", tool_calls=None),
+    ])
+    agent = LoopAgent(client=client, model="fake", registry=registry, stream=False)
+
+    result = asyncio.run(agent.run("道闸"))
+
+    assert len(client.chat.completions.calls) == 2      # 仍回到模型
+    assert "不可用" in result.text

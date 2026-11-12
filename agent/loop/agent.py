@@ -351,6 +351,27 @@ class LoopAgent:
                     await self._emit(
                         handler, "entities", {"list": outcome.entities.to_dict()}
                     )
+                    # 清单类工具（passthrough）的结果本身就是成品：直接收尾，
+                    # 不再让模型复述一遍 —— 它一定会照 system prompt 第 7 条
+                    # 逐行再列一次，前端就会"同一份清单 + 同一份文本"显示两遍。
+                    spec = self.registry.get(name)
+                    if (
+                        spec is not None
+                        and getattr(spec, "passthrough", False)
+                        and not outcome.is_error
+                    ):
+                        text = outcome.text
+                        await self._emit(
+                            handler, "assistant_message", {"text": text}
+                        )
+                        await self._emit(handler, "done", {"steps": steps})
+                        return LoopResult(
+                            text=text,
+                            messages=messages,
+                            tool_calls=executed,
+                            steps=steps,
+                            stop_reason="answered",
+                        )
 
             if all_terminate:
                 break
