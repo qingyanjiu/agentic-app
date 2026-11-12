@@ -1476,3 +1476,56 @@ messages.append({
 
 两者必须出自同一个 `_summary()`，且 title 是文本首行的前缀。改动任一处都要同步，
 `test_gate_list_query_returns_both_devices` 里有一条断言专门锁这个关系。
+
+### 21.14 修复：地点词不参与过滤 + 客户端断开打断整轮
+
+现场日志：
+
+```
+[device query slots] query=大门口有哪些门禁 => {device_type:'0', area:'大门口', device_keyword:''}
+INFO: connection closed
+ERROR: Exception in ASGI application
+  WebSocketDisconnect(1000)
+  RuntimeError: Unexpected ASGI message 'websocket.send', after sending 'websocket.close'
+```
+
+两个独立缺陷，叠在一起表现为"没回答就退出了"。
+
+**① 「大门口」被完全忽略 → 列出全部门禁**
+
+`area` 抽到了 `大门口`，但 `normalize_floor("大门口")` 是 `None`，
+`_name_fallback` 抽不到（「有哪些」已被 `_QUESTION_WORD` 挡掉），
+`_name_in_text` 也匹配不到 —— 于是 **floor 和 keyword 都是空，一个过滤条件都没有**，
+直接把 200 台门禁全列出来（只展示 60 台）。
+
+修：
+
+- `_row_matches_keyword` 增加 **`spaceName`** —— 地点词（大门口/南门）只出现在所属空间里；
+- `_filter_rows`：`area` 不是楼层时（`normalize_floor(area)` 为空）当关键词用。
+
+实测（10 台门禁，6 台在南门大门口）：
+
+```
+大门口有哪些门禁 → 6 台设备（园区共 10 台），关键词「大门口」   # 之前：10 台全列
+5楼有哪些门禁    → 4 台设备（园区共 10 台），楼层 5F
+```
+
+**② 客户端一断开，整轮就崩**
+
+`ws_bridge._send` 原来是裸 `websocket.send_text`。前端刷新/切页后服务端继续推事件，
+`send_text` 直接抛 → 冒到 `app.py` 的 `except`，被当成"灰度链路异常"再走一遍旧链路，
+旧链路对着死 socket 继续发 → ASGI 层报 `Unexpected ASGI message`。
+
+修：
+
+- `_send` 改为 async 且**吞掉断开异常**，返回 `True/False`；
+- 结尾的 `{"status":"done"}` 也走 `_send`（原来是裸 send）。
+
+**③ 顺带加了个显式判空**（这次问题的直接诱因）
+
+`LoopAgent` 的"清单直出收尾"现在要求：`entities.items` 非空 **且** `text.strip()` 非空。
+清单为空（`entities=None`，例如"没有找到符合条件的设备"）时**不直出**，
+交回模型用自然语言说明 —— 空清单直出会得到一句干巴巴的"0 台设备"。
+
+测试：`test_place_word_filters_by_space_name`、`test_keyword_matches_space_name`、
+`test_empty_list_result_falls_back_to_model`、`test_send_failure_does_not_break_the_turn`。

@@ -355,10 +355,13 @@ class LoopAgent:
                     # 不再让模型复述一遍 —— 它一定会照 system prompt 第 7 条
                     # 逐行再列一次，前端就会"同一份清单 + 同一份文本"显示两遍。
                     spec = self.registry.get(name)
+                    list_items = getattr(outcome.entities, "items", None) or []
                     if (
                         spec is not None
                         and getattr(spec, "passthrough", False)
                         and not outcome.is_error
+                        and list_items                 # 空清单不要直出，交回模型说明
+                        and outcome.text.strip()
                     ):
                         text = outcome.text
                         await self._emit(

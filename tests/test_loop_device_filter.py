@@ -287,3 +287,38 @@ def test_gate_list_query_returns_both_devices(monkeypatch):
     # 前端靠 text.startsWith(title) 去重，这段必须成立
     assert out.text.strip().startswith(out.entities.to_dict()["title"])
     assert [i.id for i in out.entities.items] == ["dz_park_0001", "dz_park_0002"]
+
+
+def test_place_word_filters_by_space_name(monkeypatch):
+    """「大门口有哪些门禁」：地点词不是楼层，但能匹配 spaceName，别列出全部门禁。"""
+    import agent.loop.domains.device_query as dq
+
+    def row(name, code, space):
+        return {"id": f"id-{code}", "name": name, "rawName": name, "code": code,
+                "spaceName": space, "status": "1", "syncSource": "0"}
+
+    monkeypatch.setattr(dq, "_CACHE_TTL", 300.0)
+    clear_device_cache()
+
+    box = _FakeToolbox([
+        row("南门门禁1", "mj_nm_1", "园区/南门/大门口"),
+        row("南门门禁2", "mj_nm_2", "园区/南门/大门口"),
+        row("5F门禁1", "mj_5f_1", "园区/科研办公楼/5F"),
+        row("5F门禁2", "mj_5f_2", "园区/科研办公楼/5F"),
+    ])
+    tool = _list_tool(box)
+
+    out = asyncio.run(tool.execute({"query": "大门口有哪些门禁"}))
+
+    assert "关键词「大门口」" in out.text.splitlines()[0]
+    assert [i.id for i in out.entities.items] == ["mj_nm_1", "mj_nm_2"]
+
+
+def test_keyword_matches_space_name():
+    import agent.loop.domains.device_query as dq
+
+    row = {"name": "南门门禁1", "rawName": "南门门禁1", "code": "mj_nm_1",
+           "spaceName": "园区/南门/大门口"}
+    assert dq._row_matches_keyword(row, "大门口") is True
+    assert dq._row_matches_keyword(row, "南门") is True
+    assert dq._row_matches_keyword(row, "5F") is False

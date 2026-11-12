@@ -303,7 +303,8 @@ def _row_matches_keyword(row: dict, keyword: str) -> bool:
     kw = keyword.strip().lower()
     if not kw:
         return True
-    for key in ("rawName", "name", "code"):
+    # spaceName 也算：「大门口」「南门」这类地点词只出现在所属空间里
+    for key in ("rawName", "name", "code", "spaceName"):
         if kw in str(row.get(key) or "").lower():
             return True
     return False
@@ -496,6 +497,12 @@ def _filter_rows(
 
     if not keyword:
         keyword = _name_in_text(query, rows)
+    if not keyword and not floor:
+        # 「大门口有哪些门禁」：area 不是楼层（大门口/南门/园区），
+        # 但它是地点，能匹配 spaceName。不当关键词用就会被忽略、列出全部门禁。
+        area = (slots.get("area") or "").strip()
+        if area and not normalize_floor(area):
+            keyword = area
     if floor:
         rows = [row for row in rows if _row_matches_floor(row, floor)]
     if keyword:

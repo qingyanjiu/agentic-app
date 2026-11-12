@@ -488,3 +488,37 @@ def test_passthrough_does_not_end_run_on_error():
 
     assert len(client.chat.completions.calls) == 2      # 仍回到模型
     assert "不可用" in result.text
+
+
+def test_empty_list_result_falls_back_to_model():
+    """清单为空（没有 entities）时不能直出收尾，要交回模型说明"没查到"。"""
+    async def execute(args):
+        # 空结果：text 是给模型/用户看的说明，entities 为 None
+        return ToolOutcome("没有找到名称或编号包含「大门口」的门禁设备。")
+
+    registry = ToolRegistry()
+    registry.add_domain(
+        DomainSpec(
+            name="demo",
+            description="演示域",
+            tools=[
+                ToolSpec(
+                    name="demo__list",
+                    description="列设备",
+                    parameters=tool_schema({"query": {"type": "string"}}, ["query"]),
+                    execute=execute,
+                    passthrough=True,
+                )
+            ],
+        )
+    )
+    client = _FakeClient([
+        NS(content="", tool_calls=[_tool_call("demo__list", '{"query":"大门口门禁"}')]),
+        NS(content="大门口没有查到门禁设备。", tool_calls=None),
+    ])
+    agent = LoopAgent(client=client, model="fake", registry=registry, stream=False)
+
+    result = asyncio.run(agent.run("大门口有哪些门禁"))
+
+    assert len(client.chat.completions.calls) == 2       # 空清单 → 回到模型
+    assert "没有查到" in result.text

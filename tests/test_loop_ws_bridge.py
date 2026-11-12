@@ -14,6 +14,7 @@ from types import SimpleNamespace as NS
 import pytest
 
 from agent.loop import ws_bridge
+from agent.loop.entities import KIND_DEVICE, Entity, EntityList
 from agent.loop.pipeline import PipelineResult
 
 
@@ -149,3 +150,35 @@ def test_internal_error_event_is_not_forwarded_as_answer(monkeypatch):
     custom = _custom(_run(monkeypatch, pipeline))
 
     assert all(c["type"] in {"answer", "tool"} for c in custom)
+
+
+def test_send_failure_does_not_break_the_turn(monkeypatch):
+    """客户端断开后服务端还在推事件：send 失败要被吞掉，不能把整轮打断。
+
+    线上：前端刷新 → 服务端 send_text 抛 → ASGI 报
+    `Unexpected ASGI message 'websocket.send'`，还被上层当成"灰度链路异常"重走旧链路。
+    """
+    class _ClosedSocket:
+        def __init__(self):
+            self.attempts = 0
+
+        async def send_text(self, text):
+            self.attempts += 1
+            raise RuntimeError("Unexpected ASGI message 'websocket.send'")
+
+    result = PipelineResult(
+        text="2 台设备", level="L1", stop_reason="answered",
+        entities=EntityList(
+            kind=KIND_DEVICE, title="2 台设备",
+            items=[Entity(kind=KIND_DEVICE, id="dz_park_0001", label="南门道闸进口")],
+        ),
+    )
+    pipeline = _FakePipeline([("delta", "2 台设备")], result)
+    monkeypatch.setattr(ws_bridge, "get_pipeline", lambda llm: pipeline)
+    ws_bridge.reset_sessions()
+
+    ws = _ClosedSocket()
+    handled = asyncio.run(ws_bridge.handle_chat(ws, "有哪些道闸设备", "u", "s", llm=None))
+
+    assert handled is True          # 仍然算"已处理"，不回落旧链路
+    assert ws.attempts >= 2         # 试过 answer 和 list，都失败但都没抛

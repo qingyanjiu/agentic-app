@@ -37,8 +37,20 @@ SESSION_TTL = float(os.getenv("SESSION_TTL_SECONDS") or 1800)
 _pipeline: ChatPipeline | None = None
 
 
-def _send(websocket: Any, payload: dict) -> Any:
-    return websocket.send_text(json.dumps(payload, ensure_ascii=False))
+async def _send(websocket: Any, payload: dict) -> bool:
+    """发一帧；客户端已断开时返回 False 并静默。
+
+    线上踩过：前端断开（刷新/切页）后服务端还在推事件，
+    `send_text` 直接抛 → 整个 ASGI 应用报
+    `Unexpected ASGI message 'websocket.send'`，还会被上层误判成"灰度链路异常"再走一遍旧链路。
+    这里把"对端已关闭"当成正常结束，不打断本轮处理。
+    """
+    try:
+        await websocket.send_text(json.dumps(payload, ensure_ascii=False))
+        return True
+    except Exception as exc:  # WebSocketDisconnect / RuntimeError / OSError
+        logger.debug(f"[loop] 发送失败，客户端可能已断开：{type(exc).__name__}")
+        return False
 
 
 def get_session(user_id: str, session_id: str) -> Session:
@@ -201,15 +213,13 @@ async def handle_chat(
             {"event": "custom", "data": {"type": "answer", "content": result.text}},
         )
 
-    await websocket.send_text(
-        json.dumps(
-            {
-                "status": "done",
-                "level": result.level,
-                "escalated": result.escalated,
-            },
-            ensure_ascii=False,
-        )
+    await _send(
+        websocket,
+        {
+            "status": "done",
+            "level": result.level,
+            "escalated": result.escalated,
+        },
     )
     logger.info(
         f"[loop] done level={result.level} reason={result.stop_reason} "
