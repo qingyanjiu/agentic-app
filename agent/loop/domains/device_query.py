@@ -386,7 +386,41 @@ def _place_terms(keyword: str) -> tuple[str, ...]:
     return tuple(terms)
 
 
+# 区域名的同义写法。AREA_DICT 是把「餐厅」标准化成「食堂」给业务侧用的，
+# 但设备台账里两种写法都有（「1F裙楼餐厅东南角」vs「-1F监控21食堂门口」），
+# 所以这里单独维护，谁命中用谁。
+# 故意**不**直接用 AREA_DICT 的全部同义词：里面「入口」「门岗」「公司」
+# 这类词太泛，拿去匹配点位会捞进不相干的设备。
+_AREA_ALIAS: dict[str, tuple[str, ...]] = {
+    "食堂": ("餐厅",),
+    "餐厅": ("食堂",),
+}
+
+
+def _synonym_terms(keyword: str) -> tuple[str, ...]:
+    """关键词的所有可尝试写法：地点别名 + 区域同义（餐厅 ↔ 食堂）。"""
+    terms = list(_place_terms(keyword))
+    for key, aliases in _AREA_ALIAS.items():
+        if key == keyword or key in (keyword or ""):
+            terms.extend(a for a in aliases if a not in terms)
+    return tuple(terms)
+
+
+def _area_terms(area: str, query: str) -> tuple[str, ...]:
+    """区域名的候选写法，**原话里真的出现过的排在前面**。
+
+    AREA_DICT 把「餐厅」标准化成「食堂」，直接拿标准名当关键词会漏掉
+    「1F裙楼餐厅东南角」这类点位（实测只剩「-1F监控21食堂门口」1 台）。
+    """
+    terms = _synonym_terms(area)
+    spoken = [term for term in terms if term and term in (query or "")]
+    if spoken:
+        return tuple(spoken) + tuple(term for term in terms if term not in spoken)
+    return terms
+
+
 def _row_matches_keyword(row: dict, keyword: str) -> bool:
+    """设备名/编号/空间名任一包含关键词即命中。"""
     kw = keyword.strip().lower()
     if not kw:
         return True
@@ -659,26 +693,28 @@ def _filter_rows(
         # 但它是地点，能匹配 spaceName。不当关键词用就会被忽略、列出全部门禁。
         area = (slots.get("area") or "").strip()
         if area and not normalize_floor(area) and not _SCOPE_AREA.match(area):
-            keyword = area
+            # 「餐厅」被 AREA_DICT 标准化成「食堂」，但台账里的点位叫
+            # 「1F裙楼餐厅东南角」——直接拿标准名去匹配，只剩「食堂门口」那 1 台。
+            # 所以优先用**用户原话里出现的写法**，匹配不到再退到标准名。
+            keyword = _area_terms(area, query)[0]
     if floor:
         rows = [row for row in rows if _row_matches_floor(row, floor)]
     if keyword:
         matched = [row for row in rows if _row_matches_keyword(row, keyword)]
         if not matched:
             # 地点口语 → 台账名：「大门口」「出入口」在台账里不存在，
-            # 但南门那几台叫「南门人脸进口西」/「园区/园区南大门」
-            aliases = _place_terms(keyword)[1:]
-            alias_hits = [
-                row for row in rows
-                if any(_row_matches_keyword(row, term) for term in aliases)
-            ]
-            if alias_hits:
-                logger.info(
-                    f"[device_query] 地点词「{keyword}」按「{aliases[0]}」"
-                    f"匹配到 {len(alias_hits)} 台"
-                )
-                keyword = aliases[0]
-                matched = alias_hits
+            # 但南门那几台叫「南门人脸进口西」/「园区/园区南大门」；
+            # 「餐厅 ↔ 食堂」同理，台账两种写法都有——逐个试，命中就停。
+            for term in _synonym_terms(keyword)[1:]:
+                hits = [row for row in rows if _row_matches_keyword(row, term)]
+                if hits:
+                    logger.info(
+                        f"[device_query] 关键词「{keyword}」无命中，"
+                        f"按同义词「{term}」匹配到 {len(hits)} 台"
+                    )
+                    keyword = term
+                    matched = hits
+                    break
         if not matched:
             # 方位词对不上设备名（「7F西侧」vs「7F西通道西向东」）：放宽一次，
             # 多台就交给调用方追问，总比回「没有找到」强。

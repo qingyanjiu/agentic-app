@@ -1840,3 +1840,49 @@ RuntimeError: Unexpected ASGI message 'websocket.send', after sending 'websocket
 > 注：`app.py` 在本机测试环境导入不了（缺 `langchain_classic`），这条路径没有单测覆盖，
 > 只有 `py_compile` + 代码走查。验证办法：连 `/gen_doc` 后直接关页面，
 > 后端应只留一行 `客户端已断开 -- u-s`，不再出现 ASGI traceback。
+
+### 21.21 「餐厅监控」只查出「食堂门口」——区域名被标准化后丢了原话
+
+实测：
+
+```
+用户：列出餐厅监控设备
+旧：1 台设备（园区共 268 台），关键词「食堂」 → -1F监控21食堂门口
+```
+
+根因不在设备侧，而在 `agent/intent/slots.py` 的 `AREA_DICT`：
+
+```python
+AREA_DICT = {..., "食堂": ["食堂", "餐厅"], ...}
+```
+
+`parse_area_slot` 把「餐厅」标准化成「食堂」，`_filter_rows` 再拿 `area`
+当关键词 → 只命中名字里带「食堂」的那 1 台。台账里真正叫「餐厅」的点位有 10 个
+（`1F裙楼餐厅东南角`、`1F裙楼取餐区北向南`、`2F裙楼餐厅西北角`…）全被漏掉。
+
+**不能改 `AREA_DICT`**（旧链路业务状态机在用），也不能把它的全部同义词塞给
+设备匹配——里面「入口」「门岗」「公司」「单位」这类词太泛，拿去匹配点位会捞进
+不相干的设备。
+
+改法（都在 `agent/loop/domains/device_query.py`）：
+
+1. `_AREA_ALIAS = {"食堂": ("餐厅",), "餐厅": ("食堂",)}`：只登记**真的互为别名**
+   的区域词；
+2. `_synonym_terms()` = 地点别名（大门口→南门）+ 区域同义（餐厅↔食堂）；
+3. `_area_terms(area, query)`：把**原话里真的出现过的写法**排到最前面，
+   于是「餐厅」不会再被「食堂」顶掉；
+4. 别名回退从「只试第一个」改成**逐个试、命中即停**——台账里只写「食堂」时，
+   问「餐厅」仍能回退命中，而不是报"没找到"。
+
+实测（改后）：
+
+| 问法 | 结果 |
+|---|---|
+| 列出餐厅监控设备 | 10 台，关键词「餐厅」 |
+| 食堂的监控有哪些 | 1 台，关键词「食堂」 |
+| 大门口有哪些门禁 | 8 台，关键词「南门」（原行为不变） |
+
+测试：`test_area_terms_prefer_the_word_user_actually_said`、
+`test_restaurant_query_hits_restaurant_points`、
+`test_canteen_query_still_hits_canteen_points`、
+`test_area_alias_falls_back_when_first_word_misses`。

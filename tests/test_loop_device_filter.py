@@ -592,3 +592,89 @@ def test_name_contains_phrase_filters_by_the_word():
 
     slots = {"device_keyword": "带消防的设备"}      # slots.py 实际抽出来的
     assert _slot_keyword("名称带消防的设备", slots) == "消防"
+
+
+# ----------------------------------------------------------------------
+# 区域同义写法：AREA_DICT 把「餐厅」标准化成「食堂」，但台账两种写法都有
+# ----------------------------------------------------------------------
+def _canteen_rows():
+    """1F 裙楼 4 个「餐厅」点位 + -1F 一个「食堂门口」点位，贴近真实台账。"""
+    rows = []
+    for index, name in enumerate(
+        ["1F裙楼餐厅东南角", "1F裙楼取餐区北向南", "1F裙楼餐厅超市门口", "1F裙楼餐厅西北角"]
+    ):
+        rows.append({
+            "id": f"c{index}", "name": name, "rawName": name,
+            "code": f"jk_zl_1f_{index:04d}", "spaceName": "园区/科研办公楼/1F",
+            "status": "1", "syncSource": "3",
+        })
+    rows.append({
+        "id": "c9", "name": "-1F监控21食堂门口", "rawName": "-1F监控21食堂门口",
+        "code": "jk_zl_1f_0029", "spaceName": "园区/科研办公楼/-1F",
+        "status": "1", "syncSource": "3",
+    })
+    rows.append({
+        "id": "c8", "name": "1F-过道东向西", "rawName": "1F-过道东向西",
+        "code": "jk_zl_1f_0009", "spaceName": "园区/科研办公楼/1F",
+        "status": "1", "syncSource": "3",
+    })
+    return rows
+
+
+def test_area_terms_prefer_the_word_user_actually_said():
+    """「餐厅」不能被标准化成「食堂」后就用「食堂」去匹配。"""
+    import agent.loop.domains.device_query as dq
+
+    assert dq._area_terms("食堂", "列出餐厅监控设备")[0] == "餐厅"
+    assert dq._area_terms("食堂", "食堂有几个监控")[0] == "食堂"
+    # 原话两个词都没有时，保持标准名在前
+    assert dq._area_terms("食堂", "有几个监控")[0] == "食堂"
+
+
+def test_restaurant_query_hits_restaurant_points(monkeypatch):
+    """「列出餐厅监控设备」：要按台账里的「餐厅」匹配，不能只返回「食堂门口」1 台。"""
+    import agent.loop.domains.device_query as dq
+
+    monkeypatch.setattr(dq, "_CACHE_TTL", 300.0)
+    clear_device_cache()
+    tool, _ = _gate_tool(_canteen_rows())
+
+    out = asyncio.run(tool.execute({"query": "列出餐厅监控设备"}))
+
+    assert "关键词「餐厅」" in out.text.splitlines()[0]
+    # 台账里名字带「餐厅」的是 3 台（「取餐区北向南」那台名字里没有「餐厅」，
+    # 严格按名字匹配不算，别为了凑数把它塞进来）
+    labels = [item.label for item in out.entities.items]
+    assert len(labels) == 3, labels
+    assert all("餐厅" in label for label in labels), labels
+    assert "-1F监控21食堂门口" not in labels
+
+
+def test_canteen_query_still_hits_canteen_points(monkeypatch):
+    """说「食堂」就按「食堂」匹配，别反向拐到餐厅去。"""
+    import agent.loop.domains.device_query as dq
+
+    monkeypatch.setattr(dq, "_CACHE_TTL", 300.0)
+    clear_device_cache()
+    tool, _ = _gate_tool(_canteen_rows())
+
+    out = asyncio.run(tool.execute({"query": "食堂的监控有哪些"}))
+
+    labels = [item.label for item in out.entities.items]
+    assert labels == ["-1F监控21食堂门口"], labels
+
+
+def test_area_alias_falls_back_when_first_word_misses(monkeypatch):
+    """台账里只写「食堂」时，问「餐厅」要回退到「食堂」，别报"没找到"。"""
+    import agent.loop.domains.device_query as dq
+
+    monkeypatch.setattr(dq, "_CACHE_TTL", 300.0)
+    clear_device_cache()
+    only_canteen = [row for row in _canteen_rows() if "餐厅" not in row["name"]]
+    tool, _ = _gate_tool(only_canteen)
+
+    out = asyncio.run(tool.execute({"query": "餐厅的监控有哪些"}))
+
+    first = out.text.splitlines()[0]
+    assert "关键词「食堂」" in first, first
+    assert "食堂门口" in out.text
