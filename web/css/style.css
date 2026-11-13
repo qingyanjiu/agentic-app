@@ -474,6 +474,97 @@ html {
     font-weight: 600;
 }
 
+/* Markdown 渲染后的 AI 回答（聊天气泡内） */
+.msg-ai.md {
+    white-space: normal;
+    line-height: 1.7;
+}
+
+.msg-ai.md p {
+    margin: 0 0 8px;
+}
+
+.msg-ai.md p:last-child {
+    margin-bottom: 0;
+}
+
+.msg-ai.md h1,
+.msg-ai.md h2,
+.msg-ai.md h3,
+.msg-ai.md h4,
+.msg-ai.md h5,
+.msg-ai.md h6 {
+    margin: 12px 0 6px;
+    line-height: 1.4;
+    font-weight: 600;
+}
+
+.msg-ai.md h1 { font-size: 18px; }
+.msg-ai.md h2 { font-size: 17px; }
+.msg-ai.md h3 { font-size: 16px; }
+.msg-ai.md h4,
+.msg-ai.md h5,
+.msg-ai.md h6 { font-size: 15px; }
+
+.msg-ai.md ul,
+.msg-ai.md ol {
+    margin: 0 0 8px;
+    padding-left: 20px;
+}
+
+.msg-ai.md li {
+    margin: 2px 0;
+}
+
+.msg-ai.md hr {
+    border: none;
+    border-top: 1px solid var(--hairline);
+    margin: 12px 0;
+}
+
+.msg-ai.md a {
+    color: var(--accent);
+    text-decoration: underline;
+}
+
+.msg-ai.md .md-table-wrap {
+    margin: 8px 0;
+    overflow-x: auto;
+}
+
+.msg-ai.md table {
+    border-collapse: collapse;
+    font-size: 13px;
+    min-width: 100%;
+}
+
+.msg-ai.md th,
+.msg-ai.md td {
+    border: 1px solid var(--hairline);
+    padding: 6px 8px;
+    text-align: left;
+    vertical-align: top;
+}
+
+.msg-ai.md th {
+    background: var(--bg-gray);
+    font-weight: 600;
+}
+
+.msg-ai.md pre {
+    margin: 8px 0;
+    padding: 10px;
+    border-radius: 8px;
+    background: var(--bg-gray);
+    overflow-x: auto;
+    white-space: pre;
+}
+
+.msg-ai.md pre code {
+    padding: 0;
+    background: transparent;
+}
+
 /* 流式输出中的光标 */
 .msg-ai.streaming::after {
     content: "";
@@ -903,5 +994,705 @@ html {
 
     html {
         scroll-behavior: auto;
+    }
+}
+
+/* ==================== 报告配置模态框 ==================== */
+.doc-modal {
+    position: fixed;
+    inset: 0;
+    z-index: 130;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+}
+
+.doc-modal[hidden] {
+    display: none;
+}
+
+.doc-modal-backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(15, 23, 42, 0.42);
+    backdrop-filter: blur(2px);
+    -webkit-backdrop-filter: blur(2px);
+}
+
+.doc-modal-card {
+    position: relative;
+    z-index: 1;
+    width: min(720px, 100%);
+    box-sizing: border-box;
+    padding: 20px 26px 24px;
+    border: 1px solid var(--hairline);
+    border-radius: 22px;
+    background: var(--card-bg);
+    box-shadow: 0 32px 80px rgba(0, 0, 0, 0.24);
+    animation: docModalIn 0.24s cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+@keyframes docModalIn {
+    from {
+        opacity: 0;
+        transform: translateY(12px) scale(0.98);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+    }
+}
+
+.doc-modal-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 18px;
+}
+
+.doc-modal-head h2 {
+    margin: 0;
+    font-size: 20px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    color: var(--text);
+}
+
+.doc-modal-close {
+    flex: none;
+    width: 32px;
+    height: 32px;
+    display: grid;
+    place-items: center;
+    border: none;
+    border-radius: 50%;
+    background: var(--bg-gray);
+    color: var(--text-secondary);
+    font-size: 20px;
+    line-height: 1;
+    cursor: pointer;
+    transition: background 0.2s ease, color 0.2s ease;
+}
+
+.doc-modal-close:hover {
+    background: var(--hairline);
+    color: var(--text);
+}
+
+.doc-modal-body {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+}
+
+.doc-config-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 20px;
+}
+
+.doc-config-label {
+    flex: none;
+    width: 76px;
+    padding-top: 9px;
+    font-size: 14px;
+    color: var(--text-secondary);
+}
+
+.doc-config-topics .doc-config-label {
+    padding-top: 2px;
+}
+
+.doc-seg {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+
+.doc-seg-btn {
+    min-width: 88px;
+    padding: 8px 18px;
+    border: 1px solid var(--hairline);
+    border-radius: 10px;
+    background: var(--bg-gray);
+    color: var(--text-secondary);
+    font-family: inherit;
+    font-size: 14px;
+    cursor: pointer;
+    transition: background 0.18s ease, color 0.18s ease, border-color 0.18s ease;
+}
+
+.doc-seg-btn:hover {
+    border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+    color: var(--text);
+}
+
+.doc-seg-btn.active {
+    border-color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+    color: var(--accent);
+    font-weight: 500;
+}
+
+.doc-topics {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px 28px;
+    padding-top: 2px;
+}
+
+.doc-topics label {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 14px;
+    color: var(--text);
+    cursor: pointer;
+}
+
+.doc-topics input {
+    width: 16px;
+    height: 16px;
+    accent-color: var(--accent);
+    cursor: pointer;
+}
+
+.doc-modal-hint {
+    margin: 0;
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--text-tertiary);
+}
+
+.doc-modal-error {
+    margin: 0;
+    padding: 8px 10px;
+    border-radius: 8px;
+    background: var(--error-bg);
+    color: var(--danger);
+    font-size: 13px;
+}
+
+.doc-modal-error[hidden] {
+    display: none;
+}
+
+.doc-modal-foot {
+    display: flex;
+    justify-content: center;
+    margin-top: 22px;
+}
+
+.doc-submit {
+    min-width: 200px;
+    padding: 12px 32px;
+    border: none;
+    border-radius: 12px;
+    background: var(--accent);
+    color: #fff;
+    font-family: inherit;
+    font-size: 15px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.2s ease;
+}
+
+.doc-submit:hover {
+    background: var(--accent-hover);
+}
+
+.doc-submit:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* ==================== 文档预览（右侧抽屉，仅点卡片时打开） ==================== */
+.doc-panel {
+    position: fixed;
+    top: 0;
+    right: 0;
+    z-index: 110;
+    width: min(480px, 100vw);
+    height: 100vh;
+    height: 100dvh;
+    display: flex;
+    flex-direction: column;
+    background: var(--card-bg);
+    border-left: 1px solid var(--hairline);
+    box-shadow: -24px 0 60px rgba(0, 0, 0, 0.12);
+    transform: translateX(102%);
+    pointer-events: none;
+    transition: transform 0.32s cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+.doc-panel.open {
+    transform: translateX(0);
+    pointer-events: auto;
+}
+
+/* 非模态抽屉打开时压缩对话区，保证输入框不被面板遮住 */
+@media (min-width: 641px) {
+    body.doc-open .chat-section {
+        padding-right: min(480px, 38vw);
+        transition: padding-right 0.32s cubic-bezier(0.32, 0.72, 0, 1);
+    }
+}
+
+.doc-panel-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 22px 22px 16px;
+    border-bottom: 1px solid var(--hairline);
+}
+
+.doc-panel-head h2 {
+    margin: 0 0 4px;
+    font-size: 18px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    color: var(--text);
+    word-break: break-all;
+}
+
+.doc-panel-head p {
+    margin: 0;
+    font-size: 12.5px;
+    line-height: 1.5;
+    color: var(--text-secondary);
+}
+
+.doc-panel-actions {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.doc-close {
+    flex: none;
+    width: 34px;
+    height: 34px;
+    display: grid;
+    place-items: center;
+    border: none;
+    border-radius: 50%;
+    background: var(--bg-gray);
+    color: var(--text-secondary);
+    font-size: 22px;
+    line-height: 1;
+    cursor: pointer;
+    transition: background 0.2s ease, color 0.2s ease;
+}
+
+.doc-close:hover {
+    background: var(--hairline);
+    color: var(--text);
+}
+
+.doc-panel-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 18px 22px 40px;
+    scrollbar-width: thin;
+    scrollbar-color: var(--scroll-thumb) transparent;
+}
+
+.doc-download {
+    flex: none;
+    padding: 7px 14px;
+    border-radius: var(--radius-pill);
+    background: var(--accent);
+    color: #fff;
+    font-size: 12.5px;
+    text-decoration: none;
+    transition: background 0.2s ease;
+}
+
+.doc-download:hover {
+    background: var(--accent-hover);
+}
+
+.doc-download[hidden] {
+    display: none;
+}
+
+/* ---- 对话里的生成进度 ---- */
+.doc-run {
+    align-self: flex-start;
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    animation: msg-in 0.4s cubic-bezier(0.28, 0.11, 0.32, 1) both;
+}
+
+.doc-run-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+.doc-run-spinner {
+    flex: none;
+    width: 14px;
+    height: 14px;
+    border: 2px solid var(--hairline);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: docSpin 0.8s linear infinite;
+}
+
+.doc-run-spinner.hidden {
+    display: none;
+}
+
+.doc-run.done .doc-run-spinner {
+    background: var(--ok);
+    border-color: var(--ok);
+    animation: none;
+}
+
+.doc-run-status {
+    color: var(--text);
+}
+
+.doc-run.failed .doc-run-status {
+    color: var(--danger);
+}
+
+.doc-run-meta {
+    color: var(--text-tertiary);
+    font-size: 12px;
+}
+
+.doc-steps {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.doc-step {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+.doc-step-dot {
+    flex: none;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--text-tertiary);
+    transition: background 0.2s ease;
+}
+
+.doc-step.running {
+    color: var(--text);
+}
+
+.doc-step.running .doc-step-dot {
+    background: var(--accent);
+    animation: docPulse 1.2s ease-in-out infinite;
+}
+
+.doc-step.done {
+    color: var(--text);
+}
+
+.doc-step.done .doc-step-dot {
+    background: var(--ok);
+}
+
+.doc-step.failed .doc-step-dot {
+    background: var(--danger);
+}
+
+@keyframes docPulse {
+
+    0%,
+    100% {
+        opacity: 1;
+        transform: scale(1);
+    }
+
+    50% {
+        opacity: 0.45;
+        transform: scale(0.82);
+    }
+}
+
+@keyframes docSpin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+/* ---- 对话里的文档卡片 ---- */
+.doc-run-result {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+}
+
+.doc-run-result[hidden] {
+    display: none;
+}
+
+.doc-card {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    width: min(420px, 100%);
+    box-sizing: border-box;
+    padding: 14px 16px;
+    border: 1px solid var(--hairline);
+    border-radius: 16px;
+    background: var(--bg-gray);
+    font-family: inherit;
+    text-align: left;
+    cursor: pointer;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+}
+
+.doc-card:hover {
+    border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+    transform: translateY(-1px);
+}
+
+.doc-card-icon {
+    flex: none;
+    width: 38px;
+    height: 44px;
+    display: grid;
+    place-items: center;
+    border-radius: 8px;
+    background: #2b579a;
+    color: #fff;
+    font-size: 17px;
+    font-weight: 700;
+}
+
+.doc-card-meta {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.doc-card-meta strong {
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text);
+    word-break: break-all;
+}
+
+.doc-card-meta span {
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.doc-card-open {
+    flex: none;
+    font-size: 12.5px;
+    color: var(--accent);
+}
+
+.doc-card-note {
+    margin: 0;
+    max-width: 520px;
+    font-size: 13.5px;
+    line-height: 1.7;
+    color: var(--text-secondary);
+}
+
+.doc-card-download {
+    padding: 7px 16px;
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius-pill);
+    background: var(--bg);
+    color: var(--text);
+    font-size: 13px;
+    text-decoration: none;
+    transition: background 0.2s ease, border-color 0.2s ease;
+}
+
+.doc-card-download:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.doc-run-error {
+    margin: 0;
+    padding: 10px 12px;
+    border-radius: 10px;
+    background: var(--error-bg);
+    color: var(--danger);
+    font-size: 13px;
+    line-height: 1.6;
+}
+
+/* ---- 预览正文（Markdown → HTML） ---- */
+.doc-stream {
+    margin: 0;
+    word-break: break-word;
+    color: var(--text-secondary);
+    font-size: 13.5px;
+    line-height: 1.75;
+}
+
+.doc-stream h1,
+.doc-stream h2,
+.doc-stream h3,
+.doc-stream h4,
+.doc-stream h5,
+.doc-stream h6 {
+    margin: 18px 0 8px;
+    color: var(--text);
+    line-height: 1.4;
+}
+
+.doc-stream h1 {
+    font-size: 19px;
+}
+
+.doc-stream h2 {
+    font-size: 17px;
+}
+
+.doc-stream h3 {
+    font-size: 15px;
+}
+
+.doc-stream p {
+    margin: 0 0 10px;
+}
+
+.doc-stream .md-table-wrap {
+    margin: 10px 0;
+    overflow-x: auto;
+}
+
+.doc-stream .md-table-wrap table {
+    margin: 0;
+}
+
+.doc-stream table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 10px 0;
+    font-size: 12px;
+}
+
+.doc-stream th,
+.doc-stream td {
+    border: 1px solid var(--hairline);
+    padding: 6px 8px;
+    text-align: left;
+    vertical-align: top;
+}
+
+.doc-stream th {
+    background: var(--bg-gray);
+    color: var(--text);
+    font-weight: 600;
+}
+
+.doc-stream ul,
+.doc-stream ol {
+    margin: 0 0 10px;
+    padding-left: 20px;
+}
+
+.doc-stream li {
+    margin: 2px 0;
+}
+
+.doc-stream code {
+    padding: 1px 4px;
+    border-radius: 4px;
+    background: var(--bg-gray);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12px;
+}
+
+.doc-stream pre {
+    margin: 10px 0;
+    padding: 10px;
+    border-radius: 8px;
+    background: var(--bg-gray);
+    overflow-x: auto;
+}
+
+.doc-stream pre code {
+    padding: 0;
+    background: transparent;
+}
+
+.doc-stream hr {
+    border: none;
+    border-top: 1px solid var(--hairline);
+    margin: 14px 0;
+}
+
+.doc-stream strong {
+    color: var(--text);
+}
+
+@media (max-width: 640px) {
+    .doc-panel {
+        width: 100vw;
+        border-left: none;
+    }
+
+    .doc-modal {
+        padding: 12px;
+    }
+
+    .doc-modal-card {
+        padding: 16px 16px 20px;
+        border-radius: 18px;
+        max-height: 92vh;
+        overflow-y: auto;
+    }
+
+    .doc-config-row {
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    .doc-config-label {
+        width: auto;
+        padding-top: 0;
+    }
+
+    .doc-seg-btn {
+        min-width: 72px;
+        padding: 7px 12px;
+    }
+
+    .doc-topics {
+        gap: 10px 18px;
+    }
+}
+
+@media (max-width: 380px) {
+    .mode-btn {
+        padding: 7px 12px;
+        font-size: 12px;
     }
 }

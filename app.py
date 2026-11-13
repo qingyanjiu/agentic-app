@@ -15,11 +15,14 @@ from graph.knowledge_qa_langgraph import KnowledgeQAPipeline
 from graph.gen_doc_pipeline import GenDocPipeline
 from graph.asr_pipeline import TextCorrectorPipeline
 from tools.load_tools import load_tools
+from agent.doc_data_collector import DocDataCollector
+from mcp_client.mcp_loader import get_mcp_tools
 # from skills.mcp_agent import McpSkillAgent
 import logging
 import uuid
 import time
 import asyncio
+from urllib.parse import quote
 
 # 新增：人员态势/安防态势/食堂管理/车辆态势/信息发布/能源态势/会议管理意图识别相关导入
 # classify_security_sub_type：安防态势子类型（event_type）判定，供安防 handler 追问/兜底使用
@@ -72,8 +75,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-# 挂载报告文件目录为静态文件服务
-REPORT_DIR = "./reports"
+# 挂载报告文件目录为静态文件服务（绝对路径，避免启动目录不同导致下载 404）
+REPORT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reports")
 os.makedirs(REPORT_DIR, exist_ok=True)
 # 将 reports 目录挂载为静态目录，前端可直接访问 /reports/文件名.docx 下载
 app.mount("/reports", StaticFiles(directory=REPORT_DIR), name="reports")
@@ -3016,40 +3019,156 @@ async def doc_ws(websocket: WebSocket, user_id: str, session_id: Optional[str] =
         await websocket.close()
         return
 
+    collector = DocDataCollector(llm)
+    # 本连接内缓存 MCP 业务工具，避免每次生成都重新连接所有 sidecar
+    mcp_tools = None
+
+    async def send_event(payload: dict):
+        """报告生成过程中的结构化进度事件。"""
+        return await safe_send_message(
+            websocket,
+            {"event": "custom", "data": _safe_serialize(payload)},
+        )
+
+    async def finish_with_error(message: str):
+        await send_event({"type": "error", "content": message})
+        await websocket.send_text(json.dumps({"status": "done"}, ensure_ascii=False))
+
     while True:
         try:
             # 接收前端传入的JSON数据
             data = await websocket.receive_text()
-            query = json.loads(data).get("query")
-            style= json.loads(data).get("style")
-            if not query:
-                await websocket.send_text(json.dumps({"error": "empty query"}))
-                continue
-            
-# ========== 核心：调用pipeline的流式接口 ==========
- 
-            # 假设 agent 是通过 create_agent 创建的，并且支持 astream
-            async for chunk in doc_gen_pipeline.astream_run(query,style, user_id, session_id):
-                text = _safe_serialize(chunk)
-              
-                # 把 AIMessageChunk 信息过滤掉
-                if(text['event'] != 'token'):
-                    # 如果是完成事件，添加下载URL
-                    if (text.get('event') == 'custom' and 
-                        text.get('data', {}).get('type') == 'final_file'):
-                        # 添加静态文件访问URL
-                        file_name = text['data'].get('file_name')
-                       
-                    
-                    if not await safe_send_message(websocket, text):
-                        return
-                
-            await websocket.send_text(json.dumps({"status": "done"}))
-            
-            logging.info(f"answer done -- {user_id}-{session_id}")
+            payload = json.loads(data)
+            instruction = (payload.get("instruction") or "").strip()
+            query = payload.get("query")
+            style = payload.get("style")
 
+            if not instruction and not query:
+                await finish_with_error("缺少生成指令或报告数据")
+                continue
+
+            if instruction:
+                # ========== 新链路：自然语言指令 → 真实业务数据 → 报告 ==========
+                await send_event({
+                    "type": "doc_step", "step": "parse", "status": "running",
+                    "message": "正在理解生成指令…",
+                })
+
+                if not mcp_tools:
+                    await send_event({
+                        "type": "doc_step", "step": "connect", "status": "running",
+                        "message": "正在连接园区数据服务…",
+                    })
+                    try:
+                        mcp_tools = await asyncio.wait_for(
+                            get_mcp_tools("mcp_client/mcp_server_config.yaml"),
+                            timeout=30.0,
+                        )
+                    except Exception as e:
+                        logging.error(f"报告数据服务工具加载失败: {e}")
+                        mcp_tools = []
+                    await send_event({
+                        "type": "doc_step",
+                        "step": "connect",
+                        "status": "done" if mcp_tools else "failed",
+                        "message": (
+                            f"数据服务已连接（{len(mcp_tools)} 个工具）"
+                            if mcp_tools else "数据服务连接失败"
+                        ),
+                    })
+
+                overrides = {
+                    k: payload.get(k)
+                    for k in (
+                        "company", "start_date", "end_date", "dimensions",
+                        "period", "topics",
+                    )
+                    if payload.get(k)
+                }
+                params = await collector.parse_instruction(instruction, overrides)
+                await send_event({"type": "doc_params", **params})
+                await send_event({
+                    "type": "doc_step", "step": "parse", "status": "done",
+                    "message": "已解析生成指令",
+                })
+
+                if not mcp_tools:
+                    await finish_with_error(
+                        "园区数据服务未连接，无法获取真实业务数据。"
+                        "请确认 Java MCP sidecar 已启动后重试。"
+                    )
+                    continue
+
+                tool_map = {t.name: t for t in mcp_tools}
+                dimension_data = await collector.collect(params, tool_map, send_event)
+                if not any(dimension_data.values()):
+                    await finish_with_error("未获取到任何维度的业务数据，报告未生成")
+                    continue
+
+                query = json.dumps(
+                    {
+                        "company": params.get("company", "园区"),
+                        "start_date": params.get("start_date"),
+                        "end_date": params.get("end_date"),
+                        "dimensions": params.get("dimensions"),
+                        "data": dimension_data,
+                    },
+                    ensure_ascii=False,
+                )
+            else:
+                # ========== 兼容旧链路：前端直接传完整业务数据 ==========
+                try:
+                    query_obj = json.loads(query) if isinstance(query, str) else query
+                except (ValueError, TypeError):
+                    await finish_with_error("query 不是合法的 JSON")
+                    continue
+                if not isinstance(query_obj, dict):
+                    await finish_with_error("query 必须是 JSON 对象")
+                    continue
+                if not query_obj.get("data"):
+                    await finish_with_error("缺少报告数据 data，拒绝生成空报告")
+                    continue
+
+            await send_event({
+                "type": "doc_step", "step": "generate", "status": "running",
+                "message": "正在生成报告章节…",
+            })
+
+            # ========== 核心：调用pipeline的流式接口 ==========
+            async for chunk in doc_gen_pipeline.astream_run(query, style, user_id, session_id):
+                text = _safe_serialize(chunk)
+
+                # 把 AIMessageChunk 信息过滤掉
+                if text.get('event') == 'token':
+                    continue
+
+                # 完成事件：确保带上可访问的下载地址
+                if (text.get('event') == 'custom'
+                        and text.get('data', {}).get('type') == 'final_file'):
+                    file_name = text['data'].get('file_name')
+                    if file_name and not text['data'].get('download_url'):
+                        text['data']['download_url'] = f"/reports/{quote(file_name)}"
+                    await send_event({
+                        "type": "doc_step", "step": "generate", "status": "done",
+                        "message": "报告生成完成",
+                    })
+
+                if not await safe_send_message(websocket, text):
+                    return
+
+            await websocket.send_text(json.dumps({"status": "done"}, ensure_ascii=False))
+
+            logging.info(f"doc done -- {user_id}-{session_id}")
+
+        except WebSocketDisconnect:
+            logging.info(f"客户端已断开 -- {user_id}-{session_id}")
+            return
         except Exception as e:
-            await websocket.send_text(json.dumps({"error": str(e)}))
+            logging.error(f"报告生成异常: {e}", exc_info=True)
+            try:
+                await finish_with_error(f"报告生成失败：{str(e)}")
+            except Exception:
+                return
 
 
 '''
