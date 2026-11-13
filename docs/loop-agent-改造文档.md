@@ -1943,5 +1943,11 @@ isError: False
 `test_person_status_keeps_chart_data_untouched`、
 `test_person_status_falls_back_to_raw_when_field_missing`。
 
-> 遗留：MCP 描述里的 `realTimeNum/jingNum/chuNum` 仍与实际返回不符，
-> 正确做法是让 Java 侧把描述改成"返回一句中文摘要"。我们侧只是把落差挡住了。
+> **遗留（已移交后端）**：`PlatformPersonStatusMcp.getTodayPersonnelAffairs` 的
+> `@McpTool` 描述把**内部读取的平台字段**（`realTimeNum/jingNum/chuNum`）当成了返回值，
+> 实际返回的是一句中文摘要。后端在改这个描述，我们侧不再动。
+>
+> 兼容性：不管后端改成「描述如实写中文摘要」还是「真的返回 JSON」，
+> `_pick()` 抽不到对应字段时就**原样返回**，不会丢数据、也不会报错——
+> 前者走到 `realtime/enter/leave` 的抽取分支，后者走原样分支交给模型组织。
+> 所以后端改完不需要我们跟着改。
