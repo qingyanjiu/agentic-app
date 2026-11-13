@@ -195,11 +195,12 @@
                 <button class="chip" data-query="当前场景状态">场景状态</button>
             </div>
 
-            <!-- 问答模式切换：智能体意图问答（含自动场景控制）/ 知识库直连 -->
+            <!-- 问答模式切换：智能体意图问答（含自动场景控制）/ 知识库直连 / 报告生成 -->
             <div class="mode-switch" id="modeSwitch">
                 <button class="mode-btn active" id="modeAgentBtn" type="button" aria-selected="true">智能体问答</button>
                 <button class="mode-btn" id="modeKbBtn" type="button" aria-selected="false">知识库问答</button>
                 <button class="mode-btn" id="modeLoopBtn" type="button" aria-selected="false">Loop 新链路</button>
+                <button class="mode-btn" id="modeDocBtn" type="button" aria-selected="false">生成报告</button>
             </div>
 
             <!-- 输入区（毛玻璃悬浮） -->
@@ -218,6 +219,67 @@
             </div>
         </div>
     </main>
+
+    <!-- ==================== 报告配置（模态框，点「生成报告」弹出） ==================== -->
+    <div class="doc-modal" id="docModal" hidden>
+        <div class="doc-modal-backdrop" id="docModalBackdrop"></div>
+        <div class="doc-modal-card" role="dialog" aria-modal="true" aria-label="大模型报告">
+            <header class="doc-modal-head">
+                <h2>大模型报告</h2>
+                <button class="doc-modal-close" id="docModalClose" type="button" aria-label="关闭">×</button>
+            </header>
+
+            <div class="doc-modal-body">
+                <div class="doc-config-row">
+                    <span class="doc-config-label">报告周期</span>
+                    <div class="doc-seg" id="docPeriodSeg">
+                        <button class="doc-seg-btn active" type="button" data-value="日报">日报</button>
+                        <button class="doc-seg-btn" type="button" data-value="周报">周报</button>
+                        <button class="doc-seg-btn" type="button" data-value="月报">月报</button>
+                    </div>
+                </div>
+
+                <div class="doc-config-row doc-config-topics">
+                    <span class="doc-config-label">报告内容</span>
+                    <div class="doc-topics" id="docTopics">
+                        <label><input type="checkbox" value="安防" checked> 安防</label>
+                        <label><input type="checkbox" value="能耗" checked> 能耗</label>
+                        <label><input type="checkbox" value="通行" checked> 通行</label>
+                        <label><input type="checkbox" value="网络"> 网络</label>
+                        <label><input type="checkbox" value="设备" checked> 设备</label>
+                        <label><input type="checkbox" value="食堂" checked> 食堂</label>
+                        <label><input type="checkbox" value="会议" checked> 会议</label>
+                        <label><input type="checkbox" value="巡检" checked> 巡检</label>
+                    </div>
+                </div>
+
+                <p class="doc-modal-hint">数据实时取自园区业务系统；「网络」暂未接入数据接口。也可以直接关闭本窗口，在对话框里用一句话描述要生成的报告。</p>
+                <p class="doc-modal-error" id="docModalError" hidden></p>
+            </div>
+
+            <footer class="doc-modal-foot">
+                <button class="doc-submit" id="docSubmitBtn" type="button">获取报告</button>
+            </footer>
+        </div>
+    </div>
+
+    <!-- ==================== 文档预览（右侧抽屉，仅点击文档卡片时打开） ==================== -->
+    <aside class="doc-panel" id="docPanel" aria-hidden="true" aria-label="文档预览">
+        <header class="doc-panel-head">
+            <div>
+                <h2 id="docPreviewTitle">文档预览</h2>
+                <p id="docPreviewMeta">点击对话中的文档卡片查看</p>
+            </div>
+            <div class="doc-panel-actions">
+                <a class="doc-download" id="docDownloadBtn" href="#" download hidden>下载</a>
+                <button class="doc-close" id="docCloseBtn" type="button" aria-label="关闭">×</button>
+            </div>
+        </header>
+
+        <div class="doc-panel-body">
+            <div class="doc-stream" id="docStream"></div>
+        </div>
+    </aside>
 
     <footer class="footer">
         <p>园区智能助手 · 基于 LangGraph 与 MCP 构建</p>

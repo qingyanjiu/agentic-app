@@ -1,5 +1,8 @@
 import json
+import os
+import re
 import time
+from urllib.parse import quote
 from langgraph.checkpoint.memory import MemorySaver
 from typing import TypedDict, Optional, Dict, Any, List
 from langgraph.graph import StateGraph, START, END
@@ -25,6 +28,12 @@ from agent.doc_gen_prompt.get_executive_summary_prompt import get_prompt as gen_
 from agent.doc_gen_prompt.get_operation_metrics_prompt import get_prompt as gen_operation_metrics_prompt  # 新增
 from agent.doc_gen_prompt.get_comprehensive_evaluation_prompt import get_prompt as gen_comprehensive_evaluation_prompt  # 新增
 from agent.doc_gen_prompt.get_improvement_suggestions_prompt import get_prompt as gen_improvement_suggestions_prompt  # 新增
+
+
+# 报告输出目录：与 app.py 的 /reports 静态挂载保持一致，且不依赖进程启动目录
+_BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_REPORT_DIR = os.path.join(_BASE_DIR, "reports")
+os.makedirs(_REPORT_DIR, exist_ok=True)
 
 
 # ===================== 核心配置（可配置化章节） =====================
@@ -189,9 +198,12 @@ class GenDocPipeline:
             timestamp = int(time.time())
             # 确保session_id非空
             session_id = session_id.strip() if session_id.strip() else "default"
-            # 生成基础路径
-            self.word_file_path = f"reports/report_{session_id}_{timestamp}.docx"
-            self.word_file_name = f"report_{session_id}_{timestamp}.docx"
+            # 文件名带公司名，下载后一眼能认出来；去掉文件系统非法字符
+            safe_company = re.sub(r'[\\/:*?"<>|\s]+', '', str(company))[:24] or "园区"
+            file_name = f"{safe_company}智慧运营分析报告_{timestamp}.docx"
+            # 生成基础路径（绝对路径，避免启动目录不同导致 /reports 404）
+            self.word_file_path = os.path.join(_REPORT_DIR, file_name)
+            self.word_file_name = file_name
             # 绝对确保路径非空
             if not self.word_file_path or self.word_file_path.strip() == "":
                 self.word_file_path = f"report_fallback_{timestamp}.docx"
@@ -420,18 +432,20 @@ class GenDocPipeline:
 
         for sub_index, sub_dim in enumerate(sub_dimensions, start=1):
             # 获取子维度数据
-            sub_dim_eng =DIMENSION_DATA_MAPPING[sub_dim]
+            sub_dim_eng =DIMENSION_DATA_MAPPING.get(sub_dim)
             all_dim_data = state.get("dimension_data", {})
-            sub_dim_data = all_dim_data[sub_dim_eng]
-            
+            sub_dim_data = all_dim_data.get(sub_dim_eng, {}) if sub_dim_eng else {}
+
             # 调用子维度专属Prompt
-            prompt_func = DIMENSION_PROMPT_MAPPING[sub_dim]
+            prompt_func = DIMENSION_PROMPT_MAPPING.get(sub_dim)
+            if prompt_func is None:
+                continue
             prompt_str = prompt_func(
                 company=company,
                 start_date=start_date,
                 end_date=end_date,
-                
-                dimension_data=json.dumps(sub_dim_data, ensure_ascii=False)[:800],
+
+                dimension_data=json.dumps(sub_dim_data, ensure_ascii=False)[:2400],
                 max_words=chapter_config["max_words"] // 3  # 均分字数
             )
             
@@ -444,8 +458,9 @@ class GenDocPipeline:
                 sub_content += chunk.content
                 self.stream_output(writer, chunk.content, chapter_name)
 
-            sub_dimension_contents=(f"{full_index}{sub_content}")
-            self.update_word(state, chapter_name, sub_dimension_contents,writer)
+            sub_block = f"{full_index}{sub_content}"
+            sub_dimension_contents.append(sub_block)
+            self.update_word(state, chapter_name, sub_block, writer)
             # 缓存子维度内容
             state[f"{sub_dim.lower()}_paragraph"] = sub_content
         
@@ -668,7 +683,10 @@ class GenDocPipeline:
         # query是所有数据的json，转成数据放入state
         data_json = json.loads(query) if isinstance(query, str) else query
         data_dict = data_json.get("data", {})
-        style_json=json.loads(style) if isinstance(style, str) else style
+        if isinstance(style, str):
+            style_json = json.loads(style) if style.strip() else None
+        else:
+            style_json = style
         dimension = []
         if isinstance(data_dict, dict) and data_dict:  # 确保 data 是有效字典
             dimension = [v.get("type") for k, v in data_dict.items() if v.get("type")]
@@ -677,10 +695,11 @@ class GenDocPipeline:
             dimension = ["综合"]
 
 
-        # 重置Word生成器
+        # 重置Word生成器与章节标记（同一连接可连续生成多份报告）
         self.word_generator = None
         self.word_file_path = ''
-        self.word_file_name= ''
+        self.word_file_name = ''
+        self._added_chapter_set = set()
         self.company = data_json.get("company", "园区")
 
         # 初始 state
@@ -748,9 +767,11 @@ class GenDocPipeline:
                 "data": {
                     "type": "final_file",
                     "content": self.word_file_path,
-                    "company":self.company,
+                    "company": self.company,
                     "file_name": self.word_file_name,
                     "file_path": self.word_file_path,
+                    # 前端可直接使用的下载地址（/reports 已在 app.py 挂载）
+                    "download_url": f"/reports/{quote(self.word_file_name)}",
                     "message": "文档生成完成"
                 }
             }

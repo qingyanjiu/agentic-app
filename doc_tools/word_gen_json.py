@@ -6,8 +6,10 @@ word_generator.py
 """
 from io import BytesIO
 import json
+import logging
 import os
 import requests
+import time
 from datetime import datetime
 from typing import Dict, List, Any, Optional, Union
 from pathlib import Path
@@ -30,6 +32,22 @@ DEFAULT_CONFIG_PATH = os.path.join(SCRIPT_DIR, "default_word_styles.json")
 TIMEOUT_SECONDS = 15  # 接口超时时间
 # 配置文件编码
 CONFIG_ENCODING = "utf-8"
+
+logger = logging.getLogger(__name__)
+
+# 列表标记识别：
+#   无序：- / + / *
+#   有序：(1) / （1）、 / （1） / 1. / 1、
+_UNORDERED_LIST_RE = re.compile(r'^\s*[-+*]\s+(?P<text>.+)$')
+_ORDERED_LIST_RE = re.compile(
+    r'^\s*(?:'
+    r'\((?P<n1>\d{1,3})\)'
+    r'|（(?P<n2>\d{1,3})）、'
+    r'|（(?P<n3>\d{1,3})）'
+    r'|(?P<n4>\d{1,3})\.\s+'
+    r'|(?P<n5>\d{1,3})、'
+    r')\s*(?P<text>.*)$'
+)
 
 class CustomWordGenerator:
     """可完全通过JSON配置控制样式的Word文档生成器（支持字符串JSON配置）"""
@@ -349,13 +367,10 @@ class CustomWordGenerator:
         if style_override:
             base_config = self._merge_configs(base_config, style_override)
         
-        # 创建标题段落
+        # 创建标题段落（标题本身已加粗，这里同时清掉 ** 标记）
         para = self.doc.add_paragraph(text, style=f"Heading {level}")
         para.clear()
-        run = para.add_run(text)
-        
-        # 应用字体样式
-        self._apply_run_style(run, base_config.get("font", {}))
+        self._add_text_runs(para, text, base_config.get("font", {}))
         
         # 应用段落样式
         para_config = base_config.get("paragraph", {})
@@ -387,12 +402,9 @@ class CustomWordGenerator:
         if style_override:
             base_config = self._merge_configs(base_config, style_override)
         
-        # 创建段落
+        # 创建段落（支持 **加粗** 内联标记）
         para = self.doc.add_paragraph()
-        run = para.add_run(text)
-        
-        # 应用字体样式
-        self._apply_run_style(run, base_config.get("font", {}))
+        self._add_text_runs(para, text, base_config.get("font", {}))
         
         # 应用段落样式
         para_config = base_config.get("paragraph", {})
@@ -458,14 +470,15 @@ class CustomWordGenerator:
             for i, header_text in enumerate(headers):
                 if i >= num_cols:
                     break
+                header_text = self._strip_bold(header_text)
                 cell = header_row.cells[i]
-                cell.text = str(header_text)
-                
+                cell.text = header_text
+
                 # 表头样式
                 for para in cell.paragraphs:
                     # 清空原有内容
                     para.clear()
-                    run = para.add_run(str(header_text))
+                    run = para.add_run(header_text)
                     
                     # 应用表头字体样式
                     self._apply_run_style(run, header_config["font"])
@@ -503,12 +516,13 @@ class CustomWordGenerator:
             for col_idx in range(num_cols):
                 cell = data_row.cells[col_idx]
                 cell_text = data[data_idx][col_idx] if data_idx < len(data) and col_idx < len(data[data_idx]) else ""
-                cell.text = str(cell_text)
-                
+                cell_text = self._strip_bold(cell_text)
+                cell.text = cell_text
+
                 # 行样式
                 for para in cell.paragraphs:
                     para.clear()
-                    run = para.add_run(str(cell_text))
+                    run = para.add_run(cell_text)
                     
                     # 应用行字体样式
                     self._apply_run_style(run, row_config["font"])
@@ -546,7 +560,45 @@ class CustomWordGenerator:
         
         if "color" in font_config:
             run.font.color.rgb = RGBColor.from_string(font_config["color"])
-    
+
+    @staticmethod
+    def _strip_bold(text: str) -> str:
+        """去掉 **加粗** 标记（用于不解析内联样式的场景，如表格单元格）。"""
+        return re.sub(r'\*\*(.+?)\*\*', r'\1', str(text or ''))
+
+    def _add_text_runs(self, paragraph, text: str, font_config: Dict) -> None:
+        """把文本写入段落，支持 **加粗** 内联标记。"""
+        for part in re.split(r'(\*\*.+?\*\*)', str(text or '')):
+            if not part:
+                continue
+            if len(part) > 4 and part.startswith('**') and part.endswith('**'):
+                run = paragraph.add_run(part[2:-2])
+                self._apply_run_style(run, font_config)
+                run.font.bold = True
+            else:
+                # 未配对/残余的 ** 直接去掉，避免正文出现星号
+                run = paragraph.add_run(part.replace('**', ''))
+                self._apply_run_style(run, font_config)
+
+    @staticmethod
+    def _match_list_marker(line: str):
+        """识别列表项，返回 (kind, 序号, 文本)；不是列表返回 None。"""
+        text_line = (line or '').rstrip()
+        m = _UNORDERED_LIST_RE.match(text_line)
+        if m:
+            return "unordered", None, m.group("text").strip()
+        m = _ORDERED_LIST_RE.match(text_line)
+        if m:
+            item = m.group("text").strip()
+            if not item:  # 只有序号没有内容，按普通段落处理
+                return None
+            num = next(
+                (m.group(g) for g in ("n1", "n2", "n3", "n4", "n5") if m.group(g)),
+                None,
+            )
+            return "ordered", num, item
+        return None
+
     def _set_cell_background(self, cell, color_hex: str):
         """设置单元格背景色"""
         shading = OxmlElement('w:shd')
@@ -555,8 +607,8 @@ class CustomWordGenerator:
     
     def _fix_escape_characters(self, text: str) -> str:
         """修复转义字符"""
-        # 1. 去掉 ** 和 &nbsp;&nbsp;
-        text = text.replace('**', '').replace('&nbsp;&nbsp;', '')  
+        # 1. 清掉 HTML 空格（** 保留，交由 _add_text_runs 渲染为粗体）
+        text = text.replace('&nbsp;&nbsp;', '')
         # 2. 给 1、2、3、 前面加换行
         text = re.sub(r'(\d+、)', r'\n\1', text)
         # 3. 给 (a)、(b)、(c)、 前面加换行（支持中英文括号） 
@@ -590,16 +642,21 @@ class CustomWordGenerator:
                 i += 1
                 continue
             
-            # 列表
-            if re.match(r'^([\-\+]|\(\d+\))\s+.+$', line):
-                items = []
-                while i < len(lines) and re.match(r'^([\-\+]|\(\d+\))\s+.+$', lines[i]):
-                    items.append(re.sub(r'^([\-\+]|\(\d+\))\s+', '', lines[i]))
+            # 列表（无序：- + *；有序：(1) / （1）、 / （1） / 1. / 1、）
+            first_marker = self._match_list_marker(line)
+            if first_marker:
+                kind = first_marker[0]
+                while i < len(lines):
+                    marker = self._match_list_marker(lines[i])
+                    if not marker or marker[0] != kind:
+                        break
+                    if kind == "unordered":
+                        self.add_paragraph(f"·{marker[2]}", style="list_item")
+                    else:
+                        self.add_paragraph(f"{marker[1]}、{marker[2]}", style="list_item")
                     i += 1
-                for item in items:
-                    self.add_paragraph(f"·{item}", style="list_item")
                 continue
-            
+
             # 表格
             if '|' in line and re.match(r'^\|.*\|$', line):
                 table_lines = []
@@ -614,11 +671,13 @@ class CustomWordGenerator:
                         data.append([cell.strip() for cell in line.split('|')[1:-1]])
                     self.add_table(data, headers=headers)
                 continue
-            
+
             # 普通段落
             para_text = line
             i += 1
-            while i < len(lines) and lines[i].strip() and not re.match(r'^[#\*\-\+|]', lines[i]):
+            while (i < len(lines) and lines[i].strip()
+                   and not re.match(r'^[#\*\-\+|]', lines[i])
+                   and not self._match_list_marker(lines[i])):
                 para_text += ' ' + lines[i].strip()
                 i += 1
             self.add_paragraph(para_text)
@@ -662,20 +721,20 @@ class CustomWordGenerator:
             return None
         # 空路径校验 + 兜底
         if not filepath or filepath.strip() == "":
-            # 生成临时兜底路径
+            # 生成临时兜底路径（绝对路径，避免落在进程启动目录）
             timestamp = int(time.time())
-            filepath = f"report_fallback_{timestamp}.docx"
-            printf("传入空文件路径，自动使用兜底路径")
+            filepath = os.path.abspath(f"report_fallback_{timestamp}.docx")
+            logger.warning("传入空文件路径，自动使用兜底路径：%s", filepath)
         try:
             # 确保目录存在（处理绝对/相对路径）
             dir_path = os.path.dirname(filepath)
             if dir_path:  # 仅当目录非空时创建（避免创建空目录）
                 os.makedirs(dir_path, exist_ok=True)
             self.doc.save(filepath)
-           
+
             return filepath
         except Exception as e:
-            printf(" 保存文档失败")
+            logger.error("保存文档失败：%s（路径：%s）", e, filepath, exc_info=True)
             return None
 
 
