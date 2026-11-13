@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import logging
+import re
 
 from agent.intent.slots import extract_person_status_slots
 
@@ -38,6 +39,36 @@ _QUERY_PARAM = {
         "description": "用户的原始问句。工具会自己解析是「实时/进入/离开/人数/流动/结构」中的哪一类。",
     }
 }
+
+
+# 后端 getTodayPersonnelAffairs 的实际返回是一句中文：
+#   「实时在园人数：375人；今日进入人数：472人；今日离开人数：97人。」
+# 但它的 MCP 描述写的是三个字段名（realTimeNum / jingNum / chuNum），
+# 模型照着描述去等 JSON，拿到文本就判"解析失败"，于是编出
+# 「接口返回的是字符串而不是预期的 JSON 结构（类型转换报错）」这种话。
+# 这里先把用户问的那一项抽出来，模型（或 L1 直出）拿到就是答案。
+_PERSON_FIELD = {
+    "realtime": (r"实时在园人数[：:]\s*(\d+)\s*人", "实时在园人数"),
+    "count": (r"实时在园人数[：:]\s*(\d+)\s*人", "实时在园人数"),
+    "enter": (r"今日进入人数[：:]\s*(\d+)\s*人", "今日进入人数"),
+    "leave": (r"今日离开人数[：:]\s*(\d+)\s*人", "今日离开人数"),
+}
+
+
+def _pick(raw: str, query_type: str) -> str:
+    """从后端那句中文里挑出用户问的那一项。
+
+    flow / structure 是图表数据（时间轴序列、公司人数），不是这句话，
+    原样交给模型，别去动它。抽不到也原样返回——宁可多给，不能丢数据。
+    """
+    spec = _PERSON_FIELD.get(query_type)
+    if spec is None:
+        return raw
+    pattern, label = spec
+    match = re.search(pattern, raw or "")
+    if not match:
+        return raw
+    return f"{label}：{match.group(1)}人"
 
 
 def preview_plan(query: str) -> dict:
@@ -86,7 +117,7 @@ def build_domain(toolbox: McpToolbox) -> DomainSpec:
             logger.warning(f"[loop] 人员态势查询失败（{tool_name}）：{exc}")
             return ToolOutcome(f"人员态势查询失败：{exc}", is_error=True)
 
-        return ToolOutcome(govern(raw, label=f"person_{query_type}"))
+        return ToolOutcome(govern(_pick(raw, query_type), label=f"person_{query_type}"))
 
     return DomainSpec(
         name="person_status",
@@ -98,6 +129,8 @@ def build_domain(toolbox: McpToolbox) -> DomainSpec:
                     "查询人员态势数据。适用于「现在园区有多少人」「今天进了多少人」"
                     "「人员流动情况」「人员结构是怎样的」。"
                     "工具会自己判断是人数、进出、流动还是结构，调用方不需要指定子类型。"
+                    "注意：后端返回的是**中文文本**（如「实时在园人数：375人；今日进入…」），"
+                    "不是 JSON；本工具已按用户问的那一项抽好，直接读文本作答即可。"
                 ),
                 parameters=tool_schema(_QUERY_PARAM, ["query"]),
                 execute=person_status,

@@ -217,3 +217,35 @@ def test_neutral_query_falls_back_to_a_real_tool(domain):
             f"{domain} / {probe!r} 落到 {query_type}（不在 tool_map），"
             f"default={config.default_type}"
         )
+
+
+# ----------------------------------------------------------------------
+# 人员态势：后端返回的是一句中文，不是 JSON（模型曾照描述当成 JSON 解析失败）
+# ----------------------------------------------------------------------
+def test_person_status_picks_the_asked_number():
+    """"现在园区有多少人"只回答实时在园人数，别把三项全倒出来。"""
+    from agent.loop.domains.person_status import _pick
+
+    raw = "实时在园人数：375人；今日进入人数：472人；今日离开人数：97人。"
+    assert _pick(raw, "realtime") == "实时在园人数：375人"
+    assert _pick(raw, "count") == "实时在园人数：375人"
+    assert _pick(raw, "enter") == "今日进入人数：472人"
+    assert _pick(raw, "leave") == "今日离开人数：97人"
+
+
+def test_person_status_keeps_chart_data_untouched():
+    """流动/结构是图表数据，不能被句子抽取改写。"""
+    from agent.loop.domains.person_status import _pick
+
+    flow = '[{"进入人数": [1, 2, 3]}]'
+    assert _pick(flow, "flow") == flow
+    assert _pick('{"公司A": 12}', "structure") == '{"公司A": 12}'
+
+
+def test_person_status_falls_back_to_raw_when_field_missing():
+    """抽不到就原样返回，宁可多给也不能丢数据。"""
+    from agent.loop.domains.person_status import _pick
+
+    raw = "实时在园人数：0人"
+    assert _pick(raw, "leave") == raw
+    assert _pick("", "realtime") == ""

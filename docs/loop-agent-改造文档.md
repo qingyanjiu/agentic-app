@@ -1886,3 +1886,62 @@ AREA_DICT = {..., "食堂": ["食堂", "餐厅"], ...}
 `test_restaurant_query_hits_restaurant_points`、
 `test_canteen_query_still_hits_canteen_points`、
 `test_area_alias_falls_back_when_first_word_misses`。
+
+### 21.22 「现在园区有多少人」被判成"接口返回字符串、类型转换报错"
+
+用户看到的是：
+
+```
+人员态势查询失败了，接口返回的是字符串而不是预期的JSON 结构（类型转换报错）…
+建议让平台侧检查一下人员态势接口的返回格式
+```
+
+**接口其实没问题。** 直接打 MCP（`/mcp/personStatus` → `getTodayPersonnelAffairs`）
+拿到的是：
+
+```
+isError: False
+实时在园人数：375人；今日进入人数：472人；今日离开人数：97人。
+```
+
+问题出在**MCP 工具描述与实际返回格式不一致**。工具描述写的是三个字段：
+
+```
+返回三个数字：
+- 实时在园人数（realTimeNum）
+- 今日进入人数（jingNum）
+- 今日离开人数（chuNum）
+```
+
+模型按描述去等 JSON 字段，拿到中文句子就判"解析失败"，然后自己编了个原因
+（"类型转换报错"）并建议用户去催平台。代码里搜不到这句话——它是模型自己写的。
+
+顺带确认触发路径是正常的：`现在园区有多少人` 走 L1（置信度 0.811 →
+`person_status__query`），工具本身 `is_error=False`。
+
+改法（都在 loop 侧，**不动 Java**）：
+
+1. `person_status._pick()`：按 `query_type` 从那句中文里抽出用户问的那一项，
+   `realtime/count` → 「实时在园人数：382人」，`enter` → 「今日进入人数：481人」，
+   `leave` → 「今日离开人数：99人」；`flow/structure` 是图表数据，原样不动；
+   抽不到也原样返回（宁可多给，不能丢数据）。
+2. 工具描述补一句「后端返回的是**中文文本**，不是 JSON；本工具已按问题抽好」，
+   让 L2 里的模型不再对着描述等结构化数据。
+3. 系统提示词第 9 条：工具返回可能是一句中文，先看内容里有没有答案，
+   不要判"格式不对"，更不要编造"类型转换报错"这类原因（真出错工具会明说失败）。
+
+实测（改后，真机）：
+
+| 问法 | 工具返回 |
+|---|---|
+| 现在园区有多少人 | 实时在园人数：382人 |
+| 今天进了多少人 | 今日进入人数：481人 |
+| 今天离开多少人 | 今日离开人数：99人 |
+| 人员流动情况 | 原始 JSON 序列（对应前端图表） |
+
+测试：`test_person_status_picks_the_asked_number`、
+`test_person_status_keeps_chart_data_untouched`、
+`test_person_status_falls_back_to_raw_when_field_missing`。
+
+> 遗留：MCP 描述里的 `realTimeNum/jingNum/chuNum` 仍与实际返回不符，
+> 正确做法是让 Java 侧把描述改成"返回一句中文摘要"。我们侧只是把落差挡住了。
