@@ -1951,3 +1951,45 @@ isError: False
 > `_pick()` 抽不到对应字段时就**原样返回**，不会丢数据、也不会报错——
 > 前者走到 `realtime/enter/leave` 的抽取分支，后者走原样分支交给模型组织。
 > 所以后端改完不需要我们跟着改。
+
+### 21.23 空结果被说成"服务异常"——「今天园区安防事件有哪些」
+
+用户看到：
+
+```
+安防态势接口两次都返回了空结果…可能是这个时间段的告警数据未生成或服务异常，建议稍后再试。
+```
+
+真机核对（`/mcp/securityStatus`）：
+
+```
+security:getSecurityAlarmList  → isError: False, content: 'null'
+security:getAlarmListWithType  → isError: False, content: 'null'
+security:getAlarmView         → {"alarmTypeCount":0,"accuracy":0,"todayCount":0,"yearCount":0}
+```
+
+接口**调用成功**、今天**确实是 0 条告警**，但返回体是字面字符串 `null`。
+模型拿到 `"null"` 没内容可答，就自己补了"数据未生成/服务异常/稍后再试"。
+（"两次"是因为它又调了一次工具重试——规则 8 也覆盖了这点。）
+
+改法（在 `_generic` 层做，11 个查询域一起受益）：
+
+1. `_is_empty_payload()`：`null` / `[]` / `{}` / 空串 / `[ ]`（先去掉所有空白再比）
+   都算"接口正常但没数据"；
+2. `_empty_note()`：返回**结论 + 禁止瞎猜**的一段话——
+   「这个时间段没有安防告警事件（接口正常返回、值为空，不是故障）。直接按这个结论
+   回答用户即可；不要说接口异常、服务异常、数据未生成，也不要让用户稍后再试。」
+3. `QueryDomain.empty_hint`（新增可选字段）：给每个域配自己的结论话术。
+   安防配「这个时间段没有安防告警事件」，其余域默认「该时段没有查到记录」。
+4. 系统提示词第 10 条：空结果 = 这个时间段没有数据，直接答"没有"。
+
+实测（改后）：`今天园区安防事件有哪些` → `is_error=False`，
+文案为「这个时间段没有安防告警事件（接口正常返回、值为空，不是故障）…」；
+`现在园区有多少人` 仍有数据（398 人），没被误判成空。
+
+测试：`test_empty_payload_detection`、
+`test_security_empty_result_says_no_alarm_not_failure`、
+`test_empty_result_does_not_trigger_for_normal_payload`。
+
+> 同类风险：其他 MCP 工具用 `null` 表示"没有数据"时也会走到这条分支，
+> 这就是把它放在 `_generic` 而不是 `security_status` 里的原因。

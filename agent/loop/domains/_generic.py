@@ -40,6 +40,8 @@ class QueryDomain:
     missing_hint: dict[str, str] = field(default_factory=dict)
     # 可选：把 slots 转成 MCP 参数（默认不传，让 Java 用默认口径）
     args_builder: Callable[[dict], dict] | None = None
+    # 可选：接口正常但没有数据时，给用户的结论话术（默认「没有查到记录」）
+    empty_hint: str = ""
 
     def resolve(self, query: str) -> tuple[str, str | None, dict, list[str]]:
         slots = self.extract_slots(query) or {}
@@ -116,6 +118,9 @@ def build_from(cfg: QueryDomain, toolbox: McpToolbox) -> DomainSpec:
         except Exception as exc:
             return ToolOutcome(f"查询失败：{exc}", is_error=True)
 
+        if _is_empty_payload(raw):
+            return ToolOutcome(_empty_note(cfg, query_type))
+
         return ToolOutcome(govern(raw, label=f"{cfg.name}_{query_type}"))
 
     return DomainSpec(
@@ -133,4 +138,33 @@ def build_from(cfg: QueryDomain, toolbox: McpToolbox) -> DomainSpec:
         mcp_tools=tuple(
             (cfg.server, name) for name in dict.fromkeys(cfg.tool_map.values())
         ),
+    )
+
+
+# 接口"正常但没数据"的几种写法。
+# 实测 security:getSecurityAlarmList / getAlarmListWithType 今天返回的就是
+# 字面字符串 `null`（isError 还是 False），模型看到 "null" 就说
+# 「两次都返回空结果，可能服务异常，建议稍后再试」——空结果被说成了故障。
+_EMPTY_LITERALS = frozenset({"", "null", "none", "[]", "{}", "nil", "undefined"})
+
+
+def _is_empty_payload(raw: str | None) -> bool:
+    """接口调用成功，但没有数据（null / 空数组 / 空对象 / 空串）。
+
+    先去掉所有空白再比：后端偶尔给 `[ ]`、`{ }` 这种写法。
+    """
+    return "".join((raw or "").split()).lower() in _EMPTY_LITERALS
+
+
+def _empty_note(cfg: QueryDomain, query_type: str) -> str:
+    """空结果要说得像"没有"，不像"坏了"。
+
+    这段会进模型上下文（L1 走 composer、L2 由模型作答），措辞直接决定
+    它会不会编「服务异常」「稍后再试」。所以既给结论，也明确禁止瞎猜。
+    """
+    conclusion = cfg.empty_hint or "该时段没有查到记录"
+    return (
+        f"{conclusion}（接口正常返回、值为空，不是故障）。"
+        f"直接按这个结论回答用户即可；不要说接口异常、服务异常、数据未生成，"
+        f"也不要让用户稍后再试。"
     )

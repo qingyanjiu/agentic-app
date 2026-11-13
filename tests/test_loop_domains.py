@@ -249,3 +249,63 @@ def test_person_status_falls_back_to_raw_when_field_missing():
     raw = "实时在园人数：0人"
     assert _pick(raw, "leave") == raw
     assert _pick("", "realtime") == ""
+
+
+# ----------------------------------------------------------------------
+# 接口正常但没数据：要说"没有"，不能说"服务异常"
+# ----------------------------------------------------------------------
+def test_empty_payload_detection():
+    from agent.loop.domains._generic import _is_empty_payload
+
+    for raw in [None, "", "  ", "null", "NULL", "[]", "{}", "[ ]"]:
+        assert _is_empty_payload(raw) is True, raw
+    # 有内容就不能判空
+    for raw in ['[{"a": 1}]', "实时在园人数：0人", "0", '{"todayCount": 0}']:
+        assert _is_empty_payload(raw) is False, raw
+
+
+def test_security_empty_result_says_no_alarm_not_failure():
+    """实测 getSecurityAlarmList 今天返回字面 "null"，isError=False。"""
+    import asyncio
+    import json
+
+    from agent.loop.domains import security_status
+
+    class Box:
+        async def call(self, server, tool, args=None):
+            return "null"
+
+    tool = {
+        t.name: t for t in security_status.build_domain(Box()).tools
+    }["security_status__query"]
+
+    out = asyncio.run(tool.execute({"query": "今天园区安防事件有哪些"}))
+
+    assert out.is_error is False
+    assert "没有安防告警事件" in out.text
+    # 明确禁止的三种瞎猜都要点到，否则模型换个说法继续编
+    assert "不是故障" in out.text
+    assert "服务异常" in out.text          # 作为"不要说"的宾语出现
+    assert "稍后再试" in out.text
+
+
+def test_empty_result_does_not_trigger_for_normal_payload():
+    """有数据时不能走空结果分支。"""
+    import asyncio
+    import json
+
+    from agent.loop.domains import security_status
+
+    class Box:
+        async def call(self, server, tool, args=None):
+            return json.dumps([{"alarmTypeName": "周界入侵", "handleStat": "0"}],
+                              ensure_ascii=False)
+
+    tool = {
+        t.name: t for t in security_status.build_domain(Box()).tools
+    }["security_status__query"]
+
+    out = asyncio.run(tool.execute({"query": "今天园区安防事件有哪些"}))
+
+    assert "周界入侵" in out.text
+    assert "没有安防告警事件" not in out.text

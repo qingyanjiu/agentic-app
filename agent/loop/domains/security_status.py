@@ -29,6 +29,8 @@ CONFIG = QueryDomain(
         "ai_alarm_list": "security:getAlarmListWithType",
     },
     default_type="alarm_list",
+    # 接口正常但没数据时别让模型说成"服务异常"（实测 getSecurityAlarmList 返回 "null"）
+    empty_hint="这个时间段没有安防告警事件",
     required={"alarm_detail": ("alarm_id",)},
     missing_hint={"alarm_id": "缺少要查询的告警。请向用户确认告警编号"},
 )
