@@ -3034,12 +3034,11 @@ async def doc_ws(websocket: WebSocket, user_id: str, session_id: Optional[str] =
     except Exception as e:
         error_msg = f"工具加载失败：{str(e)}"
         logging.error(error_msg)
-        await websocket.send_text(json.dumps({
+        await safe_send_message(websocket, {
             "type": "error",
             "message": error_msg,
             "code": "TOOL_LOAD_FAILED"
-        }))
-        await websocket.close()
+        })
         return
 
   
@@ -3057,12 +3056,11 @@ async def doc_ws(websocket: WebSocket, user_id: str, session_id: Optional[str] =
     except Exception as e:
         error_msg = f"Pipeline创建失败：{str(e)}"
         logging.error(error_msg)
-        await websocket.send_text(json.dumps({
+        await safe_send_message(websocket, {
             "type": "error",
             "message": error_msg,
             "code": "PIPELINE_CREATE_FAILED"
-        }))
-        await websocket.close()
+        })
         return
 
     while True:
@@ -3072,7 +3070,8 @@ async def doc_ws(websocket: WebSocket, user_id: str, session_id: Optional[str] =
             query = json.loads(data).get("query")
             style= json.loads(data).get("style")
             if not query:
-                await websocket.send_text(json.dumps({"error": "empty query"}))
+                if not await safe_send_message(websocket, {"error": "empty query"}):
+                    return
                 continue
             
 # ========== 核心：调用pipeline的流式接口 ==========
@@ -3093,12 +3092,21 @@ async def doc_ws(websocket: WebSocket, user_id: str, session_id: Optional[str] =
                     if not await safe_send_message(websocket, text):
                         return
                 
-            await websocket.send_text(json.dumps({"status": "done"}))
+            if not await safe_send_message(websocket, {"status": "done"}):
+                return
             
             logging.info(f"answer done -- {user_id}-{session_id}")
 
+        except WebSocketDisconnect:
+            # 前端关页面/换页很常见，不是异常：安静退出就行。
+            # 以前这里落到下面的 except Exception，又往已关闭的连接 send_text，
+            # 于是每次关页面都打一条 "Unexpected ASGI message 'websocket.send'" 长栈。
+            logging.info(f"客户端已断开 -- {user_id}-{session_id}")
+            return
         except Exception as e:
-            await websocket.send_text(json.dumps({"error": str(e)}))
+            logging.error(f"生成文档失败 -- {user_id}-{session_id}: {e}", exc_info=True)
+            if not await safe_send_message(websocket, {"error": str(e)}):
+                return
 
 
 '''

@@ -1809,3 +1809,34 @@ list 事件：60 项 / 12444 字节（单帧）
 `test_broad_summary_does_not_label_mixed_types_as_gate`、
 `test_ledger_word_is_not_treated_as_device_name`、
 `test_name_contains_phrase_filters_by_the_word`。
+
+### 21.20 关掉生成文档页面时的长栈（`doc_ws` 往已关闭连接写消息）
+
+线上日志里每次关页面都刷一屏：
+
+```
+File "/root/agentic-app/app.py", line 3071, in doc_ws
+    data = await websocket.receive_text()
+starlette.websockets.WebSocketDisconnect: (1000, '')
+During handling of the above exception, another exception occurred:
+File "/root/agentic-app/app.py", line 3101, in doc_ws
+    await websocket.send_text(json.dumps({"error": str(e)}))
+RuntimeError: Unexpected ASGI message 'websocket.send', after sending 'websocket.close'
+```
+
+`WebSocketDisconnect`（客户端正常关闭，code 1000）落进了 `except Exception`，
+又往已经关闭的连接 `send_text`，于是把「断开」变成一条 ERROR 长栈。
+`/chat` 那条 WS 早就用 `try/except` + `safe_send_message` 兜住了，只有 `/gen_doc` 没有。
+
+修法：
+
+- `except WebSocketDisconnect` 单独一支：打一条 info（`客户端已断开`）后 `return`；
+- 其余异常的回复、`{"status":"done"}`、`empty query`、启动期的两条错误
+  （`TOOL_LOAD_FAILED` / `PIPELINE_CREATE_FAILED`）全部改走 `safe_send_message`，
+  它先查 `client_state.CONNECTED` 并吞掉 `WebSocketDisconnect/RuntimeError/OSError`；
+- 顺手去掉 `await websocket.close()`：连接本来就断了，对已关闭的 socket 调 close
+  同样会抛 RuntimeError。
+
+> 注：`app.py` 在本机测试环境导入不了（缺 `langchain_classic`），这条路径没有单测覆盖，
+> 只有 `py_compile` + 代码走查。验证办法：连 `/gen_doc` 后直接关页面，
+> 后端应只留一行 `客户端已断开 -- u-s`，不再出现 ASGI traceback。
