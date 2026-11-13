@@ -42,6 +42,8 @@ class QueryDomain:
     args_builder: Callable[[dict], dict] | None = None
     # 可选：接口正常但没有数据时，给用户的结论话术（默认「没有查到记录」）
     empty_hint: str = ""
+    # 可选：把接口原文转成面向用户的文本（图表 JSON → 人话列表这类）
+    formatter: Callable[[str, str], str] | None = None
 
     def resolve(self, query: str) -> tuple[str, str | None, dict, list[str]]:
         slots = self.extract_slots(query) or {}
@@ -121,7 +123,10 @@ def build_from(cfg: QueryDomain, toolbox: McpToolbox) -> DomainSpec:
         if _is_empty_payload(raw):
             return ToolOutcome(_empty_note(cfg, query_type))
 
-        return ToolOutcome(govern(raw, label=f"{cfg.name}_{query_type}"))
+        # 有些接口返回的是画图表用的 JSON（如 getEquipClass 的 ECharts 数据），
+        # 不转换的话模型有时会原样贴给用户，同一问题两次回答格式就不一样了。
+        text = cfg.formatter(raw, query_type) if cfg.formatter else raw
+        return ToolOutcome(govern(text, label=f"{cfg.name}_{query_type}"))
 
     return DomainSpec(
         name=cfg.name,

@@ -309,3 +309,56 @@ def test_empty_result_does_not_trigger_for_normal_payload():
 
     assert "周界入侵" in out.text
     assert "没有安防告警事件" not in out.text
+
+
+# ----------------------------------------------------------------------
+# getEquipClass 返回 ECharts 饼图 JSON：工具层要转成人话，别让模型贴 JSON
+# ----------------------------------------------------------------------
+ECHARTS = (
+    '[{"itemStyle":{"color":"#3288F9"},"name":"监控","value":268},'
+    '{"itemStyle":{"color":"#F8B70B"},"name":"门禁","value":97},'
+    '{"itemStyle":{"color":"#00C9A7"},"name":"广播","value":21}]'
+)
+
+
+def test_equip_class_json_becomes_readable_list():
+    from agent.loop.domains.device_status import _format_equip_class
+
+    text = _format_equip_class(ECHARTS, "equip_class")
+
+    assert "{" not in text and "itemStyle" not in text
+    lines = text.splitlines()
+    assert lines[0] == "设备类型统计（各类合计 386 台）："
+    assert lines[1] == "- 监控 268 台（69%）"
+    assert lines[2] == "- 门禁 97 台（25%）"
+    assert lines[3] == "- 广播 21 台（5%）"
+
+
+def test_equip_class_formatter_is_scoped():
+    """别的子类型、非 JSON、结构不符都原样返回，不瞎猜。"""
+    from agent.loop.domains.device_status import _format_equip_class
+
+    assert _format_equip_class(ECHARTS, "category_health") == ECHARTS
+    assert _format_equip_class("实时文本", "equip_class") == "实时文本"
+    assert _format_equip_class('[{"foo": 1}]', "equip_class") == '[{"foo": 1}]'
+    assert _format_equip_class("[]", "equip_class") == "[]"
+
+
+def test_device_status_tool_uses_formatter():
+    """工具出口就是人话，L1/L2 拿到的内容一致。"""
+    import asyncio
+
+    from agent.loop.domains import device_status as ds
+
+    class Box:
+        async def call(self, server, tool, args=None):
+            return ECHARTS
+
+    tool = {
+        t.name: t for t in ds.build_domain(Box()).tools
+    }["device_status__query"]
+
+    out = asyncio.run(tool.execute({"query": "设备类型统计"}))
+
+    assert out.text.startswith("设备类型统计（各类合计 386 台）：")
+    assert "itemStyle" not in out.text

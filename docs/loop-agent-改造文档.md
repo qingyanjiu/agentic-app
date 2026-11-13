@@ -1993,3 +1993,46 @@ security:getAlarmView         → {"alarmTypeCount":0,"accuracy":0,"todayCount":
 
 > 同类风险：其他 MCP 工具用 `null` 表示"没有数据"时也会走到这条分支，
 > 这就是把它放在 `_generic` 而不是 `security_status` 里的原因。
+
+### 21.24 同一个「设备类型统计」，两次格式不一样
+
+用户看到同一问题两次回答：
+
+```
+① [{“itemStyle”:{“color”:“#3288F9”},“name”:“监控”,“value”:268}, …]   ← JSON 原文
+② 监控 268 台 / 门禁 97 台 / 广播 21 台 / 道闸 2 台 / 电表 2 台 / 梯控 1 台
+```
+
+数字完全一致，差别只在**谁组织回答**。`device:getEquipClass` 返回的是
+ECharts 饼图数据（`itemStyle/name/value`）——前端画图用，不是给人看的：
+
+```json
+[{"itemStyle":{"color":"#3288F9"},"name":"监控","value":268}, …]
+```
+
+工具层原样往下传，于是 L1 里由 composer 组织成列表（②），
+L2 里由模型自由发挥，有时就整串贴出来（①）。
+
+改法：给 `_generic.QueryDomain` 加可选 `formatter(raw, query_type) -> str`，
+在 `govern` 之前调用；`device_status` 注册 `_format_equip_class`：
+
+```
+设备类型统计（各类合计 391 台）：
+- 监控 268 台（69%）
+- 门禁 97 台（25%）
+- 广播 21 台（5%）
+- 道闸 2 台（1%）
+- 电表 2 台（1%）
+- 梯控 1 台（0%）
+```
+
+结构对不上（不是 `[{name,value}]`）、非 JSON、或别的是子类型 → 原样返回，
+不让工具去猜。
+
+**顺带发现的口径差异（未改，属后端）**：饼图合计 391 台，但
+`listDeviceOnly` 台账是 579 台（门禁 200 / 电表 66 …）。饼图里门禁只有 97、
+电表只有 2。两个接口统计口径不同，若用户问"为什么总数不一样"，
+需要后端确认 `getEquipClass` 到底按什么范围统计（当前描述只写"合计即设备总数"）。
+
+测试：`test_equip_class_json_becomes_readable_list`、
+`test_equip_class_formatter_is_scoped`、`test_device_status_tool_uses_formatter`。
