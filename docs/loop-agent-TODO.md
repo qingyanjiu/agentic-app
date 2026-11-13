@@ -29,6 +29,7 @@
 | T17 | **其余业务域接入结构化实体**（person/vehicle/告警 + 行内 `entity:` 链接） | P2 | 每域半天 | 前端 `list` 事件落地后 | 中 |
 | T18 | **loop/graph 解耦**（删 legacy 的前置改造，见 `docs/loop-graph-解耦方案.md`） | **P1** | ≈ 5.5 人日（P0 已完成） | 无 | 中 |
 | T19 | **楼层级监控画面能力**（场景侧 `scene` 只有单点位 tag） | P2 | 待评估 | 与场景/UE 侧确认 | 中 |
+| T20 | **skill 化改造**（域内口径交给 skill，router 保留兜底，见 `docs/loop-agent-skill方案.md`） | P2 | P0 半天 / P1 1 天 | 无（与 T18 可并行） | 中 |
 
 **顺序建议**：T1 → 等业务语料（T2）→ T3 → T4 → 用 T1 数据决定是否做 T5。
 
@@ -605,8 +606,51 @@ KB 分支、loop 分支、场景分流、业务状态机、多模态兜底。直
 `graph/**` 不许 import `agent.loop` —— 由 P0 的测试守着，新增即失败。
 
 ---
+## 8. T20 skill 化改造（域内口径交给 skill，router 保留兜底）
 
-## 8. 明确不做的
+### 8.1 要解决的问题
+
+有三个反复出现的缺口，本质是同一个：**有明确业务口径，但没有确定性入口**。
+
+| 现象 | 实测证据 |
+|---|---|
+| 同一问法结果飘 | 「每个楼层有多少设备呢」置信度 **0.735** → L2；「各楼层设备数量」**0.757** → L1 `device_query__list`，差 0.003 就换链路 |
+| 楼层数据不可信 | `countByFloor` 每层 1~5 台（合计 14），台账同楼层 122/60/47…；`countBySpace` 只回 spaceId 无楼层名 |
+| L2 选错工具 | `devicequery` 21 个动态工具 + 13 域工具全暴露给模型，模型只能靠描述猜 |
+| 图表 JSON 被贴给用户 | `getEquipClass` 的 `[{itemStyle,name,value}]` 原样出现在回答里 |
+
+### 8.2 核心判断
+
+**不是用 skill 取代 router。** 和 skill 真正重叠的只有 router 里「选具体子类型工具」那一段；
+「判 L1/L2」「追问态合并」「场景/跨域分流」这三件事 skill 替代不了。
+
+一句话：**skill 管"怎么查"，router 管"能不能查、要不要问人"**。
+
+### 8.3 必读文档
+
+| 文档 | 作用 |
+|---|---|
+| `docs/loop-agent-skill方案.md` | **主文档**：三种 skill 形态、`skill.yaml` 声明格式、四个接入点、优先级规则、输出契约、P0–P3 分步、待拍板问题 |
+| `docs/loop-agent-改造文档.md` §21 | skill 直出时必须复用的输出契约来源（`_summary` 前缀、`empty_hint`、`BROAD_RESULT_LIMIT`、`MAX_LIST_ITEMS`） |
+
+### 8.4 进度
+
+| 步骤 | 内容 | 状态 |
+|---|---|---|
+| P0 | `skills.py` + `SkillRegistry` + `router.route()` 加 `match_skill`（默认关闭 `LOOP_SKILLS_ENABLED=false`） | 未开始 |
+| P1 | 第一个 skill：楼层分布（台账口径本地聚合，直出） | 未开始 |
+| P2 | `ToolRegistry.filter()`，constrained skill 收紧 L2 工具面 | 未开始 |
+| P3 | `_generic.QueryDomain` 声明式字段合并进 skill 声明（可选） | 未开始 |
+
+**验收硬指标**：P1 完成后，「每个楼层有多少设备呢」「各楼层设备数量」「查询楼层设备类型」
+三句必须走到**同一个工具、同一份输出**，日志里能看到同一条 `[skill] 命中 floor_distribution`。
+
+**P0 开关关闭时，全量测试必须与基线完全一致（10 failed / 811 passed）。**
+
+---
+
+
+## 9. 明确不做的
 
 | 事项 | 原因 |
 |---|---|
@@ -618,7 +662,7 @@ KB 分支、loop 分支、场景分流、业务状态机、多模态兜底。直
 
 ---
 
-## 9. 与主文档的关系
+## 10. 与主文档的关系
 
 - 已完成内容见 `docs/loop-agent-改造文档.md`
 - 本文档只记录**未实施**的后续项
