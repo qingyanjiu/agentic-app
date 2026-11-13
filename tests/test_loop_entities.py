@@ -10,7 +10,12 @@ import asyncio
 import json
 from types import SimpleNamespace as NS
 
-from agent.loop.domains.device_query import MAX_ROWS, build_domain, clear_device_cache
+from agent.loop.domains.device_query import (
+    MAX_LIST_ITEMS,
+    MAX_ROWS,
+    build_domain,
+    clear_device_cache,
+)
 from agent.loop.entities import KIND_DEVICE, Entity, EntityList
 from agent.loop.pipeline import PipelineResult
 
@@ -168,9 +173,9 @@ def test_entities_truncated_beyond_max_rows():
     outcome = asyncio.run(tool.execute({"query": "6楼的监控"}))
 
     data = outcome.entities.to_dict()
-    assert len(data["items"]) == MAX_ROWS
+    assert len(data["items"]) == MAX_LIST_ITEMS
     assert data["truncated"] is True
-    assert "剩余 10 台" in data["note"] or "其余 10 台" in data["note"]
+    assert "其余 40 台" in data["note"]
 
 
 # ---------------------------------------------------------------- 事件传递

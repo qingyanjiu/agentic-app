@@ -1573,3 +1573,186 @@ ERROR: Exception in ASGI application
 `_PLACE_WORDS` 里加，不用改逻辑。测试：`test_place_alias_resolves_to_south_gate`、
 `test_place_alias_does_not_leak_into_other_types`、`test_place_in_query_and_terms`
 （用带 syncSource 过滤的假 MCP，模拟服务端口径）。
+
+### 21.16 停止按钮：中断正在执行的一轮
+
+需求：loop agent 卡住时，点一下立刻停止。
+
+原来 `LoopAgent` 的 cancel 通道是**通的但接不上**：`ws_bridge.handle_chat` 内部建了
+`cancel = asyncio.Event()`，但没有任何代码能 set 它 —— 因为 `agent_ws` 的
+`while True: data = await websocket.receive_text(); await loop_handle_chat(...)`
+在这一轮跑完之前根本读不到新消息。
+
+改动分三层：
+
+**① 后端：让"停止"能到达正在跑的那一轮**
+
+- `ws_bridge` 新增进程级注册表 `_active_cancels[user_id:session_id] = cancel`，
+  `handle_chat` 开始时登记、`finally` 里摘掉（正常/异常/被停止都摘）；
+- 新增 `request_stop(user_id, session_id) -> bool`，置位即通知本轮退出。
+
+**② 后端：主循环这一轮改成"边跑边收消息"**
+
+`app.py` 新增 `_await_turn_with_stop()`：本轮放 `asyncio.Task` 里跑，
+同时 `asyncio.wait({turn_task, recv_task}, FIRST_COMPLETED)`：
+
+- 先到的是 `{"type":"stop"}` → `request_stop()`，继续等本轮收尾；
+- 先到的是别的消息（用户抢着补一句）→ 进入 `pending_payloads` 队列，
+  本轮结束后按顺序处理，**不丢消息**；
+- 本轮先结束 → 取消这次挂起的 receive，回到正常循环。
+
+`agent_ws` 顶部也处理了"本轮之外收到 stop"：回一句
+「已收到停止请求，当前没有进行中的查询。」再 `done`。
+
+**③ 前端：一个按钮切换（发送 ↔ 停止）**
+
+不做第二个按钮，直接把发送按钮改造成双态：
+
+| 状态 | 图标 | 点击行为 |
+|---|---|---|
+| 空闲 | 原发送图标（`icon_send.png` / 语音模式的键盘图标） | `sendMessage()` |
+| 本轮进行中 | **CSS 画的方块**（`.send-btn--stop::before`） | `stopTurn()` 发 `{type:"stop"}` |
+| 停止中 | 方块变淡、禁用 | 防重复点击 |
+
+`turnActive` 由 `done`/`failTurn` 复位，所以**停止成功**和**正常回答完毕**都会自动变回发送图标。
+停止请求发出后 `stopping=true` 并显示「正在停止…」，等后端的 `done` 到了再解锁。
+
+**能停在哪一步（重要）**
+
+`LoopAgent` 只在**检查点**看 cancel：每次模型调用之前、每个工具执行之前。
+所以：
+
+| 卡在 | 停止延迟 |
+|---|---|
+| 模型流式输出中 | 这一轮流式输出结束（通常 1~3 秒） |
+| MCP 工具调用中 | 该工具超时/返回（受 `tool_timeout`，默认 30s 限制） |
+| 多步循环之间 | 立即 |
+
+要做到"立刻断"需要 `task.cancel()` 打进去，但那样 MCP 的
+`anyio cancel scope` 会抛 `CancelledError` 穿透（这条链路以前踩过，见 8.x），
+所以这里选了"检查点退出"：安全、可预测，最坏情况是等一个工具超时。
+
+测试：`test_request_stop_interrupts_running_turn`（模拟卡住的一轮，置 cancel 后
+返回「已取消本轮查询。」）、`test_request_stop_without_running_turn`。
+
+#### 事故回放：停止按钮第一版把整条连接弄坏了
+
+第一版实现是"本轮跑的时候顺手再读一次 socket"：
+
+```python
+recv = asyncio.create_task(websocket.receive_text())
+done, _ = await asyncio.wait({turn_task, recv}, FIRST_COMPLETED)
+if recv in done: ...
+else:                       # 本轮先结束
+    recv.cancel()           # ← 致命
+```
+
+`recv` 还挂在 `websocket.receive_text()` 上就被 cancel 了。Starlette 的 receive
+通道被取消之后整条连接就废了 —— 之后每次提问前端都是
+**「连接已断开，请稍后重试」**（用户实测三连）。
+
+**正确做法**：收包交给独立 task，主循环只操作队列。
+
+```python
+inbox = asyncio.Queue()
+
+async def _pump_incoming():
+    try:
+        while True:
+            await inbox.put(await websocket.receive_text())
+    except Exception:
+        await inbox.put(None)      # 断开 → 让主循环退出
+
+pump_task = asyncio.create_task(_pump_incoming())
+...
+raw = await inbox.get()            # 主循环只读队列
+```
+
+跑一轮时等的是 `inbox.get()`，取消它**只是取消一次队列读取**，不碰 socket。
+
+这段逻辑抽到 `agent/loop/ws_flow.py::await_turn_with_stop()`，因为
+`app.py` 导不进来（加载模型 + MCP），而这段一错就是"整个功能不可用"，
+必须有单测：`tests/test_loop_ws_flow.py` 里用一个"被 cancel 就记仇"的假 socket
+断言 `cancelled_receive is False`，并验证一轮结束后**第二轮还能收到消息**。
+
+教训：`asyncio.wait` + `cancel()` 看着很自然，但**取消对象必须是自己的中间件**
+（这里是 `Queue.get()`），不能是框架的 IO 原语（`receive_text()`）。
+
+### 21.17 范围太大的查询不再逐条列（也顺带把单帧压下去）
+
+实测「园区有哪些监控」的真实产出：
+
+```
+过滤：device_type=监控, area=园区 → keyword「园区」 → 250/268 台命中（！）
+文本：62 行 / 5641 字符
+list 事件：60 项 / 12444 字节（单帧）
+```
+
+两个问题：
+
+**① 「园区」被当成了设备关键词**
+
+`area='园区'` 不是楼层，于是进了 21.15 那条"地点词当关键词"的分支。
+但 `园区` 是所有设备的公共前缀（`spaceName` 全是「园区/…」），
+命中 250/268 台，等于没过滤还多了个误导性的「关键词「园区」」。
+
+修：`_SCOPE_AREA`（园区/整栋/全楼/整个/全部/所有/大楼/全层）**不当关键词**。
+
+**② 没过滤条件却一大堆，仍然逐条列**
+
+修：`BROAD_RESULT_LIMIT = 80` —— 楼层、关键词都为空且命中超过 80 台时，
+**不列明细、不发 list**，只回一句：
+
+```
+园区共 268 台监控设备，范围太大，没法逐条列。请按楼层或具体区域缩小范围，
+例如「5楼的监控」「南门的门禁」。
+```
+
+顺带 `MAX_LIST_ITEMS = 30`（原来跟文本一样 60）：`list` 是给前端渲染标签墙的，
+几十个已经没人看，只会把单帧撑大；超出部分用 `note` 说明。
+
+修完的真实载荷：
+
+| 查询 | 结果 | list 项数 | list 字节 |
+|---|---|---|---|
+| 园区有哪些监控 | 一句话（56 字） | 0 | 0 |
+| 园区有哪些门禁 | 一句话（56 字） | 0 | 0 |
+| 5楼的监控 | 14 台 | 14 | 2993 |
+| 南门有哪些门禁 | 8 台 | 8 | 1638 |
+| 道闸设备有哪些 | 2 台 | 2 | 455 |
+
+**说明**：单帧 12KB 本身不算致命，但"268 台里挑 60 条逐行列 + 渲染 60 个标签"
+对用户没有价值，在弱网/代理下也确实更容易把连接拖断。上面两条改动是**产品上更对**的做法，
+顺带把风险压掉了。
+
+测试：`test_broad_query_does_not_list_details`、`test_narrow_query_still_lists_details`、
+`test_scope_area_is_not_used_as_keyword`、`test_list_items_are_capped`。
+
+### 21.18 日志里带上用户原话
+
+排查问题全靠"这句话到底怎么被解析的"，但原来只在各域内部零散 print。
+现在每轮入口固定两行：
+
+```
+[chat] 收到提问 user=u1 session=s1 mode=agent query='园区有哪些监控'
+[loop] 开始处理提问 -- u1:s1 rollout=percent=100 query='园区有哪些监控'
+```
+
+再往下是既有的解析/路由/工具日志（`[device query slots]` `[device_query]`
+`[scene]` `[loop] done level=… reason=…`），时间线能完整对上。
+
+- `app.py`：`agent_ws` 拿到 payload 就打（含 `mode=kb/agent`，KB 与智能体都覆盖）；
+- `ws_bridge.handle_chat`：带上灰度判定原因，方便区分是哪条链路；
+- `LoopAgent.run`：`[loop] 提问：…`（CLI 直接跑也能看到）。
+
+报错和收尾这两处也带原话，否则出问题时分不清是哪句话触发的：
+
+```
+[loop] 灰度链路异常，回落旧链路: ConnectError ... query='南门有几个门禁'
+[loop] done level=L2 reason=answered escalated=False streamed=312 rollout=- query='5楼有哪些监控'
+```
+
+测试：`test_query_is_logged`（caplog 断言原话进了「开始处理」和「done」两行）。
+
+> 注意 `app.py` 的 `basicConfig` 写的是 **`filename='app.log'`**，这些行不会打到 stdout，
+> 而是进工作目录下的 `app.log`。用容器跑时记得 `docker exec … tail -f app.log`。

@@ -219,6 +219,7 @@ class LoopAgent:
     ) -> LoopResult:
         # 优先用本次调用传入的 handler，避免单例被并发会话串台
         handler = on_event or self.on_event
+        logger.info(f"[loop] 提问：{user_input}")
 
         messages: list[dict] = [{"role": "system", "content": self.system_prompt}]
         messages.extend(history or [])

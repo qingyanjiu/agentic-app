@@ -2132,13 +2132,52 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
     except Exception as e:
         logging.error(f"KnowledgeQAPipeline创建失败（仅知识库模式不可用）: {e}")
  # 持续监听客户端消息（WebSocket长连接循环）
+    # 上一轮执行期间又收到的消息（用户抢着补一句），按顺序在这一轮结束后处理
+    pending_payloads: list = []
+    # 收包单独一个 task，主循环只从队列取：本轮还在跑时也能读到 stop，
+    # 而且取消的只是 Queue.get()，不会损坏 socket（见 _await_turn_with_stop 注释）
+    inbox: asyncio.Queue = asyncio.Queue()
+
+    async def _pump_incoming() -> None:
+        try:
+            while True:
+                await inbox.put(await websocket.receive_text())
+        except Exception:
+            # 客户端断开 / 连接异常：塞一个 None 让主循环退出
+            await inbox.put(None)
+
+    pump_task = asyncio.create_task(_pump_incoming())
     while True:
         try:
-            # 接收客户端发送的JSON数据（格式：{"query": "用户问题"}）
-            data = await websocket.receive_text()
-            payload = json.loads(data)
+            if pending_payloads:
+                payload = pending_payloads.pop(0)
+                if payload is None:
+                    logging.info(f"客户端已断开 -- {user_id}-{session_id}")
+                    pump_task.cancel()
+                    return
+            else:
+                # 接收客户端发送的JSON数据（格式：{"query": "用户问题"}）
+                raw = await inbox.get()
+                if raw is None:
+                    logging.info(f"客户端已断开 -- {user_id}-{session_id}")
+                    pump_task.cancel()
+                    return
+                payload = json.loads(raw)
+            # 停止指令不是一轮查询：本轮之外收到就直接告诉用户没有在跑的请求
+            if str(payload.get("type") or "").lower() == "stop":
+                await websocket.send_text(json.dumps({
+                    "event": "custom",
+                    "data": {"type": "answer", "content": "已收到停止请求，当前没有进行中的查询。"},
+                }, ensure_ascii=False))
+                await websocket.send_text(json.dumps({"status": "done"}))
+                continue
             # 从 payload 中获取用户输入
             query = payload.get("query", "")
+            # 每轮开头打一行：谁、哪个会话、问了什么（排查时全靠它对齐时间线）
+            logging.info(
+                f"[chat] 收到提问 user={user_id} session={session_id} "
+                f"mode={payload.get('mode') or 'agent'} query={query!r}"
+            )
 
             # ============================================================
             # 知识库问答模式：前端切到"知识库问答"后 payload 带 mode=kb，
@@ -2181,14 +2220,24 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
                     if loop_decision.enabled and not _scene_followup_pending(
                         user_id, session_id, query
                     ):
-                        loop_handled = await loop_handle_chat(
-                            websocket, query, user_id, str(session_id), llm, loop_decision
+                        # 本轮放任务里跑，主循环趁机继续收消息 →
+                        # 用户点"停止"能立刻置 cancel，不用等这一轮跑完
+                        turn_task = asyncio.create_task(
+                            loop_handle_chat(
+                                websocket, query, user_id, str(session_id), llm, loop_decision
+                            )
+                        )
+                        from agent.loop.ws_flow import await_turn_with_stop
+
+                        loop_handled = await await_turn_with_stop(
+                            turn_task, user_id, str(session_id), inbox, pending_payloads
                         )
                         if loop_handled:
                             continue
                 except Exception as loop_err:
                     logging.error(
-                        f"[loop] 灰度链路异常，回落旧链路: {loop_err}", exc_info=True
+                        f"[loop] 灰度链路异常，回落旧链路: {loop_err} query={query!r}",
+                        exc_info=True,
                     )
 
             # ============================================================

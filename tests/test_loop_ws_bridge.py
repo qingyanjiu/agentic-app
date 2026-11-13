@@ -9,6 +9,7 @@
 """
 import asyncio
 import json
+import logging
 from types import SimpleNamespace as NS
 
 import pytest
@@ -182,3 +183,63 @@ def test_send_failure_does_not_break_the_turn(monkeypatch):
 
     assert handled is True          # 仍然算"已处理"，不回落旧链路
     assert ws.attempts >= 2         # 试过 answer 和 list，都失败但都没抛
+
+
+def test_request_stop_interrupts_running_turn(monkeypatch):
+    """停止按钮：本轮还在跑时置 cancel，loop 在下一个检查点退出。"""
+
+    class _StuckPipeline:
+        """模拟"卡住"的一轮：只有收到 cancel 才结束。"""
+
+        async def handle(self, query, session, cancel=None, on_delta=None, on_event=None):
+            for _ in range(300):
+                if cancel is not None and cancel.is_set():
+                    return PipelineResult(
+                        text="已取消本轮查询。", level="L2", stop_reason="aborted"
+                    )
+                await asyncio.sleep(0.01)
+            return PipelineResult(text="超时", level="L2", stop_reason="answered")
+
+    monkeypatch.setattr(ws_bridge, "get_pipeline", lambda llm: _StuckPipeline())
+    ws_bridge.reset_sessions()
+    ws = _FakeWebSocket()
+
+    async def scenario():
+        task = asyncio.create_task(
+            ws_bridge.handle_chat(ws, "查一下设备", "u", "s", llm=None)
+        )
+        await asyncio.sleep(0.05)                 # 等 handle_chat 注册好 cancel
+        stopped = ws_bridge.request_stop("u", "s")
+        handled = await task
+        return stopped, handled
+
+    stopped, handled = asyncio.run(scenario())
+
+    assert stopped is True                        # 确实通知到了
+    assert handled is True                        # 仍算"已处理"，不回落旧链路
+    assert any(d.get("content") == "已取消本轮查询。" for d in _custom(ws.sent))
+    # 本轮结束后要摘掉，否则停止会打到已结束的轮次
+    assert ws_bridge.request_stop("u", "s") is False
+
+
+def test_request_stop_without_running_turn():
+    ws_bridge.reset_sessions()
+    assert ws_bridge.request_stop("nobody", "nothing") is False
+
+
+def test_query_is_logged(monkeypatch, caplog):
+    """排查全靠这行：谁、哪个会话、问了什么。"""
+    result = PipelineResult(text="ok", level="L1", stop_reason="answered")
+    pipeline = _FakePipeline([("on_delta", "ok")], result)
+    monkeypatch.setattr(ws_bridge, "get_pipeline", lambda llm: pipeline)
+    ws_bridge.reset_sessions()
+
+    with caplog.at_level(logging.INFO, logger="agent.loop.ws_bridge"):
+        asyncio.run(
+            ws_bridge.handle_chat(_FakeWebSocket(), "园区有哪些监控", "u1", "s1", llm=None)
+        )
+
+    assert "[loop] 开始处理提问" in caplog.text
+    # 收尾那行也要能对回原话：一次提问 → 一条 done，成对看日志
+    done_lines = [r.getMessage() for r in caplog.records if "[loop] done" in r.getMessage()]
+    assert done_lines and "园区有哪些监控" in done_lines[-1]
