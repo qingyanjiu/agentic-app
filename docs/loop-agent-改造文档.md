@@ -1727,3 +1727,22 @@ list 事件：60 项 / 12444 字节（单帧）
 
 测试：`test_broad_query_does_not_list_details`、`test_narrow_query_still_lists_details`、
 `test_scope_area_is_not_used_as_keyword`、`test_list_items_are_capped`。
+
+### 21.18 日志里带上用户原话
+
+排查问题全靠"这句话到底怎么被解析的"，但原来只在各域内部零散 print。
+现在每轮入口固定两行：
+
+```
+[chat] 收到提问 user=u1 session=s1 mode=agent query='园区有哪些监控'
+[loop] 开始处理提问 -- u1:s1 rollout=percent=100 query='园区有哪些监控'
+```
+
+再往下是既有的解析/路由/工具日志（`[device query slots]` `[device_query]`
+`[scene]` `[loop] done level=… reason=…`），时间线能完整对上。
+
+- `app.py`：`agent_ws` 拿到 payload 就打（含 `mode=kb/agent`，KB 与智能体都覆盖）；
+- `ws_bridge.handle_chat`：带上灰度判定原因，方便区分是哪条链路；
+- `LoopAgent.run`：`[loop] 提问：…`（CLI 直接跑也能看到）。
+
+测试：`test_query_is_logged`（用 caplog 断言原话进了日志）。

@@ -2170,6 +2170,11 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
                 continue
             # 从 payload 中获取用户输入
             query = payload.get("query", "")
+            # 每轮开头打一行：谁、哪个会话、问了什么（排查时全靠它对齐时间线）
+            logging.info(
+                f"[chat] 收到提问 user={user_id} session={session_id} "
+                f"mode={payload.get('mode') or 'agent'} query={query!r}"
+            )
 
             # ============================================================
             # 知识库问答模式：前端切到"知识库问答"后 payload 带 mode=kb，

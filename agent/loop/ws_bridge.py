@@ -144,6 +144,10 @@ async def handle_chat(
     session = get_session(user_id, session_id)
     cancel = asyncio.Event()
     _active_cancels[f"{user_id}:{session_id}"] = cancel
+    logger.info(
+        f"[loop] 开始处理提问 -- {user_id}:{session_id} "
+        f"rollout={decision.reason if decision else '-'} query={query!r}"
+    )
     streamed_chars = 0
 
     async def on_delta(text: str) -> None:

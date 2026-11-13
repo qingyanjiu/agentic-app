@@ -9,6 +9,7 @@
 """
 import asyncio
 import json
+import logging
 from types import SimpleNamespace as NS
 
 import pytest
@@ -224,3 +225,19 @@ def test_request_stop_interrupts_running_turn(monkeypatch):
 def test_request_stop_without_running_turn():
     ws_bridge.reset_sessions()
     assert ws_bridge.request_stop("nobody", "nothing") is False
+
+
+def test_query_is_logged(monkeypatch, caplog):
+    """排查全靠这行：谁、哪个会话、问了什么。"""
+    result = PipelineResult(text="ok", level="L1", stop_reason="answered")
+    pipeline = _FakePipeline([("on_delta", "ok")], result)
+    monkeypatch.setattr(ws_bridge, "get_pipeline", lambda llm: pipeline)
+    ws_bridge.reset_sessions()
+
+    with caplog.at_level(logging.INFO, logger="agent.loop.ws_bridge"):
+        asyncio.run(
+            ws_bridge.handle_chat(_FakeWebSocket(), "园区有哪些监控", "u1", "s1", llm=None)
+        )
+
+    assert "园区有哪些监控" in caplog.text
+    assert "[loop] 开始处理提问" in caplog.text
