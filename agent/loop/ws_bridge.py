@@ -247,6 +247,6 @@ async def handle_chat(
     logger.info(
         f"[loop] done level={result.level} reason={result.stop_reason} "
         f"escalated={result.escalated} streamed={streamed_chars} "
-        f"rollout={decision.reason if decision else '-'}"
+        f"rollout={decision.reason if decision else '-'} query={query!r}"
     )
     return True

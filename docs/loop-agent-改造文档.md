@@ -1745,4 +1745,14 @@ list 事件：60 项 / 12444 字节（单帧）
 - `ws_bridge.handle_chat`：带上灰度判定原因，方便区分是哪条链路；
 - `LoopAgent.run`：`[loop] 提问：…`（CLI 直接跑也能看到）。
 
-测试：`test_query_is_logged`（用 caplog 断言原话进了日志）。
+报错和收尾这两处也带原话，否则出问题时分不清是哪句话触发的：
+
+```
+[loop] 灰度链路异常，回落旧链路: ConnectError ... query='南门有几个门禁'
+[loop] done level=L2 reason=answered escalated=False streamed=312 rollout=- query='5楼有哪些监控'
+```
+
+测试：`test_query_is_logged`（caplog 断言原话进了「开始处理」和「done」两行）。
+
+> 注意 `app.py` 的 `basicConfig` 写的是 **`filename='app.log'`**，这些行不会打到 stdout，
+> 而是进工作目录下的 `app.log`。用容器跑时记得 `docker exec … tail -f app.log`。

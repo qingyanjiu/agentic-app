@@ -2233,7 +2233,8 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
                             continue
                 except Exception as loop_err:
                     logging.error(
-                        f"[loop] 灰度链路异常，回落旧链路: {loop_err}", exc_info=True
+                        f"[loop] 灰度链路异常，回落旧链路: {loop_err} query={query!r}",
+                        exc_info=True,
                     )
 
             # ============================================================

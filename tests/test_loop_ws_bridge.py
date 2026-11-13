@@ -239,5 +239,7 @@ def test_query_is_logged(monkeypatch, caplog):
             ws_bridge.handle_chat(_FakeWebSocket(), "园区有哪些监控", "u1", "s1", llm=None)
         )
 
-    assert "园区有哪些监控" in caplog.text
     assert "[loop] 开始处理提问" in caplog.text
+    # 收尾那行也要能对回原话：一次提问 → 一条 done，成对看日志
+    done_lines = [r.getMessage() for r in caplog.records if "[loop] done" in r.getMessage()]
+    assert done_lines and "园区有哪些监控" in done_lines[-1]
