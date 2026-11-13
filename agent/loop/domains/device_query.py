@@ -31,7 +31,11 @@ import os
 import re
 import time
 
-from agent.intent.slots import DEVICE_TYPE_DICT, extract_device_query_slots
+from agent.intent.slots import (
+    DEVICE_TYPE_DICT,
+    extract_device_query_slots,
+    extract_device_type,
+)
 
 from ..entities import KIND_DEVICE, Entity, EntityList
 from ..govern import govern
@@ -83,6 +87,8 @@ _DEVICE_TYPED_NAME_RE = re.compile(
 _NAME_STOP = frozenset({
     "设备", "画面", "视频", "详情", "信息", "状态", "情况",
     "列表", "清单", "记录", "数据", "统计", "数量", "在线率",
+    # 「消防设备台账」曾把「台账」当设备名，报"没找到名称含台账的设备"
+    "台账", "档案", "分类", "类型", "汇总", "概览", "总数",
     # 指代词：没有具体对象时不能当名称，交给追问
     "这个", "那个", "这台", "那台", "这台设备", "那台设备", "它", "该设备",
 })
@@ -94,6 +100,13 @@ _NAME_BEFORE_TYPE_RE = re.compile(
     r"\s*[:：]?\s*"
     r"([^\s，,。；;:：]{2,20}?)"
     r"\s*(?:的)?\s*(?:监控|摄像头|画面|视频)\s*[吗嘛呢吧]?\s*$"
+)
+
+# 「名称带消防的设备」「名字里有电梯厅的监控」：明确按名称里的词筛。
+# 没这条时，用户照着提示说「名称带消防的设备」会掉进"没条件"分支，
+# 又被当成全量查询。
+_NAME_CONTAINS_RE = re.compile(
+    r"(?:名称|名字|名)[里中]*(?:带|有|包含|含)\s*([^的，,。；;\s]{2,10})"
 )
 
 
@@ -112,6 +125,10 @@ _QUESTION_WORD = re.compile(r"有哪些|有什么|哪些|多少|几个|几台|�
 _PURE_FLOOR = re.compile(
     r"(?:-?\d+|负[一二三四五六七八九十]|地下[一二三四五六七八九十]?)\s*(?:[Ff]|楼|层)?"
 )
+# 「监控设备清单」抽出来的尾巴是泛称，不是设备名
+_GENERIC_TAIL = re.compile(
+    r"(?:台账|档案|清单|列表|记录|数据|统计|数量|总数|情况|信息|详情|概览|汇总)$"
+)
 
 
 def _clean_candidate(raw: str) -> str | None:
@@ -122,6 +139,12 @@ def _clean_candidate(raw: str) -> str | None:
     text = _TRAILING_TYPE.sub("", text).strip(" -_")
     if len(text) < 2 or text in _NAME_STOP:
         return None
+    # 「监控设备清单」→「设备清单」：去掉泛称尾巴后只剩泛称，说明它根本不是设备名
+    tail = _GENERIC_TAIL.search(text)
+    if tail:
+        head = text[: tail.start()].strip(" -_")
+        if not head or head in _NAME_STOP or _TRAILING_TYPE.fullmatch(head):
+            return None
     # 带疑问词的"名字"不是设备名：「道闸设备有哪些」别把「设备有哪些」当名称去匹配
     if _QUESTION_WORD.search(text):
         return None
@@ -132,16 +155,29 @@ def _clean_candidate(raw: str) -> str | None:
     return text
 
 
+def _name_contains(query: str) -> str | None:
+    """query 里显式说「名称带X」时返回 X。"""
+    match = _NAME_CONTAINS_RE.search(query or "")
+    if not match:
+        return None
+    return _clean_candidate(match.group(1))
+
+
 def _name_fallback(query: str) -> str | None:
-    """slots 抽不到设备名时的兜底，三种说法都要认。
+    """slots 抽不到设备名时的兜底，四种说法都要认。
 
     1. 「3F-主楼梯MJ」——带横线的楼层前缀名称
-    2. 「监控5F客梯厅」——类型词在前
-    3. 「打开7F西通道监控」——类型词在句末（最自然的中文说法）
+    2. 「名称带消防的设备」——用户明确说按名称里的词筛
+    3. 「监控5F客梯厅」——类型词在前
+    4. 「打开7F西通道监控」——类型词在句末（最自然的中文说法）
     """
     match = _DEVICE_NAME_RE.search(query)
     if match:
         return match.group(0)
+
+    candidate = _name_contains(query)
+    if candidate:
+        return candidate
 
     for pattern in (_DEVICE_TYPED_NAME_RE, _NAME_BEFORE_TYPE_RE):
         match = pattern.search(query)
@@ -151,6 +187,18 @@ def _name_fallback(query: str) -> str | None:
         if candidate:
             return candidate
     return None
+
+
+def _slot_keyword(query: str, slots: dict) -> str | None:
+    """slots 关键词 + 兜底，但「名称带X」这种显式说法优先。
+
+    slots.py 会把「名称带消防的设备」整段抽成 device_keyword（"带消防的设备"），
+    匹配必然 0 命中；用户已经明说按名称里的「消防」筛，就该按「消防」查。
+    """
+    explicit = _name_contains(query)
+    if explicit:
+        return explicit
+    return (slots.get("device_keyword") or "").strip() or _name_fallback(query)
 
 
 # ==================================================================
@@ -355,6 +403,76 @@ def _sync_source_name(code: object) -> str:
     return aliases[0] if aliases else (key or "未知类型")
 
 
+
+def _common_type_name(rows: list[dict]) -> str:
+    """整批只有一种设备类型时才敢说类型名，混着就只说「设备」。
+
+    以前固定取 rows[0] 的类型：不传 syncSource 查全量时，579 台
+    （门禁/道闸/监控/广播/电表混在一起）会被说成「579 台门禁设备」。
+    """
+    codes = {str(row.get("syncSource")) for row in rows}
+    if len(codes) == 1:
+        return _sync_source_name(codes.pop())
+    return "设备"
+
+
+# 用户常说的设备类别里，台账**没有这一类**的那些词。
+# 它们在台账里最多出现在点位名称上（「7F西消防电梯厅」其实是个监控点位），
+# 所以要先说实话再给下一步，不能悄悄当成"没条件"去查全量。
+_OFF_LEDGER_TYPE_WORDS = (
+    "消防", "烟感", "温感", "喷淋", "水浸", "门磁", "防火门", "应急照明",
+    "燃气", "空调", "新风", "给排水", "机柜", "网络设备", "停车诱导",
+)
+
+
+def _off_ledger_type(query: str) -> str | None:
+    """query 点了台账没有的设备类别时返回那个词。
+
+    「南门消防通道的门禁」这种已经说出真实类型（门禁）的不算——那里的
+    「消防」是名称/位置的一部分，走正常关键词过滤。
+    """
+    if extract_device_type(query):
+        return None
+    for word in _OFF_LEDGER_TYPE_WORDS:
+        if word in (query or ""):
+            return word
+    return None
+
+
+def _off_ledger_note(word: str, rows: list[dict]) -> str:
+    """「台账没有这一类」的答复：现有分类 + 名称里带这个词的点位 + 下一步说法。"""
+    kinds: dict[str, int] = {}
+    for row in rows:
+        name = _sync_source_name(row.get("syncSource"))
+        kinds[name] = kinds.get(name, 0) + 1
+    kinds_text = "、".join(
+        f"{name} {count} 台"
+        for name, count in sorted(kinds.items(), key=lambda kv: kv[1], reverse=True)
+    )
+
+    named = [row for row in rows if _row_matches_keyword(row, word)]
+    lines = [f"设备台账里没有「{word}设备」这个分类，现有分类只有：{kinds_text}。"]
+    if named:
+        samples = [
+            str(row.get("rawName") or row.get("name") or "").strip()
+            for row in named[:3]
+        ]
+        lines.append(
+            f"不过有 {len(named)} 个点位的名称或位置里带「{word}」，例如"
+            f"「{'」「'.join(s for s in samples if s)}」，它们算在上面的分类里。"
+        )
+        lines.append(
+            f"想把这些点位调出来可以说「名称带{word}的设备」；"
+            f"想按类别查可以说「有哪些监控」「5楼的门禁」。"
+        )
+    else:
+        lines.append(
+            f"台账里也没有名称带「{word}」的点位。按类别查可以说"
+            f"「有哪些监控」「5楼的门禁」。"
+        )
+    lines.append(f"{word}的实时状态和告警不在设备台账里，得走对应的态势查询。")
+    return "".join(lines)
+
 def _rows_of(raw_text: str) -> list[dict]:
     try:
         data = json.loads(raw_text)
@@ -529,10 +647,7 @@ def _filter_rows(
     「负一层」解析成「1楼」，直接用 slots 的 area 会查错楼层。
     """
     floor = normalize_floor(query) or normalize_floor(slots.get("area"))
-    keyword = (slots.get("device_keyword") or "").strip() or None
-    if not keyword:
-        # slots 抽不到「3F-主楼梯MJ」「5F客梯厅」这类名称，这里兜底
-        keyword = _name_fallback(query)
+    keyword = _slot_keyword(query, slots)
 
     if not keyword:
         keyword = _name_in_text(query, rows)
@@ -584,7 +699,7 @@ def preview_plan(query: str) -> dict:
     """dry-run 用：展示会调用哪个 MCP 工具、带什么参数、本地怎么过滤。"""
     slots = extract_device_query_slots(query)
     floor = normalize_floor(query) or normalize_floor(slots.get("area"))
-    keyword = (slots.get("device_keyword") or "").strip() or _name_fallback(query)
+    keyword = _slot_keyword(query, slots)
     return {
         "domain": "device_query",
         "tool": TOOL_LIST,
@@ -664,13 +779,20 @@ def build_domain(toolbox: McpToolbox) -> DomainSpec:
                 f"请确认设备名称/编号，或去掉名称、只按楼层或类型查询。"
             )
 
+        # 用户说的设备类别台账里根本没有（「消防设备」「烟感设备」…）：
+        # 不能当成"没条件"去做全量查询——579 台里第一行是门禁，用户看到的
+        # 就成了「园区共 579 台门禁设备」，答非所问。
+        # 已经抽到具体名称的不算（「名称带消防的设备」就是名称搜索）。
+        off_ledger = _off_ledger_type(query)
+        if off_ledger and not keyword:
+            return ToolOutcome(_off_ledger_note(off_ledger, rows))
+
         # 没有任何过滤条件却一大堆：别列明细。
         # 「园区有哪些监控」= 268 台，逐条列 60 行既没用，单帧也能到 12KB，
         # 弱网/代理下容易把连接拖断。
         if not floor and not keyword and len(matched) > BROAD_RESULT_LIMIT:
-            type_name = _sync_source_name(matched[0].get("syncSource")) if matched else "设备"
             return ToolOutcome(
-                f"园区共 {len(matched)} 台{type_name}，范围太大，没法逐条列。"
+                f"园区共 {len(matched)} 台{_common_type_name(matched)}，范围太大，没法逐条列。"
                 f"请按楼层或具体区域缩小范围，例如「5楼的监控」「南门的门禁」。"
             )
 
@@ -690,7 +812,7 @@ def build_domain(toolbox: McpToolbox) -> DomainSpec:
             return ToolOutcome("缺少用户问题，无法解析查询条件。", is_error=True)
 
         slots = extract_device_query_slots(query)
-        keyword = (slots.get("device_keyword") or "").strip() or _name_fallback(query)
+        keyword = _slot_keyword(query, slots)
         if not keyword:
             return ToolOutcome(
                 "缺少要查询的设备。请向用户确认设备名称或设备编号，拿到后再调用本工具。",

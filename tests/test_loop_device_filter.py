@@ -487,3 +487,108 @@ def test_list_items_are_capped(monkeypatch):
     assert len(data["items"]) == dq.MAX_LIST_ITEMS
     assert data["truncated"] is True
     assert "其余" in data["note"]
+
+
+# ----------------------------------------------------------------------
+# 「消防设备」这类台账里没有的类别：不能悄悄落成全量查询
+# ----------------------------------------------------------------------
+def _mixed_rows():
+    """门禁 3 台 + 监控 2 台（其中 1 台名字带「消防」）+ 电表 1 台。"""
+    rows = [
+        {"id": "g1", "name": "南门人脸进口西", "rawName": "南门人脸进口西",
+         "code": "mj_park_0001", "spaceName": "园区/园区南大门",
+         "status": "1", "syncSource": "0"},
+        {"id": "g2", "name": "5F门禁1", "rawName": "5F门禁1",
+         "code": "mj_5f_0001", "spaceName": "园区/科研办公楼/5F",
+         "status": "1", "syncSource": "0"},
+        {"id": "g3", "name": "5F门禁2", "rawName": "5F门禁2",
+         "code": "mj_5f_0002", "spaceName": "园区/科研办公楼/5F",
+         "status": "1", "syncSource": "0"},
+        {"id": "c1", "name": "7F西消防电梯厅", "rawName": "7F西消防电梯厅",
+         "code": "jk_zl_7f_0004", "spaceName": "园区/科研办公楼/7F",
+         "status": "1", "syncSource": "3"},
+        {"id": "c2", "name": "5F客梯厅", "rawName": "5F客梯厅",
+         "code": "jk_zl_5f_0006", "spaceName": "园区/科研办公楼/5F",
+         "status": "1", "syncSource": "3"},
+        {"id": "e1", "name": "5F电表", "rawName": "5F电表",
+         "code": "db_5f_0001", "spaceName": "园区/科研办公楼/5F",
+         "status": "1", "syncSource": "7"},
+    ]
+    return rows
+
+
+def test_off_ledger_type_says_there_is_no_such_category(monkeypatch):
+    """「消防设备有哪些」：台账没有消防这一类，要说清楚并给出可执行下一步。"""
+    import agent.loop.domains.device_query as dq
+
+    monkeypatch.setattr(dq, "_CACHE_TTL", 300.0)
+    clear_device_cache()
+    tool, _ = _gate_tool(_mixed_rows())
+
+    out = asyncio.run(tool.execute({"query": "消防设备有哪些"}))
+
+    assert out.is_error is False
+    assert "没有「消防设备」这个分类" in out.text
+    # 必须把台账真实的分类摆出来，别让用户以为"就是没有设备"
+    assert "监控设备 2 台" in out.text and "门禁设备 3 台" in out.text
+    # 名字里带「消防」的点位要提，且不能谎称它是消防设备
+    assert "7F西消防电梯厅" in out.text
+    # 不列明细、不发 list：这时列清单只会把监控点位当成消防设备
+    assert out.entities is None
+
+
+def test_off_ledger_type_is_skipped_when_real_type_is_named(monkeypatch):
+    """「南门消防通道的门禁」说了门禁：那里的「消防」只是名称，正常过滤。"""
+    import agent.loop.domains.device_query as dq
+
+    monkeypatch.setattr(dq, "_CACHE_TTL", 300.0)
+    clear_device_cache()
+    tool, _ = _gate_tool(_mixed_rows())
+
+    out = asyncio.run(tool.execute({"query": "名称带消防的门禁"}))
+
+    # 门禁里没有名字带消防的 → 如实说没找到，而不是回"台账没有消防分类"
+    assert "没有找到" in out.text
+    assert "这个分类" not in out.text
+
+
+def test_broad_summary_does_not_label_mixed_types_as_gate(monkeypatch):
+    """不传类型查全量时，579 台混着门禁/监控/电表，不能说成「579 台门禁设备」。"""
+    import agent.loop.domains.device_query as dq
+
+    monkeypatch.setattr(dq, "_CACHE_TTL", 300.0)
+    clear_device_cache()
+    # 造 120 条（超过 BROAD_RESULT_LIMIT），第一行是门禁
+    rows = []
+    for index in range(60):
+        rows.append({"id": f"g{index}", "name": f"5F门禁{index}", "rawName": f"5F门禁{index}",
+                     "code": f"mj_{index}", "spaceName": "园区/科研办公楼/5F",
+                     "status": "1", "syncSource": "0"})
+    for index in range(59):
+        rows.append({"id": f"c{index}", "name": f"5F监控{index}", "rawName": f"5F监控{index}",
+                     "code": f"jk_{index}", "spaceName": "园区/科研办公楼/5F",
+                     "status": "1", "syncSource": "3"})
+    rows.append({"id": "e1", "name": "5F电表", "rawName": "5F电表", "code": "db_1",
+                 "spaceName": "园区/科研办公楼/5F", "status": "1", "syncSource": "7"})
+    tool, _ = _gate_tool(rows)
+
+    out = asyncio.run(tool.execute({"query": "园区有哪些设备"}))
+
+    assert "120 台设备" in out.text
+    assert "台门禁设备" not in out.text
+
+
+def test_ledger_word_is_not_treated_as_device_name():
+    """「消防设备台账」曾把「台账」当设备名，报"没找到名称含台账的设备"。"""
+    from agent.loop.domains.device_query import _name_fallback
+
+    assert _name_fallback("消防设备台账") is None
+    assert _name_fallback("监控设备清单") is None
+
+
+def test_name_contains_phrase_filters_by_the_word():
+    """提示里让用户说「名称带消防的设备」，那就必须真能按「消防」筛。"""
+    from agent.loop.domains.device_query import _slot_keyword
+
+    slots = {"device_keyword": "带消防的设备"}      # slots.py 实际抽出来的
+    assert _slot_keyword("名称带消防的设备", slots) == "消防"
