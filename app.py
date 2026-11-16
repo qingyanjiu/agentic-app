@@ -8,7 +8,6 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from models.llm import CustomLLMFactory
 # from graph.graph_pipeline import LangGraphPipeline
-from graph.asr_pipeline import TextCorrectorPipeline
 # from skills.mcp_agent import McpSkillAgent
 import logging
 import uuid
@@ -30,8 +29,6 @@ from agent.intent import (
 from mcp_client.scene_mcp_client import SceneMcpClient
 from graph.scene_control_langgraph import build_scene_control_graph
 from memory.session_state import session_state, IntentState
-# from asr.voice_asr import get_recognizer, VoiceRecognizer
-# from asr.text_corrector import get_corrector, TextCorrector
 
 # docker开发环境
 # docker run -d -v /Users/louisliu/dev/AI_projects/agentic-app:/root/agentic-app --name langchain-agent-dev qingyanjiu/langchain:1.0.3 tail -f /dev/null
@@ -79,27 +76,6 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=UPLOAD_FOLDER), name="uploads")
 # 前端访问图片的地址（你的服务地址）
 BASE_URL = "http://127.0.0.1:8001"
-# ==================== 初始化语音和纠错模块 ====================
-try:
-    # 初始化语音识别器（使用Whisper后端）
-    voice_recognizer = get_recognizer(
-        backend="whisper",      # 可选: "whisper", "custom"
-        model_name="medium",      # 可选: tiny, base, small, medium, large
-        use_stream=True         # 启用流式处理
-    )
-    logger.info("语音识别器初始化成功")
-except Exception as e:
-    logger.error(f"语音识别器初始化失败: {e}")
-    voice_recognizer = None
-
-try:
-    # 初始化文本纠错器
-    text_corrector = get_corrector(use_advanced=False)  # 使用高级纠错
-    logger.info("文本纠错器初始化成功")
-except Exception as e:
-    logger.error(f"文本纠错器初始化失败: {e}")
-    text_corrector = None
-
 # 全局模型：配置全部来自环境变量，见 models/llm.py 模块注释
 llm_factory = CustomLLMFactory()
 llm = llm_factory.llm
@@ -199,168 +175,6 @@ async def safe_send_message(websocket: WebSocket, message: dict):
     except Exception as e:
         logger.error(f"消息发送失败: {str(e)}")
         return False
-'''
-语音识别WebSocket接口
-    支持实时语音转文字 + 文本纠错
-user_id - 用户id，必填
-session_id - 会话id，可以为空，为空就新建session
-'''
-@app.websocket("/asr/{user_id}/{session_id}")
-async def asr_ws(websocket: WebSocket, user_id: str, session_id: Optional[str] = None):
-    """
-    WebSocket 语音识别接口
-    
-    客户端协议:
-    1. 发送音频帧: {"voice_base64": "base64_audio_data","action": "end"}
-    2. 重置会话: {"action": "reset"}
-    """
-    await websocket.accept()
-    connected = True
-    session_state = {"error_count": 0}
-    # ========== 1. 初始化检查 ==========
-    if not voice_recognizer or not voice_recognizer.is_available:
-        logger.error("语音识别器不可用")
-        await safe_send_message(websocket, {
-            "event": "error",
-            "error": "语音识别服务不可用，请检查Whisper安装"
-        })
-        await websocket.close()
-        return
-    # 生成session_id
-    if not session_id:
-        session_id = str(uuid.uuid4())
-    
-    thread_id = f'{user_id}-{session_id}'
-    logger.info(f"ASR会话已建立: {thread_id}")
-    
-    
-    # 发送会话开始消息
-    await safe_send_message(websocket, {
-        "event": "session_started",
-        "session_id": session_id,
-        "user_id": user_id,
-        "message": "实时语音识别已启动，请开始说话",
-        "backend": voice_recognizer.backend
-    })
-    try:
-        correctorPipeline = TextCorrectorPipeline(llm, user_id=user_id, session_id=session_id)
-    except Exception as e:
-        logger.error(f"初始化纠错器失败: {e}")
-        await websocket.close()
-        return
-    
-    try:
-        while connected:
-            try:
-
-                # 接收音频数据
-                # 设置接收超时（可选，避免长时间阻塞）
-                data = await asyncio.wait_for(
-                    websocket.receive_text(),
-                    timeout=300.0  # 5分钟超时
-                )
-                # 解析消息
-                try:
-                    payload = json.loads(data)
-                except json.JSONDecodeError as e:
-                    logger.error(f"JSON解析失败: {e}, 原始数据: {repr(data)}")
-                    await safe_send_message(websocket, {
-                        "event": "error",
-                        "error": f"无效的JSON格式: {str(e)}"
-                        
-                    })
-                    continue
-                
-                voice_base64 = payload.get("voice_base64", "")
-                action = payload.get("action", "")
-                
-                # 控制命令
-                if action == "reset":
-                    voice_recognizer.remove_session(session_id)
-                    await safe_send_message(websocket, {
-                        "event": "session_reset",
-                        "session_id": session_id,
-                        "message": "会话已重置"
-                    })
-                    continue
-                
-                if action == "end" and voice_base64:
-                    try:
-                   
-                #    # ✅ 强制保存到绝对路径
-                #     RECORD_DIR = "/root/agentic-app"
-                #     os.makedirs(RECORD_DIR, exist_ok=True)
-                #     # 调用保存（会从 full_webm 转完整音频）
-                #     saved_path = voice_recognizer.save_recording(session_id, save_dir=RECORD_DIR)
-                #     logger.info(f"✅ 最终保存路径: {saved_path}")
-                
-            
-                        # 异步识别
-                        recognized_text = await voice_recognizer.transcribe_stream_async(
-                            session_id, 
-                            voice_base64
-                        )
-                        
-                        if recognized_text:
-                            logger.info(f"识别到: {recognized_text}")
-                            # ===== 使用大模型进行文本纠错 =====
-                            async def stream_writer(data):
-                                if connected and websocket.client_state.CONNECTED:
-                                    await safe_send_message(websocket, data)
-
-                            corrected_text = await correctorPipeline.correct(recognized_text,stream_writer)
-                            # # ===== 在这里添加纠错 =====
-                            # if text_corrector:
-                            #     corrected_text, _ = text_corrector.correct(recognized_text)
-                            # else:
-                            #     corrected_text = recognized_text
-                            # ==========================
-                            # 发送临时结果
-                            await safe_send_message(websocket, {
-                                "event": "asr_final",
-                                "text": recognized_text,      # 纠错后
-                                "timestamp": time.time()
-                            })
-                            connected = False
-                    except Exception as e:
-                        logger.error(f"识别/纠错失败: {e}")
-                        continue
-                
-            # -------------------- 捕获断开 --------------------
-            except WebSocketDisconnect:
-                logger.info(f"客户端主动断开: {thread_id}")
-                connected = False
-                break
-
-            # -------------------- 捕获超时 --------------------
-            except asyncio.TimeoutError:
-                logger.info(f"WebSocket超时: {thread_id}")
-                connected = False
-                break
-
-            # -------------------- 其他错误 --------------------
-            except Exception as e:
-                logger.error(f"处理消息出错: {e}")
-                connected = False
-                break
-                
-    # 最外层捕获（兜底）
-    except Exception as e:
-        logger.error(f"WebSocket全局异常: {e}")
-    finally:
-        connected = False
-        voice_recognizer.remove_session(session_id)
-        logger.info(f"ASR会话已清理: {thread_id}")
-        return
-
-            
-
-        
-
-# ============================================================
-# 各业务域的 handler / graph 执行器映射
-# 供「追问态新意图接管」复用情况 2 的新意图启动流程
-# ============================================================
 # ============================================================
 # 收尾/告别语识别（排查记录案例 15）
 # 「请问您还有其他问题吗？」→「没有了」这类回复是对开放问题的礼貌收尾，

@@ -20,8 +20,9 @@ def test_explicit_legacy_wins_over_enabled():
 
 
 def test_reserved_modes_are_not_taken_over():
+    """专用模式不走 loop（gen_doc / asr 端点已移除，只剩 kb / scene）。"""
     rollout = Rollout(enabled=True, percent=100)
-    for mode in ("kb", "scene", "gen_doc", "asr"):
+    for mode in ("kb", "scene"):
         assert rollout.decide("u1", "s1", mode).enabled is False
         assert "reserved" in rollout.decide("u1", "s1", mode).reason
 

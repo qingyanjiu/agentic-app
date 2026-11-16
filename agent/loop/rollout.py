@@ -27,7 +27,8 @@ import os
 from dataclasses import dataclass
 
 # 不由灰度接管的专用模式
-RESERVED_MODES = {"kb", "scene", "gen_doc", "asr"}
+# 不由灰度接管的专用模式（gen_doc / asr 端点已移除，前端不会再传）
+RESERVED_MODES = {"kb", "scene"}
 # 启动级路由：loop（全量新链路）/ legacy（全走旧逻辑）/ auto（按灰度变量）
 STARTUP_MODE_ENV = "AGENT_MODE"
 
