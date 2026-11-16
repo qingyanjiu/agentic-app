@@ -34,8 +34,8 @@ command -v zip >/dev/null 2>&1 || {
     exit 1
 }
 
-# 排除清单。注意 models/ 和 db/ 里是 Python 代码，要保留；
-# 要排除的是 agent/intent/models/ 这个权重目录。
+# 排除清单。注意 models/、memory/ 里现在是 Python 代码（models/llm.py、memory/session_state.py），
+# 要保留；要排除的只有 agent/intent/models/ 这个权重目录和运行时产物。
 EXCLUDES=(
     ".git/*"                     # 版本库（含 68M 历史）
     "agent/intent/models/*"      # BGE 权重 92M
@@ -49,7 +49,7 @@ EXCLUDES=(
     ".tmp_stubs/*"
     ".vscode/*"
     "exports/*"                  # 运行产物（导出的 docx 等）
-    "memory/*"                   # 运行时记忆
+    # memory/ 只有 session_state.py 是代码：运行时会话在进程内存里，没有落盘文件要排除
     "memory_store.db"
     "memory_store.json"
     "app.log"
