@@ -79,7 +79,7 @@ class TestSecuritySlots:
             ("这条告警的详情是什么", "alarm_detail"),
             ("摄像头设备状态怎么样", "device"),
             ("本周巡查趋势", "inspection_trend"),
-            # emergency_aialert 并入的新子类型（开发计划 §2.4）
+            # emergency_aialert 并入的新子类型（口径见 docs/架构文档.md §7.1）
             ("AI告警总览帮我看一下", "ai_overview"),
             ("园区累计告警有多少条", "ai_overview"),
             ("系统识别准确率是多少", "ai_overview"),
@@ -461,7 +461,7 @@ class TestDeviceQuerySlots:
 
 # ============================================================
 # 综合态势总览
-# 语料红线（docs/开发计划.md §2.3）：
+# 语料红线（docs/架构文档.md §7.1）：
 #   人车/能耗/会议/安全指数问法不进本模块，由既有域承接；
 #   device_health 只收"健康度/健康分"总览口径
 # ============================================================

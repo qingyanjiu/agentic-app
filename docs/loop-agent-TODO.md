@@ -1,8 +1,8 @@
 # Loop Agent 后续 TODO
 
-> 状态：规划中，**均未实施**
-> 前置条件：`docs/loop-agent-改造文档.md` 中的 P1–P5 已完成（内核、三级分流、13 域、灰度、MCP SDK）
-> 更新日期：2026-11-09
+> 状态：本文只记**未实施**的后续项（T18 已完成，见第 7 节）
+> 前置条件：loop 主链路已上线（`feature/loop-only`：legacy / langchain 已整体移除，见 `docs/架构文档.md`）
+> 更新日期：2026-11-16
 
 ---
 
@@ -22,12 +22,12 @@
 | T10 | gen_doc / knowledge / scene 纳入 loop | 暂不做 | — | — | 高 |
 | T11 | **MCP 参数白名单校验**（参数漂移检测） | P1 | 半小时 | 无 | 低 |
 | T12 | **上下文预算可配**（`LOOP_CONTEXT_BUDGET`） | P1 | 半天 | 无 | 中 |
-| T13 | **旧链路历史无上限**（persistor 语义不一致） | P1 | 1 小时 | 无 | 高 |
+| T13 | ~~旧链路历史无上限（persistor 语义不一致）~~ | — | — | — | 已作废（legacy 与 persistor 已删除） |
 | T14 | **上下文压缩优化**（4 个缺陷 + 缓存命中断裂） | P2 | 2~3 天 | T12 完成 + 全量切 loop | 高 |
 | T15 | **全局 history 与会话记忆**（跨进程/跨副本） | P2 | 2 天 | 与 T6 合并实施 | 高 |
 | T16 | **会话池容量与过期回收**（含 `session_state` 真泄漏） | P3 | 半天 | 无 | 中 |
 | T17 | **其余业务域接入结构化实体**（person/vehicle/告警 + 行内 `entity:` 链接） | P2 | 每域半天 | 前端 `list` 事件落地后 | 中 |
-| T18 | **loop/graph 解耦**（删 legacy 的前置改造，见 `docs/loop-graph-解耦方案.md`） | **P1** | ≈ 5.5 人日（P0 已完成） | 无 | 中 |
+| T18 | **loop/graph 解耦（删 legacy）** | — | — | — | ✅ 已完成（graph/ 已整体删除，见第 7 节） |
 | T19 | **楼层级监控画面能力**（场景侧 `scene` 只有单点位 tag） | P2 | 待评估 | 与场景/UE 侧确认 | 中 |
 | T20 | **skill 化改造**（域内口径交给 skill，router 保留兜底，见 `docs/loop-agent-skill方案.md`） | P2 | P0 半天 / P1 1 天 | 无（与 T18 可并行） | 中 |
 
@@ -572,35 +572,27 @@ if state and (time.time() - state.last_update_time) > self.timeout:
 
 ---
 
-## 7. T18 loop / graph 解耦（删 legacy 的前置）
+## 7. T18 loop / graph 解耦（删 legacy 的前置）—— ✅ 已完成
 
-### 7.1 要解决的问题
+**结论：`feature/loop-only` 分支上 legacy 已经整体删除，"解耦"这个任务结束了。**
 
-最终形态是**保 loop、删 legacy**（13 张业务图 + `InfoDoubleCheckPipeline` + 13 个 Handler）。
-现在两条链路是"插在同一段代码里"的：`app.py` 的 `/chat` 端点 938 行里混装
-KB 分支、loop 分支、场景分流、业务状态机、多模态兜底。直接删会得到"端点半残"的状态。
+实际做法与当初方案不同，记录一下：
 
-**做法**：把入口收成一个通道注册表（`agent/channels/`），legacy 变成可整体拔掉的目录；
-删除当天只改一行注册，`app.py` 与 `agent/loop` 不用动。
+1. 没有引入 `agent/channels/` 通道注册表——legacy 的 13 张图、Handler、`InfoDoubleCheckPipeline`、
+   报告生成、语音端点直接整块删掉，`app.py` 的 `/chat` 从 3067 行降到约 920 行；
+2. 场景通道（`graph/scene_control_langgraph.py`）迁到 `agent/scene_control.py`，同时去掉了 LangGraph
+   （链是线性的，顺序调用 + 手写状态归并就够）；
+3. `agent/loop` 与 `app.py` 都不再 import `graph` / `langchain*` / `langgraph`，这条由
+   `tests/test_module_boundaries.py` 守着（`app.py` 的旧框架 import 基线已经是空集）；
+4. 顺手删掉随之失效的东西：`tools/`、`dynamic_tools/`、`skills/`、`db/`、`utils/`、
+   `memory/store.py` 与 4 个 persistor、`mcp_client/mcp_loader.py`（改用 `mcp_config.load_servers`）。
 
-### 7.2 必读文档
+### 7.1 仍然适用的历史结论
 
 | 文档 | 作用 |
 |---|---|
-| `docs/loop-graph-解耦方案.md` | **主文档**：目标结构、接缝契约（`TurnContext` / `ChannelResult`）、P0–P5 分步、实测工作量、删除演练清单 |
-| `docs/loop-agent-改造文档.md` §5.8 / §7 | 场景判定口径（`should_route_scene` 两层规则），抽场景通道时必须保持一致 |
-| `docs/问题排查记录.md` 案例 14 | 只发 `answer` 不发 `done` 会让前端永久转圈 —— 分发器必须负责补 `done` |
-
-### 7.3 进度
-
-| 步骤 | 状态 |
-|---|---|
-| P0 边界守卫测试（`tests/test_module_boundaries.py`，6 个用例） | ✅ 已完成 2026-11-12 |
-| P1 契约 + 分发器 | 未开始 |
-| P2 场景通道抽取 | 未开始 |
-| P3 状态机 / 13 个 flows 搬运 | 未开始 |
-| P4 注册表接 `LOOP_FALLBACK_MODE` | 未开始 |
-| P5 删除演练 + 冒烟 | 未开始 |
+| `docs/问题排查记录.md` 案例 14 | 只发 `answer` 不发 `done` 会让前端永久转圈 —— 每个通道都必须负责补 `done` |
+| `docs/架构文档.md` 第 2 / 4 节 | 现状分流顺序（kb → loop → 场景 → 一句话兜底）与各通道的收尾约定 |
 
 **硬约束**：`agent/loop/**` 不许 import `graph` / `langchain*` / `langgraph`，
 `graph/**` 不许 import `agent.loop` —— 由 P0 的测试守着，新增即失败。
@@ -631,7 +623,7 @@ KB 分支、loop 分支、场景分流、业务状态机、多模态兜底。直
 | 文档 | 作用 |
 |---|---|
 | `docs/loop-agent-skill方案.md` | **主文档**：三种 skill 形态、`skill.yaml` 声明格式、四个接入点、优先级规则、输出契约、P0–P3 分步、待拍板问题 |
-| `docs/loop-agent-改造文档.md` §21 | skill 直出时必须复用的输出契约来源（`_summary` 前缀、`empty_hint`、`BROAD_RESULT_LIMIT`、`MAX_LIST_ITEMS`） |
+| `docs/架构文档.md` 第 5 节 | skill 直出时必须复用的输出契约来源（`_summary` 前缀、`empty_hint`、`domains` 钩子、`entities` 清单） |
 
 ### 8.4 进度
 
@@ -654,17 +646,16 @@ KB 分支、loop 分支、场景分流、业务状态机、多模态兜底。直
 
 | 事项 | 原因 |
 |---|---|
-| 把 gen_doc 纳入 loop | 强顺序、固定模板、非交互，pipeline 更合适 |
-| 把 scene 纳入 loop | 破坏性动作，需要显式确认，走专用通道 |
-| 把 knowledge（RAG）纳入 loop | 自带检索-生成流程，直接暴露 tool 反而更难控 |
+| 把 gen_doc 纳入 loop | 强顺序、固定模板、非交互，顺序调用更合适（当前分支已整体移除，以后再加） |
+| 把 scene 纳入 loop | 破坏性动作，需要显式确认，走专用通道（`agent/scene_control.py`） |
+| 把 knowledge（RAG）纳入 loop | 自带检索-生成流程，先只留检索口（`KnowledgeMcpClient`），问答编排以后再加 |
 | 换更大的 embedding 模型 | 当前瓶颈是语料覆盖，不是模型容量 |
-| 全量删除旧图 | 见 T18：先按 `docs/loop-graph-解耦方案.md` 解耦，再删 legacy |
+| 保留旧图 | ✅ 已在 `feature/loop-only` 分支整体删除，见 T18 |
 
 ---
 
-## 10. 与主文档的关系
+## 10. 文档约定
 
-- 已完成内容见 `docs/loop-agent-改造文档.md`
-- 本文档只记录**未实施**的后续项
-- 每完成一项，移入主文档并在此标记 ✅
-- 与 loop 无关的项目级事项（如**打包/交付**）记在 `docs/打包部署-TODO.md`，不放这里
+- 现状架构写在 `docs/架构文档.md`（唯一入口，进度与结论都往这里落）
+- 本文档只记录**未实施**的后续项；每完成一项，在这里标 ✅ 并同步到架构文档
+- 与 loop 无关的项目级事项（打包/交付）不写在这里

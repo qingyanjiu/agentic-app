@@ -126,7 +126,7 @@ class TestTopLevelIntent:
             ("设备详情", "device_query"),
             # 注意：只报编码、不带"设备"二字的短问法（如「MH-001的详情」）目前过不了
             # 顶层阈值（实测 0.53）会落到 other，带上"设备/台"这类名词即可命中；
-            # 原因与取舍见 docs/开发计划.md §2.5
+            # 原因与取舍见 docs/架构文档.md §7.1（device_query 台账口径）
             ("MH-001这台设备的详情", "device_query"),
         ],
     )
@@ -156,7 +156,7 @@ class TestSubTypes:
         assert sub == "security_index"
 
     def test_security_new_sub_types(self):
-        """emergency_aialert 并入的三个新子类型（开发计划 §2.4）"""
+        """emergency_aialert 并入的三个新子类型（口径见 docs/架构文档.md §7.1）"""
         cases = [
             ("AI告警总览帮我看一下", "ai_overview"),
             ("近30天的告警数量变化趋势", "ai_trend"),

@@ -1,7 +1,8 @@
 # UE 3D 场景控制接入说明（Agentic App 侧）
 
 > 对应代码：
-> `mcp_client/scene_mcp_client.py`、`graph/scene_control_langgraph.py`、`app.py`（场景分支）。
+> `mcp_client/scene_mcp_client.py`、`agent/scene_control.py`（原 `graph/scene_control_langgraph.py`，
+> 已去 LangGraph）、`agent/loop/scene_resolve.py`（设备名 → 点位 tag）、`app.py`（场景分支）。
 > 目标：前端在 3D 场景页面里用自然语言发指令，后端选工具 → MCP sidecar → sidecar 通过
 > 自己的 WebSocket 把动作帧推给场景页面 → UE 执行。
 
@@ -15,8 +16,8 @@
 flowchart LR
     U["用户在聊天框输入<br/>「切到 3 楼」或「今天多少人」"] --> C["聊天 WS<br/>/chat/{user_id}/{session_id}"]
     C -->|"query（可选 scene_session_id）"| R["意图分流<br/>业务意图 vs 场景意图"]
-    R -->|"命中场景指令"| G["场景控制图<br/>scene_control_langgraph"]
-    R -->|"业务查询 / 知识库"| B["业务意图状态机"]
+    R -->|"命中场景指令"| G["场景控制编排<br/>agent/scene_control.py"]
+    R -->|"业务查询 / 知识库"| B["agent/loop（L1 直出 / L2 loop agent）"]
     G -->|"tools/call<br/>X-Session-Id: xxx"| M["MCP Sidecar<br/>POST /mcp/scene"]
     M -->|"业务 WS"| P["场景页面 / UE"]
     G -->|"answer / ask / error / done"| C

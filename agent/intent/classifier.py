@@ -1895,7 +1895,7 @@ DEVICE_STATUS_EXAMPLES = {
 #   basic_info    -> 园区基本信息（面积 / IoT设备总数 / 园区概况）
 #   device_health -> 设备健康度总览（健康分总览口径）
 #
-# 语料红线（docs/开发计划.md §2.3）：
+# 语料红线（docs/架构文档.md §7.1）：
 #   1. 严禁收录"多少人/车位/能耗/会议/安全指数"类问法，
 #      避免与 person/vehicle/energy/meeting/security 中心向量互相竞争；
 #   2. device_health 只写"设备健康度/健康分"总览问法，

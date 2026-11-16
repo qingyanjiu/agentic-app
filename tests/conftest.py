@@ -111,7 +111,7 @@ DOMAIN_TOOL_RESULTS = {
         "security:getSecurityIndex": '{"code":200,"rows":[{"index":92.5}]}',
         "security:getSecurityAlarmList": '{"code":200,"total":1,"rows":[{"alarmName":"周界入侵","areaName":"大门口"}]}',
         "security:getPatrolMission": '{"code":200,"total":2,"rows":[{"missionName":"上午巡查"}]}',
-        # emergency_aialert 并入的新工具（开发计划 §2.4）
+        # emergency_aialert 并入的新工具（口径见 docs/架构文档.md §7.1）
         "security:getAlarmView": '{"code":200,"todayAlarmCount":5,"totalAlarmCount":320,"algorithmTypeCount":8,"accuracy":95.2}',
         "security:getAlertSituation": '{"code":200,"rows":[{"date":"2026-09-14","count":6},{"date":"2026-09-15","count":3}]}',
         "security:getAlarmListWithType": '{"code":200,"rows":[{"type":"管理预警","count":4},{"type":"环境预警","count":2}]}',

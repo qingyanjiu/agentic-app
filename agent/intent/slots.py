@@ -1058,7 +1058,7 @@ def extract_device_status_slots(query: str) -> dict:
 #   basic_info    -> 园区基本信息（面积 / IoT设备总数 / 园区概况）
 #   device_health -> 设备健康度总览（健康分/在线率/维修率/寿命率）
 #
-# 约定（docs/开发计划.md §2.3）：
+# 约定（docs/架构文档.md §7.1）：
 #   总览只保留这两个独占子类型，走 /overview/* 自己的接口；
 #   人车/能耗/会议/安全指数问法由 person/vehicle/energy/meeting/security 承接
 # ============================================================

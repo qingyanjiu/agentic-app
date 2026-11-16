@@ -699,9 +699,9 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
 
             # ============================================================
             # Loop Agent 灰度（新链路）
-            # 命中条件：payload.mode=loop，或灰度比例/白名单命中
-            # 任何异常都回落旧链路，存量功能不受影响
-            # 配置见 docs/loop-agent-改造文档.md 第 8 节
+            # 命中条件与优先级见 agent/loop/rollout.py 顶部注释
+            # （AGENT_MODE / LOOP_ROLLOUT_PERCENT / LOOP_ROLLOUT_USERS，见 docs/架构文档.md 第 13 节）
+            # 任何异常都回落（loop-only 分支上没有旧链路，落到下面的一句话兜底）
             # ============================================================
             if query:
                 try:

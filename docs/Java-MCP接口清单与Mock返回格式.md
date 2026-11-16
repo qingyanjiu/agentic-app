@@ -1,8 +1,7 @@
 # Java MCP Sidecar 接口清单与 Mock 返回格式
 
 > 供 Java 侧车（`host.docker.internal:2222`）实现 mock 数据使用。
-> 依据：Python 侧各域 graph 的 `_JAVA_TOOL_MAP`（工具名与入参）、`tests/conftest.py` 的 `DOMAIN_TOOL_RESULTS`（已被测试验证可走通流程的返回样例）、`docs/项目结构与接口文档.md`（平台 HTTP 接口字段口径）。
-> 更新日期：2026-09-21 · 分支：main
+> 依据：`agent/loop/domains/*.py` 的 `CONFIG.tool_map`（子类型 → 工具名与入参）、`tests/conftest.py` 的 `DOMAIN_TOOL_RESULTS`（已被测试验证可走通流程的返回样例）。工具清单与当前架构的关系见 `docs/架构文档.md` 第 8 节。
 
 ---
 
