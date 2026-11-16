@@ -70,33 +70,17 @@ HARD_RULES: tuple[tuple[str, tuple[str, ...], str], ...] = (
 )
 
 # --------------------------------------------------------------------------- #
-# app.py 的祖父基线：2026-11-12 现状快照，只许变少
-# --------------------------------------------------------------------------- #
+# app.py 的祖父基线：只许变少。
+# 2026-11-16（feature/loop-only）：13 张 legacy 业务图 + reactive_pipeline 已移除，
+# 现在 app.py 只剩 KB / ASR / 场景三条专用通道还依赖 langchain。
 APP_GRAPH_IMPORTS = frozenset(
     {
-        # 知识库通道返回的是 langchain 消息，_safe_serialize 要用 BaseMessage：
-        # 这一条删 legacy 之后仍然会保留
+        # 知识库通道返回的是 langchain 消息，_safe_serialize 要用 BaseMessage
         "langchain_core.messages",
         # 各专用通道（保留）
         "graph.knowledge_qa_langgraph",
         "graph.asr_pipeline",
         "graph.scene_control_langgraph",
-        # 兜底链路：删 legacy 时一起消失
-        "graph.reactive_pipeline",
-        # 以下 13 张是 legacy 业务图，删 legacy 时整批消失
-        "graph.person_status_langgraph",
-        "graph.security_status_langgraph",
-        "graph.canteen_status_langgraph",
-        "graph.vehicle_status_langgraph",
-        "graph.information_status_langgraph",
-        "graph.energy_status_langgraph",
-        "graph.meeting_status_langgraph",
-        "graph.emergency_fire_langgraph",
-        "graph.emergency_perimeter_langgraph",
-        "graph.device_status_langgraph",
-        "graph.compositive_overview_langgraph",
-        "graph.device_query_langgraph",
-        "graph.twins_inspection_langgraph",
     }
 )
 

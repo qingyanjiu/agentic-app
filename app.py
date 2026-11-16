@@ -6,14 +6,11 @@ from typing import Optional
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-from agent.executor import AgentExecutorWrapper
 from langchain_core.messages import HumanMessage, SystemMessage, BaseMessage, AIMessage, AIMessageChunk
 from models.llm import CustomLLMFactory
 # from graph.graph_pipeline import LangGraphPipeline
-from graph.reactive_pipeline import InfoDoubleCheckPipeline
 from graph.knowledge_qa_langgraph import KnowledgeQAPipeline
 from graph.asr_pipeline import TextCorrectorPipeline
-from tools.load_tools import load_tools
 # from skills.mcp_agent import McpSkillAgent
 import logging
 import uuid
@@ -22,20 +19,14 @@ import asyncio
 
 # 新增：人员态势/安防态势/食堂管理/车辆态势/信息发布/能源态势/会议管理意图识别相关导入
 # classify_security_sub_type：安防态势子类型（event_type）判定，供安防 handler 追问/兜底使用
-from agent.intent import is_scene_control_intent, has_strong_scene_cue, classify_intent_with_scene, should_route_scene, classify_intent, classify_security_sub_type, PersonStatusHandler, SecurityStatusHandler, CanteenStatusHandler, VehicleStatusHandler, InformationStatusHandler, EnergyStatusHandler, MeetingStatusHandler, EmergencyFireHandler, EmergencyPerimeterHandler, DeviceStatusHandler, CompositiveOverviewHandler, TwinsInspectionHandler, DeviceQueryHandler
-from graph.person_status_langgraph import build_person_status_graph, load_person_status_tools
-from graph.security_status_langgraph import build_security_status_graph, load_security_tools
-from graph.canteen_status_langgraph import build_canteen_status_graph, load_canteen_tools
-from graph.vehicle_status_langgraph import build_vehicle_status_graph, load_vehicle_status_tools
-from graph.information_status_langgraph import build_information_status_graph, load_information_status_tools
-from graph.energy_status_langgraph import build_energy_status_graph, load_energy_status_tools
-from graph.meeting_status_langgraph import build_meeting_status_graph, load_meeting_status_tools
-from graph.emergency_fire_langgraph import build_emergency_fire_graph, load_emergency_fire_tools
-from graph.emergency_perimeter_langgraph import build_emergency_perimeter_graph, load_emergency_perimeter_tools
-from graph.device_status_langgraph import build_device_status_graph, load_device_status_tools
-from graph.compositive_overview_langgraph import build_compositive_overview_graph, load_compositive_overview_tools
-from graph.device_query_langgraph import build_device_query_graph, load_device_query_tools
-from graph.twins_inspection_langgraph import build_twins_inspection_graph, load_twins_inspection_tools
+from agent.intent import (
+    is_scene_control_intent,
+    has_strong_scene_cue,
+    classify_intent_with_scene,
+    should_route_scene,
+    classify_intent,
+    classify_security_sub_type,
+)
 # UE 3D 场景控制：sidecar 的 /mcp/scene 是 direct_client（逐请求注入 X-Session-Id），
 # 不走 langchain_mcp_adapters，由 SceneMcpClient 直连
 from mcp_client.scene_mcp_client import SceneMcpClient
@@ -1647,74 +1638,28 @@ _SUBTYPE_FALLBACKS = {
 }
 
 
-MODULE_HANDLERS = {
-    "person_status": PersonStatusHandler,
-    "security_status": SecurityStatusHandler,
-    "canteen_status": CanteenStatusHandler,
-    "vehicle_status": VehicleStatusHandler,
-    "information_status": InformationStatusHandler,
-    "energy_status": EnergyStatusHandler,
-    "emergency_fire": EmergencyFireHandler,
-    "emergency_perimeter": EmergencyPerimeterHandler,
-    "meeting_status": MeetingStatusHandler,
-    "device_status": DeviceStatusHandler,
-    "compositive_overview": CompositiveOverviewHandler,
-    "device_query": DeviceQueryHandler,
-    "twins_inspection": TwinsInspectionHandler,
-}
+# 业务域模块名集合。
+# 原来这里是 {模块名: Handler 类} + {模块名: run_xxx_graph}，legacy 删除后
+# handler 和 13 张图都不在了；只剩场景分流要判断"这个意图是不是业务域"，
+# 所以退化成名字元组。
+BUSINESS_MODULES = (
+    "person_status",
+    "security_status",
+    "canteen_status",
+    "vehicle_status",
+    "information_status",
+    "energy_status",
+    "emergency_fire",
+    "emergency_perimeter",
+    "meeting_status",
+    "device_status",
+    "compositive_overview",
+    "device_query",
+    "twins_inspection",
+)
 
-MODULE_RUNNERS = {
-    "person_status": run_person_status_graph,
-    "security_status": run_security_status_graph,
-    "canteen_status": run_canteen_status_graph,
-    "vehicle_status": run_vehicle_status_graph,
-    "information_status": run_information_status_graph,
-    "energy_status": run_energy_status_graph,
-    "emergency_fire": run_emergency_fire_graph,
-    "emergency_perimeter": run_emergency_perimeter_graph,
-    "meeting_status": run_meeting_status_graph,
-    "device_status": run_device_status_graph,
-    "compositive_overview": run_compositive_overview_graph,
-    "device_query": run_device_query_graph,
-    "twins_inspection": run_twins_inspection_graph,
-}
-
-# 业务域模块名（场景控制不在其中，走独立通道）
-BUSINESS_MODULES = tuple(MODULE_HANDLERS)
-
-
-async def start_module_flow(websocket, query: str, module: str, user_id: str, session_id,
-                            slots: dict = None, original_query: str = None) -> None:
-    """
-    启动某业务域的全新查询流程（与情况 2 的新意图分支同构）：
-      1. 用对应 handler 抽取初始 slots 与缺失参数
-      2. 创建会话状态
-      3. 用对应 LangGraph 图执行（内部会回写/保留会话状态）
-
-    slots / original_query：省略式追问的继承式启动可选传入——
-      slots 由调用方用本轮输入单独抽取（拼接串整体抽槽会把实体查成上轮的）；
-      original_query 固定传首轮原话（拼接串回写会滚雪球，稀释后续分类得分）。
-      缺省时维持现状：从 query 抽取、原话即 query。
-    """
-    handler = MODULE_HANDLERS[module]()
-    if slots is None:
-        slots = await handler.extract_slots(query)
-    missing = handler._get_missing_params(slots)
-
-    state = IntentState(
-        module=module,
-        slots=slots,
-        missing_params=missing,
-        ask_count=0,
-        unrelated_count=0,
-        original_query=original_query or query,
-        done=False
-    )
-    session_state.set(user_id, session_id, state)
-
-    await MODULE_RUNNERS[module](websocket, state, user_id, session_id)
-
-
+# 兼容场景分流里 `in MODULE_HANDLERS` 的旧写法
+MODULE_HANDLERS = {name: None for name in BUSINESS_MODULES}
 # ============================================================
 # UE 3D 场景控制（MCP sidecar /mcp/scene）
 # ------------------------------------------------------------
@@ -2093,31 +2038,8 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
         
     thread_id = f'{user_id}-{session_id}'# 会话唯一标识（用户+会话，隔离不同对话上下文）
     
-    tools = await load_tools()# 异步加载Agent工具集（如搜索、计算器、数据库等）
-    
-    '''
-    @@@@@ # 创建LangGraph核心流水线（信息核验Agent）
-    '''
-    try:
-        rag_pipeline = await InfoDoubleCheckPipeline.create(
-            llm=llm,
-            tools=tools,
-            user_id=user_id,
-            session_id=session_id,
-            use_evaluator=False # 是否启用结果评估器（可选
-        )
-        logging.info("chatPipeline创建成功")
-    except Exception as e:
-        error_msg = f"Pipeline创建失败：{str(e)}"
-        logging.error(error_msg)
-        await websocket.send_text(json.dumps({
-            "type": "error",
-            "message": error_msg,
-            "code": "PIPELINE_CREATE_FAILED"
-        }))
-        await websocket.close()
-        return
-
+    # legacy 的 InfoDoubleCheckPipeline（rag_pipeline）已移除：
+    # 业务问答全部走 agent/loop，落空时由下方兜底话术应答。
     # 知识库直连管线：前端切到"知识库问答"模式（payload 带 mode=kb）时使用，
     # 不走意图识别。创建失败只降级知识库模式，智能体问答不受影响
     kb_pipeline = None
@@ -2332,665 +2254,28 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
                 continue
 
             # ============================================================
-            # 人员态势 / 安防态势 MVP 分支
-            # 先判断是否有正在进行的追问状态
-            # 再判断是否为新的人员/安防态势意图
-            # 否则走原有 pipeline
+            # legacy 状态机已移除（loop-only 分支）
+            #
+            # 走到这里说明：KB 分支没命中、loop 没接管（灰度未命中/未处理）、
+            # 场景分流也没走。原来这里是 13 个业务域 Handler + LangGraph 图，
+            # 现在统一交给 loop，兜底就一句话，不再回落旧链路。
             # ============================================================
-            active_state = session_state.get(user_id, session_id)
-
-            # 区分两种留状态的情况：
-            #   追问态   = 有状态且未完成（系统在等用户补充参数）→ 走情况 1 追问分支
-            #   已完成态 = 上一轮查询刚结束（done=True，见各 run_xxx_graph 尾部）
-            #              → 不进追问分支，仅在情况 1.5 里充当省略式追问的上下文
-            is_waiting = bool(
-                active_state and not active_state.done
-                and active_state.module in BUSINESS_MODULES
-            )
-
-            # 预计算顶层意图（人员态势 / 安防态势 / 食堂管理 / 车辆态势 / 信息发布 / 能源态势 / 会议管理 / 消防态势 / other），只算一次
-            # 有进行中任务时不调用模型，避免追问轮重复编码；
-            # 场景分流时已经算过业务意图的话直接复用，不重复 encode
-            if is_waiting:
-                top_intent = None
-            elif precomputed_top_intent is not None:
-                top_intent = precomputed_top_intent
-            else:
-                top_intent = (await classify_intent(query))["intent"]
-
-            # 情况 1：当前有进行中的追问状态（人员态势 / 安防态势 / 食堂管理 / 车辆态势 / 信息发布 / 能源态势 / 会议管理 / 消防态势）
-            if is_waiting:
-                print("[DEBUG] 进入追问分支, module:", active_state.module)
-
-                # 按模块选择对应 handler（人员态势 / 安防态势 / 食堂管理 / 车辆态势 / 信息发布 / 能源态势 / 会议管理 / 消防态势）
-                if active_state.module == "person_status":
-                    handler = PersonStatusHandler()
-                elif active_state.module == "security_status":
-                    handler = SecurityStatusHandler()
-                elif active_state.module == "canteen_status":
-                    handler = CanteenStatusHandler()
-                elif active_state.module == "vehicle_status":
-                    handler = VehicleStatusHandler()
-                elif active_state.module == "information_status":
-                    handler = InformationStatusHandler()
-                elif active_state.module == "energy_status":
-                    handler = EnergyStatusHandler()
-                elif active_state.module == "emergency_fire":
-                    handler = EmergencyFireHandler()
-                elif active_state.module == "emergency_perimeter":
-                    handler = EmergencyPerimeterHandler()
-                elif active_state.module == "device_status":
-                    handler = DeviceStatusHandler()
-                elif active_state.module == "compositive_overview":
-                    handler = CompositiveOverviewHandler()
-                elif active_state.module == "device_query":
-                    handler = DeviceQueryHandler()
-                elif active_state.module == "twins_inspection":
-                    handler = TwinsInspectionHandler()
-                else:
-                    handler = MeetingStatusHandler()
-                
-                # 让 handler 判断用户回复是否相关，并更新状态
-                result = await handler.handle_reply(active_state, query, llm)
-                
-                # 情况 1.1：连续不相关超过阈值，放弃任务
-                if result["action"] == "give_up":
-                    # 清空会话状态
-                    session_state.clear(user_id, session_id)
-
-                    await websocket.send_text(json.dumps({
-                        "event": "custom",
-                        "data": {"type": "answer", "content": result["answer"]}
-                    }, ensure_ascii=False))
-                    # answer 之后必须补 done：前端收到 done 才收起加载指示、
-                    # 解锁输入框；只发 answer 会让前端永久转圈且无法继续
-                    # 发消息（排查记录案例 14）
-                    await websocket.send_text(json.dumps({
-                        "event": "custom",
-                        "data": {"type": "done"}
-                    }, ensure_ascii=False))
-                    continue  # 跳过原有 pipeline
-                
-                # 情况 1.2：用户回复不相关，但未超限，再次追问
-                elif result["action"] == "re_ask":
-                    # ====== 追问态新意图接管 ======
-                    # is_related 是关键词启发式，用户跑题说新需求时会被误判"不相关"。
-                    # 这里补跑一次意图分类：识别出其他业务域意图且过阈值
-                    # （classify_top_intent 低于阈值返回 other）→ 放弃当前任务，
-                    # 按新意图走全新流程；仍是本域 / other → 维持追问。
-                    takeover_module = None
-                    try:
-                        cls = await classify_intent(query)
-                        t_intent = cls.get("intent")
-                        if t_intent in MODULE_HANDLERS and t_intent != active_state.module:
-                            takeover_module = t_intent
-                    except Exception as e:
-                        logging.warning(f"[追问分流] 意图分类失败，维持追问: {e}")
-
-                    if takeover_module:
-                        logging.info(
-                            f"[追问分流] 追问态识别到新意图 {takeover_module}，"
-                            f"放弃当前任务 {active_state.module}"
-                        )
-                        session_state.clear(user_id, session_id)
-                        await start_module_flow(websocket, query, takeover_module, user_id, session_id)
-                        continue
-
-                    # 保存更新后的状态
-                    session_state.set(user_id, session_id, result["state"])
-                    
-                    await websocket.send_text(json.dumps({
-                        "event": "custom",
-                        "data": {
-                            "type": "ask",
-                            "question": result["answer"],
-                            "missing_params": result["state"].missing_params,
-                            "unrelated_count": result["state"].unrelated_count
-                        }
-                    }, ensure_ascii=False))
-                    continue  # 跳过原有 pipeline
-                
-                # 情况 1.3：用户回复相关，继续执行 pipeline
-                elif result["action"] == "continue":
-                    # 保存更新后的状态
-                    session_state.set(user_id, session_id, result["state"])
-                    
-                    if active_state.module == "person_status":
-                        # 用 LangGraph 图执行人员态势流程（内部会回写/保留会话状态）
-                        await run_person_status_graph(websocket, result["state"], user_id, session_id)
-                    elif active_state.module == "security_status":
-                        # 用 LangGraph 图执行安防态势流程（内部会回写/保留会话状态）
-                        await run_security_status_graph(websocket, result["state"], user_id, session_id)
-                    elif active_state.module == "canteen_status":
-                        # 用 LangGraph 图执行食堂管理流程（内部会回写/保留会话状态）
-                        await run_canteen_status_graph(websocket, result["state"], user_id, session_id)
-                    elif active_state.module == "vehicle_status":
-                        # 用 LangGraph 图执行车辆态势流程（内部会回写/保留会话状态）
-                        await run_vehicle_status_graph(websocket, result["state"], user_id, session_id)
-                    elif active_state.module == "information_status":
-                        # 用 LangGraph 图执行信息发布流程（内部会回写/保留会话状态）
-                        await run_information_status_graph(websocket, result["state"], user_id, session_id)
-                    elif active_state.module == "energy_status":
-                        # 用 LangGraph 图执行能源态势流程（内部会回写/保留会话状态）
-                        await run_energy_status_graph(websocket, result["state"], user_id, session_id)
-                    elif active_state.module == "emergency_fire":
-                        # 用 LangGraph 图执行消防态势流程（内部会回写/保留会话状态）
-                        await run_emergency_fire_graph(websocket, result["state"], user_id, session_id)
-                    elif active_state.module == "emergency_perimeter":
-                        # 用 LangGraph 图执行周界态势流程（内部会回写/保留会话状态）
-                        await run_emergency_perimeter_graph(websocket, result["state"], user_id, session_id)
-                    elif active_state.module == "device_status":
-                        # 用 LangGraph 图执行设备态势流程（内部会回写/保留会话状态）
-                        await run_device_status_graph(websocket, result["state"], user_id, session_id)
-                    elif active_state.module == "compositive_overview":
-                        # 用 LangGraph 图执行综合态势总览流程（内部会回写/保留会话状态）
-                        await run_compositive_overview_graph(websocket, result["state"], user_id, session_id)
-                    elif active_state.module == "device_query":
-                        # 用 LangGraph 图执行设备查询流程（内部会回写/保留会话状态）
-                        await run_device_query_graph(websocket, result["state"], user_id, session_id)
-                    elif active_state.module == "twins_inspection":
-                        # 用 LangGraph 图执行孪生巡检流程（内部会回写/保留会话状态）
-                        await run_twins_inspection_graph(websocket, result["state"], user_id, session_id)
-                    else:
-                        # 用 LangGraph 图执行会议管理流程（内部会回写/保留会话状态）
-                        await run_meeting_status_graph(websocket, result["state"], user_id, session_id)
-
-                    continue  # 跳过原有 pipeline
-
-            # 情况 1.4：无任务态的收尾语（「没有了」「不用了」「拜拜」等）——
-            # 是对「还有其他问题吗」这类开放问题的礼貌回答，不是可分类的查询。
-            # 须排在情况 1.5 之前：done 态下收尾语若落到 1.5，会被拼接上轮
-            # 问题重新分类，把已完成的查询再执行一遍（排查记录案例 15）
-            elif top_intent == "other" and is_conversation_close(query):
-                await websocket.send_text(json.dumps({
-                    "event": "custom",
-                    "data": {"type": "answer", "content": "好的，如需查询园区相关数据随时找我。"}
-                }, ensure_ascii=False))
-                # answer 必配 done，否则前端回合不结束（排查记录案例 14）
-                await websocket.send_text(json.dumps({
-                    "event": "custom",
-                    "data": {"type": "done"}
-                }, ensure_ascii=False))
-                continue
-
-            # 情况 1.5：上一轮查询已完成（done=True）且本轮识别不出业务意图（other）
-            # → 仅当输入是省略式追问形状（is_ellipsis_followup 白名单：
-            #   「昨天呢」「那上周呢」「出去的呢」这类时间词/域动词+语气词）
-            #   才视为省略式追问：
-            #   用上一轮原问题拼接本轮输入重新分类；命中业务域则按继承式启动——
-            #   拼接串只喂分类器，槽位只用本轮输入抽取（拼接串整体抽槽会把
-            #   "那李四呢"的实体查成上轮的张三）；同域继承本轮没抽到的实体槽
-            #   （时间不继承，"那上周呢"的时间必须来自本轮）；original_query
-            #   保持首轮原话不回写拼接串（连续追问不滚雪球）；
-            #   仍未命中则不 continue，掉到下方原有 pipeline。
-            #   非省略形状的 other（「今天日期」「你好」等）不再拼接——所有
-            #   意图都不包含就直接走 other 兜底，不能被上轮问题拽回业务域把
-            #   上轮查询重跑一遍（2026-09-23 冒烟：车辆完成后问「今天是哪天」
-            #   被拼成停车查询重答；用户裁定 2026-09-23）
-            elif (top_intent == "other" and active_state is not None
-                  and active_state.done and is_ellipsis_followup(query)):
-                merged_query = f"{active_state.original_query} {query}"
-                merged_intent = (await classify_intent(merged_query))["intent"]
-                if merged_intent in MODULE_HANDLERS:
-                    logging.info(
-                        f"[省略式追问] 拼接上轮问题({active_state.module})重新分类命中 {merged_intent}，本轮输入：{query}"
-                    )
-                    handler = MODULE_HANDLERS[merged_intent]()
-                    # ① 槽位只用本轮输入抽取
-                    slots = await handler.extract_slots(query)
-                    # ② 同域继承本轮没抽到的实体槽；时间不继承（必须来自本轮）
-                    if merged_intent == active_state.module:
-                        for k in ("person_name", "area", "alarm_id", "meal"):
-                            if not slots.get(k) and active_state.slots.get(k):
-                                slots[k] = active_state.slots[k]
-                        # ③ 子类型继承上轮：仅当本轮抽取落到兜底值（输入本身
-                        # 不含子类型信息，如「昨天呢」）才继承；本轮明确抽出
-                        # 具体子类型时以本轮为准——「出去呢」要把子类型从
-                        # 进入切到离开，不能被子类型继承压回上轮
-                        # （案例 13 建立、案例 17 修正边界）
-                        for k in ("query_type", "event_type"):
-                            prev_subtype = active_state.slots.get(k)
-                            if not prev_subtype:
-                                continue
-                            fresh_subtype = slots.get(k)
-                            if not fresh_subtype or fresh_subtype in _SUBTYPE_FALLBACKS.get(k, ()):
-                                slots[k] = prev_subtype
-                    # ④ original_query 传首轮原话，不回写拼接串
-                    await start_module_flow(websocket, query, merged_intent, user_id, session_id,
-                                            slots=slots, original_query=active_state.original_query)
-                    continue  # 跳过原有 pipeline
-
-            # 情况 2：没有进行中状态，但新意图属于人员态势
-            elif top_intent == "person_status":
-                print("[DEBUG] 进入新意图分支, query:", query)
-                
-                handler = PersonStatusHandler()
-                
-                # 从用户输入中抽取初始 slots
-                slots = await handler.extract_slots(query)
-                
-                # 判断初始 slots 是否完整
-                missing = handler._get_missing_params(slots)
-                
-                # 创建新的会话状态
-                state = IntentState(
-                    module="person_status",
-                    slots=slots,
-                    missing_params=missing,
-                    ask_count=0,
-                    unrelated_count=0,
-                    original_query=query,
-                    done=False
-                )
-                session_state.set(user_id, session_id, state)
-                
-                # 用 LangGraph 图执行人员态势流程（内部会回写/保留会话状态）
-                await run_person_status_graph(websocket, state, user_id, session_id)
-
-                continue  # 跳过原有 pipeline
-
-            # 情况 2.1：没有进行中状态，但新意图属于安防态势
-            elif top_intent == "security_status":
-                print("[DEBUG] 进入安防态势新意图分支, query:", query)
-
-                handler = SecurityStatusHandler()
-
-                # 从用户输入中抽取初始 slots
-                slots = await handler.extract_slots(query)
-
-                # 判断初始 slots 是否完整
-                missing = handler._get_missing_params(slots)
-
-                # 创建新的会话状态
-                state = IntentState(
-                    module="security_status",
-                    slots=slots,
-                    missing_params=missing,
-                    ask_count=0,
-                    unrelated_count=0,
-                    original_query=query,
-                    done=False
-                )
-                session_state.set(user_id, session_id, state)
-
-                # 用 LangGraph 图执行安防态势流程（内部会回写/保留会话状态）
-                await run_security_status_graph(websocket, state, user_id, session_id)
-
-                continue  # 跳过原有 pipeline
-
-            # 情况 2.2：没有进行中状态，但新意图属于食堂管理
-            elif top_intent == "canteen_status":
-                print("[DEBUG] 进入食堂管理新意图分支, query:", query)
-
-                handler = CanteenStatusHandler()
-
-                # 从用户输入中抽取初始 slots
-                slots = await handler.extract_slots(query)
-
-                # 判断初始 slots 是否完整
-                missing = handler._get_missing_params(slots)
-
-                # 创建新的会话状态
-                state = IntentState(
-                    module="canteen_status",
-                    slots=slots,
-                    missing_params=missing,
-                    ask_count=0,
-                    unrelated_count=0,
-                    original_query=query,
-                    done=False
-                )
-                session_state.set(user_id, session_id, state)
-
-                # 用 LangGraph 图执行食堂管理流程（内部会回写/保留会话状态）
-                await run_canteen_status_graph(websocket, state, user_id, session_id)
-
-                continue  # 跳过原有 pipeline
-
-            # 情况 2.3：没有进行中状态，但新意图属于车辆态势
-            elif top_intent == "vehicle_status":
-                print("[DEBUG] 进入车辆态势新意图分支, query:", query)
-
-                handler = VehicleStatusHandler()
-
-                # 从用户输入中抽取初始 slots
-                slots = await handler.extract_slots(query)
-
-                # 判断初始 slots 是否完整
-                missing = handler._get_missing_params(slots)
-
-                # 创建新的会话状态
-                state = IntentState(
-                    module="vehicle_status",
-                    slots=slots,
-                    missing_params=missing,
-                    ask_count=0,
-                    unrelated_count=0,
-                    original_query=query,
-                    done=False
-                )
-                session_state.set(user_id, session_id, state)
-
-                # 用 LangGraph 图执行车辆态势流程（内部会回写/保留会话状态）
-                await run_vehicle_status_graph(websocket, state, user_id, session_id)
-
-                continue  # 跳过原有 pipeline
-
-            # 情况 2.4：没有进行中状态，但新意图属于信息发布
-            elif top_intent == "information_status":
-                print("[DEBUG] 进入信息发布新意图分支, query:", query)
-
-                handler = InformationStatusHandler()
-
-                # 从用户输入中抽取初始 slots
-                slots = await handler.extract_slots(query)
-
-                # 判断初始 slots 是否完整
-                missing = handler._get_missing_params(slots)
-
-                # 创建新的会话状态
-                state = IntentState(
-                    module="information_status",
-                    slots=slots,
-                    missing_params=missing,
-                    ask_count=0,
-                    unrelated_count=0,
-                    original_query=query,
-                    done=False
-                )
-                session_state.set(user_id, session_id, state)
-
-                # 用 LangGraph 图执行信息发布流程（内部会回写/保留会话状态）
-                await run_information_status_graph(websocket, state, user_id, session_id)
-
-                continue  # 跳过原有 pipeline
-
-            # 情况 2.5：没有进行中状态，但新意图属于能源态势
-            elif top_intent == "energy_status":
-                print("[DEBUG] 进入能源态势新意图分支, query:", query)
-
-                handler = EnergyStatusHandler()
-
-                # 从用户输入中抽取初始 slots
-                slots = await handler.extract_slots(query)
-
-                # 判断初始 slots 是否完整
-                missing = handler._get_missing_params(slots)
-
-                # 创建新的会话状态
-                state = IntentState(
-                    module="energy_status",
-                    slots=slots,
-                    missing_params=missing,
-                    ask_count=0,
-                    unrelated_count=0,
-                    original_query=query,
-                    done=False
-                )
-                session_state.set(user_id, session_id, state)
-
-                # 用 LangGraph 图执行能源态势流程（内部会回写/保留会话状态）
-                await run_energy_status_graph(websocket, state, user_id, session_id)
-
-                continue  # 跳过原有 pipeline
-
-            # 情况 2.6：没有进行中状态，但新意图属于会议管理
-            elif top_intent == "meeting_status":
-                print("[DEBUG] 进入会议管理新意图分支, query:", query)
-
-                handler = MeetingStatusHandler()
-
-                # 从用户输入中抽取初始 slots
-                slots = await handler.extract_slots(query)
-
-                # 判断初始 slots 是否完整
-                missing = handler._get_missing_params(slots)
-
-                # 创建新的会话状态
-                state = IntentState(
-                    module="meeting_status",
-                    slots=slots,
-                    missing_params=missing,
-                    ask_count=0,
-                    unrelated_count=0,
-                    original_query=query,
-                    done=False
-                )
-                session_state.set(user_id, session_id, state)
-
-                # 用 LangGraph 图执行会议管理流程（内部会回写/保留会话状态）
-                await run_meeting_status_graph(websocket, state, user_id, session_id)
-
-                continue  # 跳过原有 pipeline
-
-            # 情况 2.7：没有进行中状态，但新意图属于消防态势
-            elif top_intent == "emergency_fire":
-                print("[DEBUG] 进入消防态势新意图分支, query:", query)
-
-                handler = EmergencyFireHandler()
-
-                # 从用户输入中抽取初始 slots
-                slots = await handler.extract_slots(query)
-
-                # 判断初始 slots 是否完整
-                missing = handler._get_missing_params(slots)
-
-                # 创建新的会话状态
-                state = IntentState(
-                    module="emergency_fire",
-                    slots=slots,
-                    missing_params=missing,
-                    ask_count=0,
-                    unrelated_count=0,
-                    original_query=query,
-                    done=False
-                )
-                session_state.set(user_id, session_id, state)
-
-                # 用 LangGraph 图执行消防态势流程（内部会回写/保留会话状态）
-                await run_emergency_fire_graph(websocket, state, user_id, session_id)
-
-                continue  # 跳过原有 pipeline
-
-            # 情况 2.8：没有进行中状态，但新意图属于设备态势
-            elif top_intent == "device_status":
-                print("[DEBUG] 进入设备态势新意图分支, query:", query)
-
-                handler = DeviceStatusHandler()
-
-                # 从用户输入中抽取初始 slots
-                slots = await handler.extract_slots(query)
-
-                # 判断初始 slots 是否完整
-                missing = handler._get_missing_params(slots)
-
-                # 创建新的会话状态
-                state = IntentState(
-                    module="device_status",
-                    slots=slots,
-                    missing_params=missing,
-                    ask_count=0,
-                    unrelated_count=0,
-                    original_query=query,
-                    done=False
-                )
-                session_state.set(user_id, session_id, state)
-
-                # 用 LangGraph 图执行设备态势流程（内部会回写/保留会话状态）
-                await run_device_status_graph(websocket, state, user_id, session_id)
-
-                continue  # 跳过原有 pipeline
-
-            # 情况 2.9：没有进行中状态，但新意图属于综合态势总览
-            elif top_intent == "compositive_overview":
-                print("[DEBUG] 进入综合态势总览新意图分支, query:", query)
-
-                handler = CompositiveOverviewHandler()
-
-                # 从用户输入中抽取初始 slots
-                slots = await handler.extract_slots(query)
-
-                # 判断初始 slots 是否完整
-                missing = handler._get_missing_params(slots)
-
-                # 创建新的会话状态
-                state = IntentState(
-                    module="compositive_overview",
-                    slots=slots,
-                    missing_params=missing,
-                    ask_count=0,
-                    unrelated_count=0,
-                    original_query=query,
-                    done=False
-                )
-                session_state.set(user_id, session_id, state)
-
-                # 用 LangGraph 总览图执行综合态势总览流程（内部会回写/保留会话状态）
-                await run_compositive_overview_graph(websocket, state, user_id, session_id)
-
-                continue  # 跳过原有 pipeline
-
-            # 情况 2.10：没有进行中状态，但新意图属于设备查询（设备列表 / 设备详情）
-            elif top_intent == "device_query":
-                print("[DEBUG] 进入设备查询新意图分支, query:", query)
-
-                handler = DeviceQueryHandler()
-
-                # 从用户输入中抽取初始 slots
-                slots = await handler.extract_slots(query)
-
-                # 判断初始 slots 是否完整（详情查询缺设备名称/编码时进入追问）
-                missing = handler._get_missing_params(slots)
-
-                # 创建新的会话状态
-                state = IntentState(
-                    module="device_query",
-                    slots=slots,
-                    missing_params=missing,
-                    ask_count=0,
-                    unrelated_count=0,
-                    original_query=query,
-                    done=False
-                )
-                session_state.set(user_id, session_id, state)
-
-                # 用 LangGraph 图执行设备查询流程（内部会回写/保留会话状态）
-                await run_device_query_graph(websocket, state, user_id, session_id)
-
-                continue  # 跳过原有 pipeline
-
-            # 情况 2.11：没有进行中状态，但新意图属于周界态势
-            elif top_intent == "emergency_perimeter":
-                print("[DEBUG] 进入周界态势新意图分支, query:", query)
-
-                handler = EmergencyPerimeterHandler()
-
-                # 从用户输入中抽取初始 slots
-                slots = await handler.extract_slots(query)
-
-                # 判断初始 slots 是否完整
-                missing = handler._get_missing_params(slots)
-
-                # 创建新的会话状态
-                state = IntentState(
-                    module="emergency_perimeter",
-                    slots=slots,
-                    missing_params=missing,
-                    ask_count=0,
-                    unrelated_count=0,
-                    original_query=query,
-                    done=False
-                )
-                session_state.set(user_id, session_id, state)
-
-                # 用 LangGraph 图执行周界态势流程（内部会回写/保留会话状态）
-                await run_emergency_perimeter_graph(websocket, state, user_id, session_id)
-
-                continue  # 跳过原有 pipeline
-
-            # 情况 2.12：没有进行中状态，但新意图属于孪生巡检
-            elif top_intent == "twins_inspection":
-                print("[DEBUG] 进入孪生巡检新意图分支, query:", query)
-
-                handler = TwinsInspectionHandler()
-
-                # 从用户输入中抽取初始 slots
-                slots = await handler.extract_slots(query)
-
-                # 判断初始 slots 是否完整
-                missing = handler._get_missing_params(slots)
-
-                # 创建新的会话状态
-                state = IntentState(
-                    module="twins_inspection",
-                    slots=slots,
-                    missing_params=missing,
-                    ask_count=0,
-                    unrelated_count=0,
-                    original_query=query,
-                    done=False
-                )
-                session_state.set(user_id, session_id, state)
-
-                # 用 LangGraph 图执行孪生巡检流程（内部会回写/保留会话状态）
-                await run_twins_inspection_graph(websocket, state, user_id, session_id)
-
-                continue  # 跳过原有 pipeline
-
-             # ======================== 【多模态核心：统一入口解析】 ========================
-            query = payload.get("query", "")
-            image_url = payload.get("image_url", "")        # 新增：url图片
-
-            # 构建多模态消息内容（兼容文本+图片）
-            content = []
-            # 1. 添加文本内容
-            if query:
-                content.append({"type": "text", "text": query})
-            
-            # 2. 添加图片（优先base64，其次url）
-            if image_url:
-                content.append({
-                    "type": "image_url",
-                    "image_url": {"url": image_url}
-                })
-            # 如果最终没有任何内容，返回错误
-            if not content:
-                await websocket.send_text(json.dumps({"error": "empty query or image"}))
-                continue
-           
-            
-            # 核心：流式运行LangGraph流水线，返回Agent执行过程
-            # 假设 agent 是通过 create_agent 创建的，并且支持 astream
-            
-            async for chunk in rag_pipeline.astream_run(content, user_id, session_id):
-                 # 序列化chunk（解决LangChain对象无法JSON化问题）
-                text = _safe_serialize(chunk)
-                ##################################
-                # 如果直接用agentWrapper，就用这个逻辑
-                ##################################
-                # 如果是最后结束的消息，直接拿message
-                # if(text['event'] == 'on_chain_end'
-                #     and 'output' in text['data'] 
-                #     and text['name'] == 'executor_agent'):
-                #     # 取最后 messagetext['name'] == 'executor_agent'):
-                #     output_json = {
-                #         "event": "final_answer", 
-                #         "data": text['data']['output']['messages'][-1]['content']
-                #     }
-                # await websocket.send_text(json.dumps(text, ensure_ascii=False))
-            
-                ##################################
-                # 如果是用langgraph，就用这个逻辑
-                ##################################
-                # 把 AIMessageChunk 信息过滤掉
-                # 过滤掉token级流式输出（只返回阶段型结果，减少传输量）
-                if(text['event'] != 'token'):
-                     # 向客户端发送JSON数据（ensure_ascii=False支持中文）
-                    await websocket.send_text(json.dumps(text, ensure_ascii=False))
-             # 流水线执行完成：发送结束标识    
-            await websocket.send_text(json.dumps({"status": "done"}))
-             # 记录日志：会话完成
-            logging.info(f"answer done -- {user_id}-{session_id}")
+            await websocket.send_text(json.dumps({
+                "event": "custom",
+                "data": {
+                    "type": "answer",
+                    "content": (
+                        "这个说法我暂时没理解，可以换个问法吗？"
+                        "比如「现在园区有多少人」「5楼有哪些监控」「园区设备类型统计」。"
+                    ),
+                },
+            }, ensure_ascii=False))
+            # answer 之后必须补 done：前端收到 done 才收起加载指示、解锁输入框
+            # （排查记录案例 14：只发 answer 会让前端永久转圈）
+            await websocket.send_text(json.dumps({
+                "event": "custom",
+                "data": {"type": "done"},
+            }, ensure_ascii=False))
         # 异常处理：捕获所有错误，返回给客户端
         except Exception as e:
             error_msg = f"处理消息异常: {str(e)}"
