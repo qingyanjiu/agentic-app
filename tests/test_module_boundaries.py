@@ -71,14 +71,11 @@ HARD_RULES: tuple[tuple[str, tuple[str, ...], str], ...] = (
 
 # --------------------------------------------------------------------------- #
 # app.py 的祖父基线：只许变少。
-# 2026-11-16（feature/loop-only）：13 张 legacy 业务图 + reactive_pipeline 已移除，
-# 现在 app.py 只剩 KB / ASR / 场景三条专用通道还依赖 langchain。
+# 2026-11-16（feature/loop-only）：13 张 legacy 业务图、reactive_pipeline、
+# KB 管线（knowledge_qa_langgraph）都已移除；app.py 不再 import langchain_core。
+# 现在只剩 ASR 与场景两条专用通道还依赖 langchain。
 APP_GRAPH_IMPORTS = frozenset(
     {
-        # 知识库通道返回的是 langchain 消息，_safe_serialize 要用 BaseMessage
-        "langchain_core.messages",
-        # 各专用通道（保留）
-        "graph.knowledge_qa_langgraph",
         "graph.asr_pipeline",
         "graph.scene_control_langgraph",
     }

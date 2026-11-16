@@ -6,10 +6,8 @@ from typing import Optional
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-from langchain_core.messages import HumanMessage, SystemMessage, BaseMessage, AIMessage, AIMessageChunk
 from models.llm import CustomLLMFactory
 # from graph.graph_pipeline import LangGraphPipeline
-from graph.knowledge_qa_langgraph import KnowledgeQAPipeline
 from graph.asr_pipeline import TextCorrectorPipeline
 # from skills.mcp_agent import McpSkillAgent
 import logging
@@ -169,15 +167,21 @@ async def shutdown():
 
 
 def _safe_serialize(obj):
-    """递归将 BaseMessage 转为 dict（解决WebSocket传输序列化问题）"""
-    if isinstance(obj, BaseMessage):
-        return obj.model_dump()
-    elif isinstance(obj, list):
+    """递归把消息对象转成可 JSON 序列化的结构。
+
+    原来是 isinstance(obj, BaseMessage) → model_dump()，为此 app.py 顶部
+    要 import langchain_core。legacy 业务图删完后已经没有任何一条路径
+    产出 BaseMessage，所以改成鸭子类型（有 model_dump 就当消息处理），
+    顺带去掉了 app.py 对 langchain_core 的依赖。
+    """
+    dump = getattr(obj, "model_dump", None)
+    if callable(dump):
+        return dump()
+    if isinstance(obj, list):
         return [_safe_serialize(i) for i in obj]
-    elif isinstance(obj, dict):
+    if isinstance(obj, dict):
         return {k: _safe_serialize(v) for k, v in obj.items()}
-    else:
-        return obj
+    return obj
 
 
 async def safe_send_message(websocket: WebSocket, message: dict):
@@ -809,16 +813,8 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
     
     # legacy 的 InfoDoubleCheckPipeline（rag_pipeline）已移除：
     # 业务问答全部走 agent/loop，落空时由下方兜底话术应答。
-    # 知识库直连管线：前端切到"知识库问答"模式（payload 带 mode=kb）时使用，
-    # 不走意图识别。创建失败只降级知识库模式，智能体问答不受影响
-    kb_pipeline = None
-    try:
-        # 同步创建、懒握手：sidecar 未就绪不影响创建，只影响知识库模式首次检索
-        kb_pipeline = KnowledgeQAPipeline.create(llm=llm)
-        logging.info("KnowledgeQAPipeline创建成功")
-    except Exception as e:
-        logging.error(f"KnowledgeQAPipeline创建失败（仅知识库模式不可用）: {e}")
- # 持续监听客户端消息（WebSocket长连接循环）
+    # 知识库那条也只剩检索客户端（KnowledgeMcpClient），问答编排已删除，
+    # 见下方 mode=kb 分支的说明。
     # 上一轮执行期间又收到的消息（用户抢着补一句），按顺序在这一轮结束后处理
     pending_payloads: list = []
     # 收包单独一个 task，主循环只从队列取：本轮还在跑时也能读到 stop，
@@ -867,25 +863,24 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
             )
 
             # ============================================================
-            # 知识库问答模式：前端切到"知识库问答"后 payload 带 mode=kb，
-            # 跳过下面的意图识别/会话状态，直接走知识库直连管线
+            # 知识库问答模式（payload 带 mode=kb）
+            #
+            # 原来这里走 KnowledgeQAPipeline（langgraph 串「改问→检索→作答」），
+            # 已按"只留检索接口"的要求移除：检索客户端 KnowledgeMcpClient
+            # （mcp_client/knowledge_mcp_client.py，原生 httpx、零 langchain）
+            # 保留，将来接知识库直接调它。这里先给一句明确提示，别让用户
+            # 以为在查、实际落到 loop 兜底。
             # ============================================================
             if payload.get("mode") == "kb" and query:
-                if kb_pipeline is None:
-                    await websocket.send_text(json.dumps({
-                        "event": "custom",
-                        "data": {"type": "error", "content": "知识库服务未就绪，请稍后重试或切回智能体问答。"}
-                    }, ensure_ascii=False))
-                    await websocket.send_text(json.dumps({"status": "done"}))
-                    continue
-
-                async for chunk in kb_pipeline.astream_run(query, user_id, session_id):
-                    text = _safe_serialize(chunk)
-                    # 过滤 token 级事件，与主流程的转发口径一致
-                    if text.get("event") != "token":
-                        await websocket.send_text(json.dumps(text, ensure_ascii=False))
+                await websocket.send_text(json.dumps({
+                    "event": "custom",
+                    "data": {
+                        "type": "answer",
+                        "content": "知识库问答暂未接入，请切回「智能体问答」模式提问。",
+                    },
+                }, ensure_ascii=False))
+                # answer 必配 done，否则前端回合不结束（排查记录案例 14）
                 await websocket.send_text(json.dumps({"status": "done"}))
-                logging.info(f"kb answer done -- {user_id}-{session_id}")
                 continue
 
             # ============================================================
@@ -1057,12 +1052,6 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
         # except Exception as e:
         #     await websocket.send_text(json.dumps({"error": str(e)}))
 
-    # 会话结束：释放知识库直连客户端的 MCP/HTTP 会话
-    if kb_pipeline is not None:
-        try:
-            await kb_pipeline.aclose()
-        except Exception:
-            logger.warning("KnowledgeQAPipeline 释放失败(忽略)")
 
 
 
