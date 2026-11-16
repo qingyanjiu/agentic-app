@@ -9,6 +9,15 @@ logger = logging.getLogger(__name__)
 '''
 知识库 MCP 极简直连客户端（Streamable HTTP）。
 
+**这就是"调用知识库"的唯一入口**（2026-11-16 feature/loop-only 之后）：
+原来那套 langgraph 问答管线（graph/knowledge_qa_langgraph.py）已删除，
+需要知识库能力时直接用它——
+
+    client = KnowledgeMcpClient(url)          # url 见 mcp_server_config.yaml 的 knowledge 段
+    text = await client.call_tool("ragflow:searchKnowledge", {"question": q})
+    await client.aclose()
+
+返回检索结果原文（片段 + 来源），怎么组织回答由调用方决定。
 不复用 langchain_mcp_adapters：知识库只需要"握手一次 + 反复调一个工具"，
 直接按 sidecar /mcp/knowledge 联调验证过的协议口径实现（与 Postman 调试脚本一致），
 少一层客户端库的协议协商不确定性：
