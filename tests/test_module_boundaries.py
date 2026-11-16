@@ -79,7 +79,6 @@ APP_GRAPH_IMPORTS = frozenset(
         "langchain_core.messages",
         # 各专用通道（保留）
         "graph.knowledge_qa_langgraph",
-        "graph.gen_doc_pipeline",
         "graph.asr_pipeline",
         "graph.scene_control_langgraph",
         # 兜底链路：删 legacy 时一起消失
