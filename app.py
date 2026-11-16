@@ -27,7 +27,7 @@ from agent.intent import (
 # UE 3D 场景控制：sidecar 的 /mcp/scene 是 direct_client（逐请求注入 X-Session-Id），
 # 不走 langchain_mcp_adapters，由 SceneMcpClient 直连
 from mcp_client.scene_mcp_client import SceneMcpClient
-from graph.scene_control_langgraph import build_scene_control_graph
+from agent.scene_control import build_scene_control_graph
 from memory.session_state import session_state, IntentState
 
 # docker开发环境

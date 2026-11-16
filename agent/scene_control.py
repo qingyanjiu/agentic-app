@@ -4,14 +4,15 @@ import re
 import traceback
 from typing import Annotated, Any, Optional, TypedDict
 
-from langgraph.graph import StateGraph, END
+# 不再依赖 langgraph：原来那张图只有一条线性链（init→plan_action→条件分支→call_tool→finalize），
+# 没有并行也没有循环，用顺序调用 + 手写状态归并即可（见文件末尾 SceneController）。
 
 from agent.intent.slots import _parse_chinese_number
 
 logger = logging.getLogger(__name__)
 
 '''
-UE 场景控制 LangGraph 管线（MCP sidecar /mcp/scene）。
+UE 场景控制管线（MCP sidecar /mcp/scene）。
 
 链路：
     用户指令 → 规则/LLM 从 20 个工具里选一个并给参数
@@ -660,14 +661,17 @@ class SceneControlGraphState(TypedDict):
 
 
 # ============================================================
-# 图构建
+# 编排入口
 # ============================================================
-def build_scene_control_graph(client: Any, llm: Any = None) -> StateGraph:
+def build_scene_control_graph(client: Any, llm: Any = None) -> Any:
     """
-    构建 UE 场景控制图。
+    构建场景控制编排器（顺序调用，不是 LangGraph 图）。
+
+    保留 `build_scene_control_graph` 这个名字和 `ainvoke(state) -> state` 的调用方式，
+    app.py / 测试都不用改签名。
 
     :param client: SceneMcpClient（需实现 list_tools / call_tool / get_scene_state）
-    :param llm: ChatOpenAI 兼容模型；为 None 时走规则兜底
+    :param llm: 模型客户端（需实现 ainvoke(prompt)）；为 None 时走规则兜底
     """
     # tools/list 结果缓存（sidecar 启动后工具集稳定）
     catalog_cache = {"tools": None, "text": "", "map": {}}
@@ -904,29 +908,40 @@ def build_scene_control_graph(client: Any, llm: Any = None) -> StateGraph:
             "events": [{"event": "custom", "data": {"type": "done"}}],
         }
 
-    workflow = StateGraph(SceneControlGraphState)
-    workflow.add_node("init", init_state)
-    workflow.add_node("plan_action", plan_action)
-    workflow.add_node("ask_param", ask_param)
-    workflow.add_node("give_up", give_up)
-    workflow.add_node("call_tool", call_tool)
-    workflow.add_node("finalize", finalize)
+    def _apply(state: dict, patch: dict) -> dict:
+        """等价于原图里 state 的 reducer：events 追加、slots 合并、其余覆盖。"""
+        for key, value in (patch or {}).items():
+            if key == "events":
+                state["events"] = list(state.get("events") or []) + list(value or [])
+            elif key == "slots":
+                state["slots"] = _merge_dicts(state.get("slots") or {}, value or {})
+            else:
+                state[key] = value
+        return state
 
-    workflow.set_entry_point("init")
-    workflow.add_edge("init", "plan_action")
-    workflow.add_conditional_edges(
-        "plan_action",
-        route_plan,
-        {
-            "ask_param": "ask_param",
-            "give_up": "give_up",
-            "call_tool": "call_tool",
-            "finalize": "finalize",
-        },
-    )
-    workflow.add_edge("ask_param", END)
-    workflow.add_edge("give_up", END)
-    workflow.add_edge("call_tool", "finalize")
-    workflow.add_edge("finalize", END)
+    class SceneController:
+        """顺序执行版的场景控制编排（替代原 LangGraph StateGraph）。
 
-    return workflow.compile()
+        原图只有一条链：init → plan_action →(条件)→ ask_param / give_up
+        / call_tool → finalize，没有并行、没有循环，所以不需要图引擎。
+        对外保持 `ainvoke(state) -> final_state`，app.py 无需改动。
+        """
+
+        async def ainvoke(self, state: dict) -> dict:
+            current = dict(state or {})
+            _apply(current, init_state(current))
+            _apply(current, await plan_action(current))
+
+            branch = route_plan(current)
+            if branch == "ask_param":
+                _apply(current, ask_param(current))
+            elif branch == "give_up":
+                _apply(current, give_up(current))
+            elif branch == "call_tool":
+                _apply(current, await call_tool(current))
+                _apply(current, finalize(current))
+            else:  # finalize（plan_action 里出错时走这里）
+                _apply(current, finalize(current))
+            return current
+
+    return SceneController()

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-场景控制 LangGraph 测试（不连 sidecar、不连真实 LLM）。
+场景控制编排测试（顺序调用版，不连 sidecar、不连真实 LLM）。
 
 覆盖：
   1. LLM 规划 → 选工具 → 带 X-Session-Id 调用 → 回答只出现"已下发"
@@ -10,7 +10,7 @@
   5. 破坏性动作（防区/巡检任务）额外提示"会改变现场状态"
 """
 from conftest import FakeLLM, answers_of, asks_of, events_of, run
-from graph.scene_control_langgraph import build_scene_control_graph
+from agent.scene_control import build_scene_control_graph
 
 
 # sidecar /mcp/scene 的工具定义（字段口径与 tools/list 返回一致）

@@ -72,13 +72,9 @@ HARD_RULES: tuple[tuple[str, tuple[str, ...], str], ...] = (
 # --------------------------------------------------------------------------- #
 # app.py 的祖父基线：只许变少。
 # 2026-11-16（feature/loop-only）：13 张 legacy 业务图、reactive_pipeline、
-# KB 管线、ASR 管线都已移除；app.py 不再 import langchain_core。
-# 现在只剩场景通道（下一步也要迁出 graph）。
-APP_GRAPH_IMPORTS = frozenset(
-    {
-        "graph.scene_control_langgraph",
-    }
-)
+# KB 管线、ASR 管线、场景图都已移除，场景控制迁到 agent/scene_control.py（无 langgraph）。
+# app.py 现在对 graph / langchain 家族 **零 import**，基线为空集，再出现就是长回去了。
+APP_GRAPH_IMPORTS = frozenset()
 
 
 # --------------------------------------------------------------------------- #
@@ -149,7 +145,7 @@ def test_hard_boundary_rules(rel_dir: str, forbidden: tuple[str, ...], why: str)
     problems = scan(rel_dir, forbidden)
     assert not problems, (
         f"{why}\n"
-        f"违规 {len(problems)} 处（详见 docs/loop-graph-解耦方案.md 第 5 节）：\n  "
+        f"违规 {len(problems)} 处（规则见本文件顶部三条硬规则）：\n  "
         + "\n  ".join(problems)
     )
 
