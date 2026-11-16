@@ -13,7 +13,7 @@ import types
 import pytest
 
 import mcp_client.mcp_loader as mcp_loader
-from conftest import FakeTool, get_graph_module
+from conftest import FakeTool
 
 
 def run(coro):
@@ -123,44 +123,6 @@ class TestCase1ServerIsolation:
         assert tools == []
 
 
-# ============================================================
-# 3. 各域 load_xxx_tools 的过滤与容错（以消防为代表）
-# ============================================================
-class TestDomainToolLoading:
-    def test_fire_tools_filtered_by_java_tool_map(self, monkeypatch):
-        """load_emergency_fire_tools 只保留 fire:* 工具，其他域工具被过滤"""
-        fire_mod = get_graph_module("emergency_fire")
-
-        async def fake_get_mcp_tools(yaml_path):
-            return _person_tools() + [
-                FakeTool("fire:getFireAssets", "{}"),
-                FakeTool("fire:getFireAlarmList", "{}"),
-                FakeTool("fire:getFireAlarmNum", "{}"),
-                FakeTool("fire:getMonthRepair", "{}"),
-                FakeTool("canteen:getWeekMenu", "{}"),
-            ]
-
-        monkeypatch.setattr(fire_mod, "get_mcp_tools", fake_get_mcp_tools)
-        tools = run(fire_mod.load_emergency_fire_tools())
-
-        assert set(tools.keys()) == {
-            "fire:getFireAssets", "fire:getFireAlarmList",
-            "fire:getFireAlarmNum", "fire:getMonthRepair",
-        }
-
-    def test_load_error_returns_empty_dict(self, monkeypatch):
-        """加载失败（如全部后端不可达）-> 返回空 dict，不向调用方抛异常"""
-        fire_mod = get_graph_module("emergency_fire")
-
-        async def fake_get_mcp_tools(yaml_path):
-            raise RuntimeError("连接失败")
-
-        monkeypatch.setattr(fire_mod, "get_mcp_tools", fake_get_mcp_tools)
-        assert run(fire_mod.load_emergency_fire_tools()) == {}
-
-    # 说明：15s 加载超时由 asyncio.wait_for（标准库）保证，返回 {} 分支
-    # 与 test_load_error_returns_empty_dict 相同，不重复用例（避免用例本身等 15s）。
-
 
 # ============================================================
 # 4. 单 server 定向加载：get_mcp_tools_for_server
@@ -207,24 +169,3 @@ class TestPerServerLoading:
         """direct_client 条目（scene/knowledge）由专属客户端接管，这里直接跳过"""
         assert run(mcp_loader.get_mcp_tools_for_server(self.PATH, "scene")) == []
 
-    def test_device_query_loader_uses_devicequery_only(self, monkeypatch):
-        """设备查询只加载 devicequery 端点，并过滤出两个 Java 工具"""
-        dq = get_graph_module("device_query")
-        calls = []
-
-        async def fake_tools(yaml_path, server_name, timeout=15.0):
-            calls.append(server_name)
-            return [
-                FakeTool("device_query:listDeviceOnly", "[]"),
-                FakeTool("device_query:getDeviceDetail", "{}"),
-                FakeTool("canteen:getWeekMenu", "{}"),
-            ]
-
-        monkeypatch.setattr(dq, "get_mcp_tools_for_server", fake_tools)
-        tools = run(dq.load_device_query_tools())
-
-        assert calls == ["devicequery"]
-        assert set(tools) == {
-            "device_query:listDeviceOnly",
-            "device_query:getDeviceDetail",
-        }

@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 # 配置里人员态势的 server key（Java sidecar /mcp/personStatus）
 SERVER = "local"
 
-# query_type → MCP 工具名（与 graph/person_status_langgraph.py 的 _JAVA_TOOL_MAP 一致）
+# query_type → MCP 工具名（原 legacy 图里的 _JAVA_TOOL_MAP 已随图删除，这里是唯一映射）
 JAVA_TOOL_MAP = {
     "realtime": "person_status:getTodayPersonnelAffairs",
     "enter": "person_status:getTodayPersonnelAffairs",

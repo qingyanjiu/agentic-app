@@ -180,34 +180,6 @@ def _safe_serialize(obj):
         return obj
 
 
-async def _stream_graph_to_ws(websocket, graph, graph_input):
-    """流式执行业务图，把 LLM 回答分块即时推给前端。
-
-    业务图的回答节点通过 graph.stream_utils.stream_llm_text 走 LangGraph 的
-    custom 通道；这里收到一个 chunk 就转发一个，首字不必等整段生成完。
-    返回 (final_state, streamed_answer)：streamed_answer 为 True 时，调用方
-    转发最终 events 要跳过完整 answer，避免前端把同一段回答显示两遍。
-    """
-    final_state = dict(graph_input)
-    streamed_answer = False
-
-    async for mode, chunk in graph.astream(
-        graph_input, stream_mode=["custom", "values"]
-    ):
-        if mode == "custom":
-            if not isinstance(chunk, dict) or chunk.get("type") != "answer":
-                continue
-            if not chunk.get("content"):
-                continue
-            streamed_answer = True
-            event = _safe_serialize({"event": "custom", "data": chunk})
-            await websocket.send_text(json.dumps(event, ensure_ascii=False))
-        elif mode == "values":
-            # values 是节点执行后的完整状态快照，最后一个就是 final_state
-            final_state = chunk
-
-    return final_state, streamed_answer
-
 async def safe_send_message(websocket: WebSocket, message: dict):
     """安全地发送WebSocket消息，处理连接断开的情况"""
     try:

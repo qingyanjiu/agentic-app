@@ -27,31 +27,6 @@ def run(coro):
 
 
 # ============================================================
-# 8 个态势域的图模块注册表
-# 命名规则统一：graph.<module>_langgraph 里的 build_<module>_graph(tools, llm)
-# ============================================================
-GRAPH_MODULES = {
-    "person_status": "graph.person_status_langgraph",
-    "security_status": "graph.security_status_langgraph",
-    "canteen_status": "graph.canteen_status_langgraph",
-    "vehicle_status": "graph.vehicle_status_langgraph",
-    "information_status": "graph.information_status_langgraph",
-    "energy_status": "graph.energy_status_langgraph",
-    "meeting_status": "graph.meeting_status_langgraph",
-    "emergency_fire": "graph.emergency_fire_langgraph",
-    "emergency_perimeter": "graph.emergency_perimeter_langgraph",
-    "device_status": "graph.device_status_langgraph",
-    "compositive_overview": "graph.compositive_overview_langgraph",
-    "device_query": "graph.device_query_langgraph",
-    "twins_inspection": "graph.twins_inspection_langgraph",
-}
-
-
-def get_graph_module(module_key: str):
-    return importlib.import_module(GRAPH_MODULES[module_key])
-
-
-# ============================================================
 # FakeTool：模拟 LangChain MCP 工具
 # 记录每次调用（工具名 -> calls），便于断言"调没调对工具"
 # ============================================================
@@ -279,22 +254,6 @@ def graph_input(slots: dict, ask_count: int = 0, original_query: str = "测试�
     }
 
 
-def build_graph(module_key: str, tools: dict):
-    """构建指定域的编译图（tools 为 {java工具名: FakeTool}，llm 传 None 走原样返回）"""
-    module = get_graph_module(module_key)
-    build_fn = getattr(module, f"build_{module_key}_graph")
-    return build_fn(tools, llm=None)
-
-
-def default_tools(module_key: str) -> dict:
-    """按域的 _JAVA_TOOL_MAP 构造全量 mock 工具（每个 java 工具一个 FakeTool）"""
-    module = get_graph_module(module_key)
-    results = DOMAIN_TOOL_RESULTS[module_key]
-    tools = {}
-    for java_name in set(module._JAVA_TOOL_MAP.values()):
-        tools[java_name] = FakeTool(java_name, results.get(java_name, '{"code":200,"rows":[]}'))
-    return tools
-
 
 def events_of(final_state: dict, event_type: str) -> list:
     """从图输出里筛出 data.type == event_type 的事件"""
@@ -313,22 +272,3 @@ def asks_of(final_state: dict) -> list:
     return events_of(final_state, "ask")
 
 
-# ============================================================
-# session 级缓存：每个域的编译图只 build 一次（Happy path 默认工具集）
-# ============================================================
-@pytest.fixture(scope="session")
-def domain_graphs():
-    cache = {}
-
-    def _get(module_key: str):
-        if module_key not in cache:
-            cache[module_key] = build_graph(module_key, default_tools(module_key))
-        return cache[module_key]
-
-    return _get
-
-
-@pytest.fixture(scope="session")
-def fire_handler():
-    from agent.intent.handlers.emergency_fire_handler import EmergencyFireHandler
-    return EmergencyFireHandler()

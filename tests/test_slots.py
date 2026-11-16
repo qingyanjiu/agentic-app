@@ -240,13 +240,13 @@ class TestFireSlots:
         案例2 教训：反问的选项措辞要与 slots.py 正则关键词对齐，
         用户照着念就能被识别。反问句里的 4 个选项词逐一验证。
         """
-        from graph.emergency_fire_langgraph import _JAVA_TOOL_MAP
+        from agent.loop.domains.emergency_fire import CONFIG as _CONFIG
 
 
         for option in ["设备台账", "告警统计", "实时告警", "月度报修"]:
             qt = self.EXTRACT(option)["query_type"]
-            assert qt in _JAVA_TOOL_MAP, (
-                f"反问选项「{option}」抽到 query_type={qt}，不在消防 _JAVA_TOOL_MAP 中，"
+            assert qt in _CONFIG.tool_map, (
+                f"反问选项「{option}」抽到 query_type={qt}，不在消防 tool_map 中，"
                 f"用户回复该选项将无法识别"
             )
 
@@ -288,12 +288,12 @@ class TestPerimeterSlots:
         反问的选项措辞要与 slots.py 正则关键词对齐，
         用户照着念就能被识别（案例2 教训）。反问句里的 4 个选项词逐一验证。
         """
-        from graph.emergency_perimeter_langgraph import _JAVA_TOOL_MAP
+        from agent.loop.domains.emergency_perimeter import CONFIG as _CONFIG
 
         for option in ["关键指标", "防区一览", "告警统计", "告警一览"]:
             qt = self.EXTRACT(option)["query_type"]
-            assert qt in _JAVA_TOOL_MAP, (
-                f"反问选项「{option}」抽到 query_type={qt}，不在周界 _JAVA_TOOL_MAP 中，"
+            assert qt in _CONFIG.tool_map, (
+                f"反问选项「{option}」抽到 query_type={qt}，不在周界 tool_map 中，"
                 f"用户回复该选项将无法识别"
             )
 
@@ -339,12 +339,12 @@ class TestInspectionSlots:
         反问的选项措辞要与 slots.py 正则关键词对齐，
         用户照着念就能被识别（案例2 教训）。反问句里的 4 个选项词逐一验证。
         """
-        from graph.twins_inspection_langgraph import _JAVA_TOOL_MAP
+        from agent.loop.domains.twins_inspection import CONFIG as _CONFIG
 
         for option in ["今日巡检", "今日任务列表", "巡检统计", "巡检执行状态"]:
             qt = self.EXTRACT(option)["query_type"]
-            assert qt in _JAVA_TOOL_MAP, (
-                f"反问选项「{option}」抽到 query_type={qt}，不在巡检 _JAVA_TOOL_MAP 中，"
+            assert qt in _CONFIG.tool_map, (
+                f"反问选项「{option}」抽到 query_type={qt}，不在巡检 tool_map 中，"
                 f"用户回复该选项将无法识别"
             )
 
