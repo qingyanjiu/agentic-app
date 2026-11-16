@@ -7,7 +7,7 @@ SceneMcpClient 单元测试（不连真实 sidecar）。
   2. X-Session-Id 逐请求注入，且与协议层 Mcp-Session-Id 同时存在
   3. SSE / JSON 两种响应形态都能解析，会话失效(404)会重握手重试一次
 """
-import json
+import json as jsonlib  # 注意：FakeHttpClient.post 的形参叫 json，会把模块名遮住
 
 import pytest
 
@@ -47,7 +47,7 @@ class FakeHttpClient:
         if method == "initialize":
             return FakeResponse(
                 headers={"Mcp-Session-Id": "mcp-sess-001", "content-type": "application/json"},
-                text=json.dumps({
+                text=jsonlib.dumps({
                     "jsonrpc": "2.0",
                     "id": body.get("id"),
                     "result": {
@@ -64,7 +64,7 @@ class FakeHttpClient:
             return FakeResponse(
                 headers={"content-type": "text/event-stream", "Mcp-Session-Id": "mcp-sess-001"},
                 text="event: message\ndata: "
-                     + json.dumps({
+                     + jsonlib.dumps({
                          "jsonrpc": "2.0",
                          "id": body.get("id"),
                          "result": {"tools": [{"name": "scene_reset_view"}]},
@@ -81,7 +81,7 @@ class FakeHttpClient:
             if self.tool_error is not None:
                 return FakeResponse(
                     headers={"content-type": "application/json"},
-                    text=json.dumps({
+                    text=jsonlib.dumps({
                         "jsonrpc": "2.0",
                         "id": body.get("id"),
                         "result": {
@@ -92,7 +92,7 @@ class FakeHttpClient:
                 )
             return FakeResponse(
                 headers={"content-type": "application/json"},
-                text=json.dumps({
+                text=jsonlib.dumps({
                     "jsonrpc": "2.0",
                     "id": body.get("id"),
                     "result": {

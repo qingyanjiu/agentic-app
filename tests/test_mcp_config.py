@@ -4,7 +4,6 @@
 换部署环境（宿主机 ↔ 容器网络）要改 15 处。现在顶层写一个 `mcp_base_url`，
 各条只写路径（`/personStatus`），读取时自动拼接。
 """
-from mcp_client.mcp_config import apply_base_url, load_servers, resolve_url
 from mcp_client.mcp_config import (
     apply_base_url,
     load_servers,
@@ -121,3 +120,24 @@ def test_real_config_uses_yaml_base_without_env(monkeypatch):
     conf = load_servers("mcp_client/mcp_server_config.yaml")
     assert conf["local"]["url"].endswith("/personStatus")
     assert conf["local"]["url"].startswith("http")
+
+
+def test_real_config_has_all_domains():
+    """真实 yaml 必须包含全部业务域的 server 条目（少一个就是有域接不上）。
+
+    原来这条在 tests/test_mcp_loader.py 里，随 langchain 版 loader 一起删掉后搬到这里，
+    改成直接读 mcp_config.load_servers，覆盖不变。
+    """
+    conf = load_servers("mcp_client/mcp_server_config.yaml")
+    for name in ["local", "security", "canteen", "vehicle", "information",
+                 "energy", "meeting", "fire", "device", "devicequery",
+                 "knowledge", "scene"]:
+        assert name in conf, f"配置缺少 server [{name}]"
+        assert conf[name].get("url"), f"server [{name}] 缺少 url"
+
+
+def test_config_missing_file_raises(tmp_path):
+    import pytest
+
+    with pytest.raises(FileNotFoundError):
+        load_servers(str(tmp_path / "not_exist.yaml"))

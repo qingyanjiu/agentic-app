@@ -1,13 +1,19 @@
-"""LLM 客户端工厂：**只有一个**模型配置，全部由环境变量驱动。
+"""LLM 客户端：**只有一个**模型配置，全部由环境变量驱动。
+
+本模块不依赖 langchain —— loop 链路直接用 openai SDK，场景规划只要
+「发一段话、收一段话」，所以这里只提供一个最小客户端 `ChatClient`，
+对外接口就三样：`ainvoke(prompt) -> Completion`、`.model_name`、
+`.openai_api_base` / `.openai_api_key`（后三个属性供
+`agent/loop/ws_bridge.build_pipeline` 复用同一份配置）。
 
 ## 支持的两种客户端
 
-| LLM_TYPE | 用的类 | 说明 |
+| LLM_TYPE | 走哪个接口 | 说明 |
 |---|---|---|
-| `openai`（默认） | `ChatOpenAI` | OpenAI 兼容接口：DeepSeek / 硅基流动 / vLLM / LM Studio 等 |
-| `ollama` | `ChatOllama` | 本地 Ollama，走它的原生接口（不是 /v1） |
+| `openai`（默认） | `openai.AsyncOpenAI` 的 chat.completions | OpenAI 兼容接口：DeepSeek / 硅基流动 / vLLM / LM Studio 等 |
+| `ollama` | `POST {base}/api/chat`（httpx） | 本地 Ollama 原生接口（不是 /v1） |
 
-两种类型的差异只体现在：用哪个客户端类、默认地址是什么、以及
+两种类型的差异只体现在：调哪个接口、默认地址是什么、以及
 `reasoning_effort` / `thinking` 这两个 DeepSeek 专有参数（ollama 忽略）。
 
 ## 环境变量
@@ -34,10 +40,7 @@
 from __future__ import annotations
 
 import os
-
-from langchain_core.language_models import BaseLanguageModel
-from langchain_ollama import ChatOllama
-from langchain_openai import ChatOpenAI
+from dataclasses import dataclass
 
 # 全局采样参数（与具体模型无关）
 TEMPERATURE = 0  # 0=确定性输出
@@ -124,6 +127,96 @@ def resolve_thinking(model_config: dict) -> str:
     return value if value in _THINKING_VALUES else ""
 
 
+@dataclass
+class Completion:
+    """最小返回对象：只有 `.content`。
+
+    与原来的 AIMessage 对齐到同一个取法：调用方 `getattr(resp, "content", resp)`
+    照样能用（见 agent/scene_control.py 的 `_resp_text`）。
+    """
+
+    content: str = ""
+
+
+class ChatClient:
+    """一个模型 = 一次 HTTP 请求。对外只有 `ainvoke(prompt) -> Completion`。
+
+    属性 `model_name` / `openai_api_base` / `openai_api_key` 是给
+    `agent/loop/ws_bridge.build_pipeline` 复用的：它拿这三个值自己建
+    AsyncOpenAI 客户端，不依赖本类。
+    """
+
+    def __init__(self, config: dict):
+        self.config = config
+        self.type = config["type"]
+        self.model_name = config["model_name"]
+        self.openai_api_base = config["model_url"]
+        self.openai_api_key = config["api_key"]
+        self.temperature = TEMPERATURE
+        self.max_tokens = MAX_TOKENS
+        # 只对 openai 类型生效（ollama 分支不发这两个参数）
+        self.reasoning_effort = resolve_reasoning_effort(config)
+        self.thinking = resolve_thinking(config)
+        self.extra_body = {"thinking": {"type": self.thinking}} if self.thinking else None
+        self._client = None  # 懒建：import 期不连网络，也不用时就付连接成本
+
+    # ------------------------------------------------------------ #
+    # 对外接口
+    # ------------------------------------------------------------ #
+    async def ainvoke(self, prompt: str) -> Completion:
+        """发一段话，收一段话。prompt 只支持字符串（调用方都是拼好的提示词）。"""
+        if self.type == "ollama":
+            return Completion(content=await self._chat_ollama(prompt))
+        return Completion(content=await self._chat_openai(prompt))
+
+    # ------------------------------------------------------------ #
+    # 两种后端
+    # ------------------------------------------------------------ #
+    def _openai_client(self):
+        if self._client is None:
+            from openai import AsyncOpenAI
+
+            self._client = AsyncOpenAI(
+                base_url=self.openai_api_base,
+                api_key=self.openai_api_key or "not-needed",
+            )
+        return self._client
+
+    async def _chat_openai(self, prompt: str) -> str:
+        kwargs = {
+            "model": self.model_name,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
+        }
+        # DeepSeek: low/high/max。不传 = 走服务端默认（默认是开启思考，见模块注释）
+        if self.reasoning_effort:
+            kwargs["reasoning_effort"] = self.reasoning_effort
+        # {"thinking": {"type": "disabled"}} —— 真正关闭思考靠这个字段
+        if self.extra_body:
+            kwargs["extra_body"] = self.extra_body
+
+        resp = await self._openai_client().chat.completions.create(**kwargs)
+        return (resp.choices[0].message.content or "") if resp.choices else ""
+
+    async def _chat_ollama(self, prompt: str) -> str:
+        import httpx
+
+        url = f"{self.openai_api_base.rstrip('/')}/api/chat"
+        payload = {
+            "model": self.model_name,
+            "messages": [{"role": "user", "content": prompt}],
+            "stream": False,
+            "think": False,  # 与改造前 ChatOllama(reasoning=False) 一致
+            "options": {"temperature": self.temperature, "num_predict": self.max_tokens},
+        }
+        async with httpx.AsyncClient(timeout=120) as client:
+            resp = await client.post(url, json=payload)
+            resp.raise_for_status()
+            data = resp.json() or {}
+        return ((data.get("message") or {}).get("content") or "")
+
+
 class CustomLLMFactory():
     """构造唯一的 LLM 客户端。配置来源见模块文档，没有第二套写死的配置表。"""
 
@@ -131,28 +224,5 @@ class CustomLLMFactory():
         self.config = build_model_config()
         self.llm = self.init_llm(self.config)
 
-    def init_llm(self, model_config: dict) -> BaseLanguageModel:
-        if model_config["type"] == "openai":
-            kwargs = {
-                "base_url": model_config["model_url"],  # 自定义 API 地址（非 OpenAI 官方）
-                "model": model_config["model_name"],    # 具体模型名
-                "api_key": model_config["api_key"],     # API 密钥
-                "temperature": TEMPERATURE,             # 温度参数
-                "max_tokens": MAX_TOKENS,               # 最大 token 数
-            }
-            effort = resolve_reasoning_effort(model_config)
-            if effort:
-                # 会写进请求体的 reasoning_effort 字段（DeepSeek: low/high/max）
-                kwargs["reasoning_effort"] = effort
-            thinking = resolve_thinking(model_config)
-            if thinking:
-                # DeepSeek 关闭/开启思考：{"thinking": {"type": "disabled"}}
-                kwargs["extra_body"] = {"thinking": {"type": thinking}}
-            return ChatOpenAI(**kwargs)
-
-        return ChatOllama(
-            base_url=model_config["model_url"],  # Ollama 服务地址
-            model=model_config["model_name"],    # 本地模型名
-            temperature=TEMPERATURE,
-            reasoning=False,  # Ollama 专属参数：禁用推理模式（与改造前保持一致）
-        )
+    def init_llm(self, model_config: dict) -> ChatClient:
+        return ChatClient(model_config)

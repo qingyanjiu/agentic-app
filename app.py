@@ -7,8 +7,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from models.llm import CustomLLMFactory
-# from graph.graph_pipeline import LangGraphPipeline
-# from skills.mcp_agent import McpSkillAgent
+# 旧链路的 LangGraphPipeline / McpSkillAgent 已随 graph/、skills/ 一起删除
 import logging
 import uuid
 import time
@@ -318,8 +317,9 @@ def _scene_mcp_url() -> str:
     url = os.getenv("SCENE_MCP_URL")
     if not url:
         try:
-            from mcp_client.mcp_loader import load_mcp_config
-            conf = load_mcp_config(os.path.join(BASE_DIR, "mcp_client", "mcp_server_config.yaml"))
+            # load_servers = 纯标准库版的 load_mcp_config（旧的 mcp_loader 已随 langchain 一起删掉）
+            from mcp_client.mcp_config import load_servers
+            conf = load_servers(os.path.join(BASE_DIR, "mcp_client", "mcp_server_config.yaml"))
             url = ((conf.get("scene") or {}).get("url")) or ""
         except Exception as e:
             logger.warning(f"读取 scene MCP 配置失败(仅场景控制不可用): {e}")
