@@ -57,6 +57,7 @@
 - [ ] 空目录解压 → 按 README 启动 → `/docs` 可访问
 - [ ] 意图分类可用（`INTENT_MODEL_PATH` 指向包内模型，且断网也能加载）
 - [ ] 与 `mcp-sidecar` 连通（`/mcp/*` 全部返回正常，`scene` 通道可用）
+- [ ] `MCP_API_KEY` 已在 sidecar 与 agent 两边配置为同一个值；无 key 调 `/mcp/**` 返回 401，带 key 可正常握手
 - [ ] 一次性对话跑通（WS `/chat`），而不是只看服务起来
 
 ### 3.5 配置项治理（TODO）

@@ -816,6 +816,11 @@ LOOP_DISCOVER=0
 新增 `resolve_base_url()`：**环境变量 `MCP_BASE_URL` 优先于 yaml 的 `mcp_base_url`**。
 `mcp_config.load_servers()` 和 `mcp_loader.load_mcp_config()` 两个入口共用，部署时不用再改仓库里的 yaml。
 
+同一模块还新增 `apply_api_key()`：**环境变量 `MCP_API_KEY` 会注入到每个 server 的
+`Authorization: Bearer <key>` 头**，两个加载入口都会调用，覆盖 `langchain_mcp_adapters`
+和 `agent/loop/runtime.py` 两条链路；`scene` / `knowledge` 两个 `direct_client` 在各自
+`_headers()` 注入。sidecar 的 `/mcp/**` 未配置 key 时默认拒绝所有请求（401）。
+
 ### 20.4 设备查询：名称抽取与清单缓存（`agent/loop/domains/device_query.py`）
 
 **名称抽取**原来只认两种说法，中文最自然的第三种全漏：

@@ -17,7 +17,7 @@ flowchart LR
     C -->|"query（可选 scene_session_id）"| R["意图分流<br/>业务意图 vs 场景意图"]
     R -->|"命中场景指令"| G["场景控制图<br/>scene_control_langgraph"]
     R -->|"业务查询 / 知识库"| B["业务意图状态机"]
-    G -->|"tools/call<br/>X-Session-Id: xxx"| M["MCP Sidecar<br/>POST /mcp/scene"]
+    G -->|"tools/call<br/>X-Session-Id: xxx<br/>Authorization: Bearer &lt;MCP_API_KEY&gt;"| M["MCP Sidecar<br/>POST /mcp/scene"]
     M -->|"业务 WS"| P["场景页面 / UE"]
     G -->|"answer / ask / error / done"| C
 ```
@@ -326,7 +326,7 @@ sidecar 返回文本里“回复用户时不要说已完成”这类内部提示
 ```
 [classify_intent_with_scene] query=切到3楼, intent=other, score=0.58, scene_score=0.72, business_query_score=0.58, scene_matched=True
 [场景分流] query=切到3楼, business=other(0.5800), scene=0.7190, biz_center=0.5817, matched=True, route=True
-场景 MCP 握手成功: http://10.204.146.44:2222/mcp/scene ... sessionId=xxxxxxxx...
+场景 MCP 握手成功: http://10.204.146.44:2223/mcp/scene ... sessionId=xxxxxxxx...
 [SCENE GRAPH INPUT] user=..., scene_session=...
 [SCENE MCP CALL] tool=scene_switch_floor, args={'floor': 3, 'focus': True}, x_session_id=...
 [SCENE MCP RAW RESULT] tool=scene_switch_floor, result=已下发动作 ...
@@ -353,13 +353,15 @@ sidecar 返回文本里“回复用户时不要说已完成”这类内部提示
 ```yaml
 scene:
   transport: streamable_http
-  url: http://10.204.146.44:2222/mcp/scene
+  url: http://10.204.146.44:2223/mcp/scene
   direct_client: true      # 不走 langchain_mcp_adapters，由 SceneMcpClient 直连
 ```
 
 - 地址也可用环境变量 `SCENE_MCP_URL` 覆盖，优先级高于 yaml；
 - 客户端超时 25s（必须大于 sidecar 的 `scene.action-timeout-ms` 15s）；
-- `/mcp/scene` 无认证；`X-Session-Id` 只由后端注入，**LLM 不接触也无法生成**；
+- `/mcp/scene` 需要 sidecar 的应用层 API Key：`SceneMcpClient._headers()` 会从
+  环境变量 `MCP_API_KEY` 注入 `Authorization: Bearer <key>`；未配置时 sidecar 返回 401；
+- `X-Session-Id` 只由后端注入，**LLM 不接触也无法生成**；
 - 场景图与 MCP 握手默认在服务启动后由后台预热（`PREWARM_ON_STARTUP=0` 可关闭，
   退回懒加载）：sidecar 没起只打告警，不影响服务启动，只影响场景指令。
 

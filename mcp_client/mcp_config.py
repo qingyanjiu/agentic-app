@@ -15,6 +15,8 @@ _ABSOLUTE = re.compile(r"^https?://", re.IGNORECASE)
 
 # 部署环境切换用：覆盖 yaml 里的 mcp_base_url
 ENV_BASE_URL = "MCP_BASE_URL"
+# /mcp/** 应用层鉴权（sidecar SEC-08）：缺失时 sidecar 会拒绝所有 MCP 请求
+ENV_API_KEY = "MCP_API_KEY"
 
 
 def resolve_url(base: str | None, url: str | None) -> str:
@@ -52,6 +54,26 @@ def apply_base_url(servers: dict, base: str | None) -> dict:
     return servers
 
 
+def apply_api_key(servers: dict) -> dict:
+    """给每个带 url 的 server 注入 sidecar 的 API Key 请求头（SEC-08）。
+
+    优先级：环境变量 `MCP_API_KEY`。空串按"未设置"处理，此时不注入，
+    由 sidecar 侧返回 401（sidecar 未配置 key 时默认拒绝所有 MCP 请求）。
+
+    只补 `Authorization`，不覆盖条目里已有的其它 header；如果条目自己写了
+    `Authorization`，保留原值（便于单条 URL 走不同凭据）。
+    """
+    key = (os.getenv(ENV_API_KEY) or "").strip()
+    if not key or not isinstance(servers, dict):
+        return servers
+    for conf in servers.values():
+        if isinstance(conf, dict) and conf.get("url"):
+            headers = dict(conf.get("headers") or {})
+            headers.setdefault("Authorization", f"Bearer {key}")
+            conf["headers"] = headers
+    return servers
+
+
 def resolve_base_url(yaml_base: str | None) -> str | None:
     """决定最终的 base 地址：环境变量 `MCP_BASE_URL` 优先于 yaml 里的 `mcp_base_url`。
 
@@ -75,4 +97,4 @@ def load_servers(yaml_path: str) -> dict:
     with open(yaml_path, encoding="utf-8") as handle:
         conf = yaml.safe_load(handle) or {}
     servers = conf.get("mcp_servers", {}) or {}
-    return apply_base_url(servers, resolve_base_url(conf.get("mcp_base_url")))
+    return apply_api_key(apply_base_url(servers, resolve_base_url(conf.get("mcp_base_url"))))

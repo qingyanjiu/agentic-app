@@ -11,6 +11,8 @@
 #
 # 也支持给单条 url 写完整 http(s) 地址，那样会忽略 base（老写法兼容）。
 # 实现：mcp_client/mcp_config.py 的 resolve_base_url() / resolve_url()
+# /mcp/** 的 API Key 由环境变量 MCP_API_KEY 统一注入（apply_api_key），
+# 不要写在这个文件里。
 # ============================================================
 mcp_base_url: http://10.204.146.44:2223/mcp
 # mcp_base_url: http://mcp-sidecar:2223/mcp

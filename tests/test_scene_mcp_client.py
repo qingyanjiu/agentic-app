@@ -7,7 +7,7 @@ SceneMcpClient 单元测试（不连真实 sidecar）。
   2. X-Session-Id 逐请求注入，且与协议层 Mcp-Session-Id 同时存在
   3. SSE / JSON 两种响应形态都能解析，会话失效(404)会重握手重试一次
 """
-import json
+import json as jsonlib
 
 import pytest
 
@@ -47,7 +47,7 @@ class FakeHttpClient:
         if method == "initialize":
             return FakeResponse(
                 headers={"Mcp-Session-Id": "mcp-sess-001", "content-type": "application/json"},
-                text=json.dumps({
+                text=jsonlib.dumps({
                     "jsonrpc": "2.0",
                     "id": body.get("id"),
                     "result": {
@@ -64,7 +64,7 @@ class FakeHttpClient:
             return FakeResponse(
                 headers={"content-type": "text/event-stream", "Mcp-Session-Id": "mcp-sess-001"},
                 text="event: message\ndata: "
-                     + json.dumps({
+                     + jsonlib.dumps({
                          "jsonrpc": "2.0",
                          "id": body.get("id"),
                          "result": {"tools": [{"name": "scene_reset_view"}]},
@@ -81,7 +81,7 @@ class FakeHttpClient:
             if self.tool_error is not None:
                 return FakeResponse(
                     headers={"content-type": "application/json"},
-                    text=json.dumps({
+                    text=jsonlib.dumps({
                         "jsonrpc": "2.0",
                         "id": body.get("id"),
                         "result": {
@@ -92,7 +92,7 @@ class FakeHttpClient:
                 )
             return FakeResponse(
                 headers={"content-type": "application/json"},
-                text=json.dumps({
+                text=jsonlib.dumps({
                     "jsonrpc": "2.0",
                     "id": body.get("id"),
                     "result": {
@@ -218,3 +218,27 @@ def test_get_scene_state_uses_readonly_tool():
     call_req = [r for r in fake.requests if r["body"].get("method") == "tools/call"][-1]
     assert call_req["body"]["params"] == {"name": "get_scene_state", "arguments": {}}
     assert call_req["headers"]["X-Session-Id"] == "scene-abc"
+
+
+# ------------------------------------------------------------
+# SEC-08：/mcp/** 的应用层 API Key
+# ------------------------------------------------------------
+def test_api_key_header_injected(monkeypatch):
+    monkeypatch.setenv("MCP_API_KEY", "k-123")
+    fake = FakeHttpClient()
+
+    run(_client(fake).list_tools())
+
+    assert all(
+        r["headers"].get("Authorization") == "Bearer k-123"
+        for r in fake.requests
+    )
+
+
+def test_no_api_key_header_when_env_missing(monkeypatch):
+    monkeypatch.delenv("MCP_API_KEY", raising=False)
+    fake = FakeHttpClient()
+
+    run(_client(fake).list_tools())
+
+    assert all("Authorization" not in r["headers"] for r in fake.requests)

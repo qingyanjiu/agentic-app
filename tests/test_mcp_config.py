@@ -4,7 +4,7 @@
 换部署环境（宿主机 ↔ 容器网络）要改 15 处。现在顶层写一个 `mcp_base_url`，
 各条只写路径（`/personStatus`），读取时自动拼接。
 """
-from mcp_client.mcp_config import apply_base_url, load_servers, resolve_url
+from mcp_client.mcp_config import apply_api_key, apply_base_url, load_servers, resolve_url
 from mcp_client.mcp_config import (
     apply_base_url,
     load_servers,
@@ -121,3 +121,53 @@ def test_real_config_uses_yaml_base_without_env(monkeypatch):
     conf = load_servers("mcp_client/mcp_server_config.yaml")
     assert conf["local"]["url"].endswith("/personStatus")
     assert conf["local"]["url"].startswith("http")
+
+
+# ------------------------------------------------------------
+# SEC-08：/mcp/** 的 API Key 由环境变量统一注入
+# ------------------------------------------------------------
+def test_apply_api_key_injects_bearer(monkeypatch):
+    monkeypatch.setenv("MCP_API_KEY", "k-123")
+    servers = {
+        "a": {"url": "http://h/mcp/a"},
+        "b": {"command": "python"},
+        "c": "not-a-dict",
+    }
+
+    out = apply_api_key(servers)
+
+    assert out["a"]["headers"]["Authorization"] == "Bearer k-123"
+    assert "headers" not in out["b"]
+    assert out["c"] == "not-a-dict"
+
+
+def test_apply_api_key_trims_value(monkeypatch):
+    monkeypatch.setenv("MCP_API_KEY", "  k-123  ")
+    out = apply_api_key({"a": {"url": "/x"}})
+    assert out["a"]["headers"]["Authorization"] == "Bearer k-123"
+
+
+def test_apply_api_key_without_env_does_nothing(monkeypatch):
+    monkeypatch.delenv("MCP_API_KEY", raising=False)
+    out = apply_api_key({"a": {"url": "/x"}})
+    assert "headers" not in out["a"]
+
+
+def test_apply_api_key_empty_env_does_nothing(monkeypatch):
+    monkeypatch.setenv("MCP_API_KEY", "")
+    out = apply_api_key({"a": {"url": "/x"}})
+    assert "headers" not in out["a"]
+
+
+def test_apply_api_key_keeps_existing_authorization(monkeypatch):
+    """单条 server 自己配了 Authorization 时不能被全局 key 覆盖。"""
+    monkeypatch.setenv("MCP_API_KEY", "k-123")
+    out = apply_api_key({"a": {"url": "/x", "headers": {"Authorization": "Bearer other"}}})
+    assert out["a"]["headers"]["Authorization"] == "Bearer other"
+
+
+def test_load_servers_injects_key_from_env(monkeypatch):
+    monkeypatch.setenv("MCP_API_KEY", "k-123")
+    monkeypatch.delenv("MCP_BASE_URL", raising=False)
+    conf = load_servers("mcp_client/mcp_server_config.yaml")
+    assert conf["local"]["headers"]["Authorization"] == "Bearer k-123"

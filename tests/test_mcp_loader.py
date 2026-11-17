@@ -81,6 +81,12 @@ class TestConfigLoad:
         with pytest.raises(FileNotFoundError):
             mcp_loader.load_mcp_config(str(tmp_path / "not_exist.yaml"))
 
+    def test_config_injects_api_key_from_env(self, monkeypatch):
+        """SEC-08：/mcp/** 的 API Key 由 MCP_API_KEY 统一注入，不需要写进 yaml。"""
+        monkeypatch.setenv("MCP_API_KEY", "k-123")
+        conf = mcp_loader.load_mcp_config("mcp_client/mcp_server_config.yaml")
+        assert conf["local"]["headers"]["Authorization"] == "Bearer k-123"
+
 
 # ============================================================
 # 2. 案例1 主回归：单 server 失败不传染其他域

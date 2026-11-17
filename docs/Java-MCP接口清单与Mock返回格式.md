@@ -1,24 +1,25 @@
 # Java MCP Sidecar 接口清单与 Mock 返回格式
 
-> 供 Java 侧车（`host.docker.internal:2222`）实现 mock 数据使用。
-> 依据：Python 侧各域 graph 的 `_JAVA_TOOL_MAP`（工具名与入参）、`tests/conftest.py` 的 `DOMAIN_TOOL_RESULTS`（已被测试验证可走通流程的返回样例）、`docs/项目结构与接口文档.md`（平台 HTTP 接口字段口径）。
+> 供 Java 侧车（`mcp-sidecar:2223`；agent 跑在宿主机时用宿主机可达 IP）实现 mock 数据使用。
+> 依赖：Python 侧各域 graph 的 `_JAVA_TOOL_MAP`（工具名与入参）、`tests/conftest.py` 的 `DOMAIN_TOOL_RESULTS`（已被测试验证可走通流程的返回样例）、`docs/项目结构与接口文档.md`（平台 HTTP 接口字段口径）。
 > 更新日期：2026-09-21 · 分支：main
 
 ---
 
 ## 一、对接总览
 
-1. **传输方式**：13 个端点全部为 MCP `streamable_http`，端点路径与 Python 侧配置一一对应（见各节）。
-2. **工具名必须完全一致（含冒号前缀）**：Python 侧按全名取工具，如 `person_status:getTodayPersonnelAffairs`。前缀即各节标注的「命名空间」。
-3. **返回形式**：MCP 工具的文本内容是一个 **JSON 字符串**。Python 侧兼容两种包装（标准 MCP 的 `[{type:"text",text:"..."}]` 或纯字符串均可）。
-4. **通用返回包装**（与平台 HTTP 接口一致的简化口径）：
+1. **传输方式**：端点全部为 MCP `streamable_http`，路径与 Python 侧 `mcp_server_config.yaml` 一一对应（当前 15 个端点：本文覆盖平台业务类 13 个；`/mcp/knowledge` 与 `/mcp/scene` 分别见知识库、场景接入文档）。
+2. **鉴权**：sidecar 的 `/mcp/**` 要求应用层 API Key，Python 侧从 `MCP_API_KEY` 环境变量注入 `Authorization: Bearer <key>`；mock/联调时 sidecar 也必须配置同一个值，否则全部 401。
+3. **工具名必须完全一致（含冒号前缀）**：Python 侧按全名取工具，如 `person_status:getTodayPersonnelAffairs`。前缀即各节标注的「命名空间」。
+4. **返回形式**：MCP 工具的文本内容是一个 **JSON 字符串**。Python 侧兼容两种包装（标准 MCP 的 `[{type:"text",text:"..."}]` 或纯字符串均可）。
+5. **通用返回包装**（与平台 HTTP 接口一致的简化口径）：
    - 列表类：`{"code":200,"total":N,"rows":[...]}`（total 可省略）
    - 对象类：`{"code":200,"data":{...}}`
    - `code:200` 表示成功。
-5. **入参基本可忽略**：大多数工具 Python 侧传 `{}`；带参工具见各表「入参」列，**建议在 Java 侧把这些参数声明为可选**，空参调用不能报错。
-6. **时间参数格式**：`startTime`/`endTime` 为 ISO 串（如 `2026-09-01T00:00:00`）；`date` 为 `yyyy-MM-dd` 或 `yyyy-MM`；`type` 固定传 `day`。
-7. **容错度高，但「加粗字段」例外**：绝大多数返回直接喂给 LLM 组织回答，字段名不严格校验；只有 §三 列出的场景 Python 会**程序化解析字段**，这些字段名必须精确。
-8. **可照抄的参考实现**：`mcp_servers/fire_server.py`、`perimeter_server.py`、`inspection_server.py` 是三个字段口径一致的 Python stdio mock，数据结构可直接抄。
+6. **入参基本可忽略**：大多数工具 Python 侧传 `{}`；带参工具见各表「入参」列，**建议在 Java 侧把这些参数声明为可选**，空参调用不能报错。
+7. **时间参数格式**：`startTime`/`endTime` 为 ISO 串（如 `2026-09-01T00:00:00`）；`date` 为 `yyyy-MM-dd` 或 `yyyy-MM`；`type` 固定传 `day`。
+8. **容错度高，但「加粗字段」例外**：绝大多数返回直接喂给 LLM 组织回答，字段名不严格校验；只有 §三 列出的场景 Python 会**程序化解析字段**，这些字段名必须精确。
+9. **可照抄的参考实现**：`mcp_servers/fire_server.py`、`perimeter_server.py`、`inspection_server.py` 是三个字段口径一致的 Python stdio mock，数据结构可直接抄。
 
 ---
 

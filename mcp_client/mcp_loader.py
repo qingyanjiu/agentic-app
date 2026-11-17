@@ -5,7 +5,7 @@ import yaml
 from pathlib import Path
 from typing import Dict
 
-from .mcp_config import apply_base_url, resolve_base_url
+from .mcp_config import apply_api_key, apply_base_url, resolve_base_url
 
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
@@ -32,9 +32,10 @@ def load_mcp_config(file_path: str) -> Dict:
     with open(path, encoding="utf-8") as f:
         # 安全加载YAML内容（yaml.safe_load避免执行恶意代码）
         config = yaml.safe_load(f) or {}
-    # 只处理 "mcp_servers" 段（核心配置），并补全相对 url
+    # 只处理 "mcp_servers" 段（核心配置），补全相对 url 并注入 sidecar API Key
     servers = config.get("mcp_servers", {}) or {}
-    return apply_base_url(servers, resolve_base_url(config.get("mcp_base_url")))
+    servers = apply_api_key(apply_base_url(servers, resolve_base_url(config.get("mcp_base_url"))))
+    return servers
 async def _load_server_tools(name: str, server_conf: dict) -> list:
     """连接单个 MCP server 并返回其工具列表"""
     client = MultiServerMCPClient({name: server_conf})

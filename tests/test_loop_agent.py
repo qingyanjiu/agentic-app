@@ -65,6 +65,66 @@ def _demo_registry(executed: list):
     return registry
 
 
+def test_tool_timeouts_are_env_configurable(monkeypatch):
+    from agent.loop.executor import Executor
+
+    monkeypatch.setenv("LOOP_TOOL_TIMEOUT", "99")
+
+    agent = LoopAgent(
+        client=_FakeClient([]),
+        model="fake",
+        registry=_demo_registry([]),
+        stream=False,
+    )
+    executor = Executor(_demo_registry([]))
+
+    assert agent.tool_timeout == 99
+    assert executor.timeout == 99
+
+
+def test_tool_timeout_terminates_turn_without_retry():
+    """超时后把错误交回 agent 收尾，不再换工具/换参数重试。"""
+    from agent.loop.types import ToolTimeoutError
+
+    executed: list = []
+
+    async def execute(args):
+        executed.append(args)
+        raise ToolTimeoutError("MCP 工具 demo__query 调用超时（超过 15 秒）")
+
+    registry = ToolRegistry()
+    registry.add_domain(
+        DomainSpec(
+            name="demo",
+            description="演示域",
+            tools=[
+                ToolSpec(
+                    name="demo__query",
+                    description="查演示数据",
+                    parameters=tool_schema({"query": {"type": "string"}}, ["query"]),
+                    execute=execute,
+                )
+            ],
+        )
+    )
+    script = [
+        NS(content="", tool_calls=[_tool_call("demo__query", '{"query":"门禁"}')]),
+        NS(content="接口超时，请稍后再试。", tool_calls=None),
+    ]
+    agent = LoopAgent(
+        client=_FakeClient(script),
+        model="fake",
+        registry=registry,
+        stream=False,
+    )
+
+    result = asyncio.run(agent.run("查门禁"))
+
+    assert result.text == "接口超时，请稍后再试。"
+    assert len(executed) == 1
+    assert result.stop_reason == "answered"
+
+
 def test_loop_executes_tool_then_answers():
     executed: list = []
     events: list = []
