@@ -32,6 +32,7 @@
 | T19 | **楼层级监控画面能力**（场景侧 `scene` 只有单点位 tag） | P2 | 待评估 | 与场景/UE 侧确认 | 中 |
 | T20 | **skill 化改造**（域内口径交给 skill，router 保留兜底，见 `docs/loop-agent-skill方案.md`） | P2 | P0 半天 / P1 1 天 | 无（与 T18 可并行） | 中 |
 | T21 | **会话列表 + 会话标题**（按 `user_id` 列会话、给每个会话起名字，见第 11 节） | P2 | 剩 1 天（会话表 + 标题） | 读接口已完成 ✅（`chat_api.py`，默认不挂载）；历史已落盘 ✅ | 中 |
+| T22 | **追问态落盘（pending）**（刷新/重启后「第三个」还能对上候选，见第 12 节） | P2 | 半天 | 与 T21 的 `chat_sessions` 表一起做 | 中 |
 
 **顺序建议**：T1 → 等业务语料（T2）→ T3 → T4 → 用 T1 数据决定是否做 T5。
 
@@ -779,3 +780,51 @@ DELETE /chat/sessions/{user_id}/{session_id}                     # 删除（连 
 - 点旧会话能恢复历史（`CHAT_HISTORY_MESSAGES` 上限照样生效）；
 - 重命名后刷新页面名字还在；删除后列表和历史都没了；
 - 标题生成失败/超时**不影响**首轮回答，列表回退成首条消息截断。
+
+---
+
+## 12. T22 追问态落盘（pending）—— 结论已定，未实施
+
+### 12.1 现在丢了什么
+
+`Session.pending`（`agent/loop/router.py` 的 `Pending`）只在进程内存里：
+
+```python
+Pending(tool, args, missing, domain, original_query)
+```
+
+刷新页面 / 服务重启 / 内存 TTL（`SESSION_TTL_SECONDS`）到期后它就没了 ——
+表现是用户答「第三个」，助手重新问一遍「您指的是哪一台」。
+历史文本能恢复（第 9 节），但这一步接不上。
+
+### 12.2 结论：要存，但只存最小恢复集 + 短时效
+
+| 场景 | 要不要恢复 | 理由 |
+|---|---|---|
+| 设备候选「第三个」 | ✅ 要 | 最高频、最痛；丢了这个能力等于白聊 |
+| 缺参数追问（哪个楼层） | ✅ 要 | 刷新后能接着答，体验差别大 |
+| 时间澄清（近三天可以吗） | ✅ 要 | 同上，纯读操作无风险 |
+| 场景控制追问（布防哪个防区） | ❌ 不要 | 破坏性动作；恢复旧候选后自动下发风险大于收益，宁可重问 |
+| 跨天恢复 pending | ❌ 不要 | 用户早忘了上下文，模型照旧候选执行是坑 |
+
+### 12.3 落地方案（与 T21 的 `chat_sessions` 表一起做）
+
+```sql
+ALTER TABLE chat_sessions ADD COLUMN pending_json TEXT NOT NULL DEFAULT '';
+ALTER TABLE chat_sessions ADD COLUMN pending_at   REAL NOT NULL DEFAULT 0;
+```
+
+- **写**：`session.pending` 变化时写（追问时落、`clear_pending()` 时置空）；
+  `pending_json` 超过 8KB 直接不存（候选几十条也到不了这个量）
+- **读**：`ws_bridge.restore_history()` 里和历史一起读，要求
+  `now - pending_at <= PENDING_TTL`（建议 900s，比 `SESSION_TTL_SECONDS=1800` 短一半）
+- **白名单**：只恢复 `router.Pending`；场景通道的 `IntentState` 一律不恢复
+- **可观测**：恢复时打一行 `[loop] 已恢复追问态 tool=… candidates=N（x 秒前）`，
+  回答里再带一句「接着刚才那批设备」，避免用户困惑
+
+### 12.4 验收
+
+- 刷新后答「第三个」→ 直接命中刷新前那批候选，不再追问；
+- 超过 `PENDING_TTL` 再答「第三个」→ 当作没有 pending，重新问一遍（不是报错）；
+- 场景控制追问在刷新后不会被自动恢复（宁可重问）；
+- 回答完立刻清空 → 库里 `pending_json` 也跟着清空。
