@@ -244,3 +244,50 @@ def test_handle_chat_handoff_does_not_persist(tmp_path, monkeypatch):
     assert handled is False
     assert store.load("u1", "s1") == []
     ws_bridge.reset_sessions()
+
+
+# ============================================================
+# 6. 条数可配（CHAT_HISTORY_MESSAGES）
+# 条数上限与「跨不跨会话」是两个维度：这里只管喂给模型多少条
+# ============================================================
+def test_history_messages_env_controls_load(tmp_path, monkeypatch):
+    monkeypatch.setenv("CHAT_HISTORY_MESSAGES", "4")
+    store = _store(tmp_path, monkeypatch)
+    store.append_messages("u1", "s1", [
+        {"role": "user", "content": f"m{i}"} for i in range(10)
+    ])
+    assert store.history_messages == 4
+    assert [m["content"] for m in store.load("u1", "s1")] == ["m6", "m7", "m8", "m9"]
+    # 显式传 limit 仍然覆盖环境变量
+    assert [m["content"] for m in store.load("u1", "s1", limit=2)] == ["m8", "m9"]
+
+
+def test_history_messages_default_and_bad_value(monkeypatch):
+    monkeypatch.delenv("CHAT_HISTORY_MESSAGES", raising=False)
+    assert chat_store._resolve_history_messages() == chat_store.DEFAULT_HISTORY_MESSAGES
+    monkeypatch.setenv("CHAT_HISTORY_MESSAGES", "")
+    assert chat_store._resolve_history_messages() == chat_store.DEFAULT_HISTORY_MESSAGES
+    monkeypatch.setenv("CHAT_HISTORY_MESSAGES", "abc")
+    assert chat_store._resolve_history_messages() == chat_store.DEFAULT_HISTORY_MESSAGES
+
+
+def test_session_max_history_follows_env(tmp_path, monkeypatch):
+    """内存保留轮数要跟着条数走：6 条 = 3 轮，否则还原回来第一轮就被裁。"""
+    monkeypatch.setenv("CHAT_HISTORY_MESSAGES", "6")
+    _store(tmp_path, monkeypatch)
+    ws_bridge.reset_sessions()
+    session = ws_bridge.get_session("u1", "s1")
+    assert session.max_history == 3
+    ws_bridge.reset_sessions()
+
+
+def test_restore_history_uses_configured_limit(tmp_path, monkeypatch):
+    monkeypatch.setenv("CHAT_HISTORY_MESSAGES", "4")
+    store = _store(tmp_path, monkeypatch)
+    store.append_messages("u1", "s1", [
+        {"role": "user" if i % 2 == 0 else "assistant", "content": f"h{i}"} for i in range(10)
+    ])
+
+    session = Session(user_id="u1", session_id="s1")
+    assert ws_bridge.restore_history(session) == 4
+    assert [m["content"] for m in session.history] == ["h6", "h7", "h8", "h9"]

@@ -31,6 +31,7 @@
 | T18 | **loop/graph 解耦（删 legacy）** | — | — | — | ✅ 已完成（graph/ 已整体删除，见第 7 节） |
 | T19 | **楼层级监控画面能力**（场景侧 `scene` 只有单点位 tag） | P2 | 待评估 | 与场景/UE 侧确认 | 中 |
 | T20 | **skill 化改造**（域内口径交给 skill，router 保留兜底，见 `docs/loop-agent-skill方案.md`） | P2 | P0 半天 / P1 1 天 | 无（与 T18 可并行） | 中 |
+| T21 | **会话列表 + 会话标题**（按 `user_id` 列会话、给每个会话起名字，见第 11 节） | P2 | 1.5 天（后端 1 天 + 前端 0.5 天） | 对话历史已落盘 ✅ | 中 |
 
 **顺序建议**：T1 → 等业务语料（T2）→ T3 → T4 → 用 T1 数据决定是否做 T5。
 
@@ -660,3 +661,82 @@ if state and (time.time() - state.last_update_time) > self.timeout:
 - 现状架构写在 `docs/架构文档.md`（唯一入口，进度与结论都往这里落）
 - 本文档只记录**未实施**的后续项；每完成一项，在这里标 ✅ 并同步到架构文档
 - 与 loop 无关的项目级事项（打包/交付）不写在这里
+
+---
+
+## 11. T21 会话列表与会话标题（未实施）
+
+### 11.1 为什么需要
+
+现在对话历史按 `(user_id, session_id)` 落盘（`memory/chat_store.py`），但**只能"续上当前会话"**：
+前端不提供别的 session_id 就回不到历史会话。要做常规对话产品，必须有两个能力：
+
+1. **会话列表**：某个用户在某段时间内有哪些会话（按最近活动排序）；
+2. **会话标题**：每个会话有个能读的名字（"查 5 楼监控设备"），否则列表里全是 uuid。
+
+### 11.2 数据层要动的地方
+
+现在只有 `chat_messages` 一张表，`(user_id, session_id)` 可以从表里 `GROUP BY` 出来，
+但标题、最后一条消息时间、消息数每次聚合太浪费，而标题又必须持久化（模型总结有成本）。
+
+建议加一张会话表（在 `memory/chat_store.py` 里加 schema + 方法，不动 `chat_messages`）：
+
+```sql
+CREATE TABLE IF NOT EXISTS chat_sessions (
+    user_id      TEXT NOT NULL,
+    session_id   TEXT NOT NULL,
+    title        TEXT NOT NULL DEFAULT '',   -- 展示名；空串 = 还没生成
+    title_source TEXT NOT NULL DEFAULT '',   -- first_message / llm / manual
+    created_at   REAL NOT NULL,
+    updated_at   REAL NOT NULL,              -- 最后一条消息时间，列表排序用
+    msg_count    INTEGER NOT NULL DEFAULT 0, -- 列表显示"12 轮"用，避免聚合
+    PRIMARY KEY (user_id, session_id)
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_user
+    ON chat_sessions (user_id, updated_at DESC);
+```
+
+写入点：`append_messages()` 里同事务 `INSERT ... ON CONFLICT DO UPDATE`
+（刷新 `updated_at`、累加 `msg_count`），首次写入且 `title` 为空时落一条候选标题。
+
+### 11.3 标题怎么来（三档，先做第 1 档）
+
+| 策略 | 做法 | 成本 | 取舍 |
+|---|---|---|---|
+| ① 首条消息截断 | 取该会话第一条 user 消息，去掉口语前缀后截 20 字 | 0 | 够用、可预期、可测；问句截断也看得懂 |
+| ② 模型总结 | 首轮结束后异步调一次小模型："用 8 个字概括这次对话" | 1 次调用/会话 | 更自然，但要防失败、防拖慢首轮，且要有回退 |
+| ③ 混合（推荐最终形态） | 先落 ①，后台升级成 ②，`title_source` 标 `llm`；失败保留 ① | 同上 | 首字延迟不变，体验最好 |
+
+硬约束：标题生成必须在后台任务里做，不能挡住首轮回答（首字延迟是这套系统的核心竞争力）。
+
+### 11.4 接口草案（HTTP，挂在 agent 服务上）
+
+```
+GET    /chat/sessions?user_id=<id>&limit=20&before=<updated_at>
+       → [{"session_id","title","updated_at","msg_count"}]
+GET    /chat/sessions/{user_id}/{session_id}/messages?limit=50
+       → 恢复历史用（前端点进某会话时加载，不走 WS）
+PATCH  /chat/sessions/{user_id}/{session_id}   {"title": "..."}   # 用户改名
+DELETE /chat/sessions/{user_id}/{session_id}                     # 删除（连 message 一起删）
+```
+
+注意：
+
+- **鉴权**：`user_id` 不能由前端随便传，必须和 sidecar 的 `validateToken(token, userId)` 对齐
+  （现在的 WS 就靠 sidecar 代理鉴权，HTTP 接口要走同一套）；
+- 分页用 `updated_at` 游标而不是 offset，避免列表刷新时跳行；
+- 删除会话要同时删 `chat_messages`（`delete_session()` 已有）和 `chat_sessions` 行。
+
+### 11.5 前端要动的地方
+
+- `tf_park_ue`：左侧会话列表（今天 / 最近 7 天 / 更早分组）、点进去切换 `sessionId` 并拉历史、
+  重命名、删除，当前会话高亮；
+- 新会话的 `sessionId` 仍由前端生成，发第一条消息时后端才建行；
+- 列表为空时给"还没有对话"的引导态。
+
+### 11.6 验收
+
+- 同一用户开三个会话，列表按最近活动倒序、标题可读；
+- 点旧会话能恢复历史（`CHAT_HISTORY_MESSAGES` 上限照样生效）；
+- 重命名后刷新页面名字还在；删除后列表和历史都没了；
+- 标题生成失败/超时**不影响**首轮回答，列表回退成首条消息截断。

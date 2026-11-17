@@ -67,7 +67,9 @@ async def _send(websocket: Any, payload: dict) -> bool:
     except Exception as exc:  # WebSocketDisconnect / RuntimeError / OSError
         logger.debug(f"[loop] 发送失败，客户端可能已断开：{type(exc).__name__}")
         return False
-
+def get_history_messages() -> int:
+    """喂给模型的条数上限（`CHAT_HISTORY_MESSAGES`）；store 单例里已解析好。"""
+    return get_store().history_messages
 
 def get_session(user_id: str, session_id: str) -> Session:
     """按 user:session 取会话，顺手做一次空闲回收。"""
@@ -80,7 +82,13 @@ def get_session(user_id: str, session_id: str) -> Session:
     key = f"{user_id}:{session_id}"
     session = _sessions.get(key)
     if session is None:
-        session = Session(user_id=user_id, session_id=session_id)
+        # 内存保留轮数跟着 CHAT_HISTORY_MESSAGES 走（1 轮 = 2 条），
+        # 否则"还原 24 条、第一轮就被裁到别的数"会对不上
+        session = Session(
+            user_id=user_id,
+            session_id=session_id,
+            max_history=max(1, get_history_messages() // 2),
+        )
         _sessions[key] = session
     _touched[key] = now
     return session
@@ -95,9 +103,8 @@ def restore_history(session: Session) -> int:
     if session.history:
         return 0
     try:
-        history = get_store().load(
-            session.user_id, session.session_id, session.max_history * 2
-        )
+        # 条数由 CHAT_HISTORY_MESSAGES 决定（默认 24 ≈ 12 轮），store 自己兜默认值
+        history = get_store().load(session.user_id, session.session_id)
     except Exception as exc:  # 存储异常一律降级
         logger.warning(f"[loop] 读取历史失败，按新会话处理: {exc}")
         return 0

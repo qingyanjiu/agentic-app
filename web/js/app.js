@@ -36,7 +36,18 @@ function getUserId() {
     return uid;
 }
 
-let sessionId = crypto.randomUUID();
+// 会话 id 持久化在 localStorage：刷新 / 关标签重开都续上同一个会话，只有点「新对话」才换新的。
+// 后端按 (user_id, session_id) 精确匹配历史，所以"还算不算同一个会话"完全由这里决定。
+const SESSION_KEY = 'demo_session_id';
+function getSessionId() {
+    let sid = localStorage.getItem(SESSION_KEY);
+    if (!sid) {
+        sid = crypto.randomUUID();
+        localStorage.setItem(SESSION_KEY, sid);
+    }
+    return sid;
+}
+let sessionId = getSessionId();
 let ws = null;
 let sendQueue = []; // 连接建立前待发送的消息
 let turnActive = false;
@@ -649,6 +660,8 @@ function renderMarkdown(md, options = {}) {
 }
 
 // ------------------- 新对话 -------------------
+// 只有点「新对话」才换 session_id；刷新/重开页面沿用 localStorage 里的那个，
+// 这样后端能按 (user_id, session_id) 从 chat_history.db 里恢复上一轮的上下文
 newChatBtn.addEventListener('click', (e) => {
     e.preventDefault();
     if (ws) {
@@ -661,6 +674,7 @@ newChatBtn.addEventListener('click', (e) => {
     reconnectTimer = null;
     reconnectAttempts = 0;
     sessionId = crypto.randomUUID();
+    localStorage.setItem(SESSION_KEY, sessionId); // 换新会话，后端按新 id 从零开始
     sendQueue = [];
     finishTurn();
     // 清空消息区，快捷入口恢复

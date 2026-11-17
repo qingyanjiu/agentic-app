@@ -29,6 +29,7 @@ Redis 版 `SessionStore`，`agent/loop/ws_bridge.py` 不用动——
 |---|---|---|
 | `CHAT_DB_PATH` | 数据库文件路径；`:memory:` = 不落盘（进程内临时库，重启即丢） | `<项目根>/chat_history.db` |
 | `CHAT_RETENTION_DAYS` | 超过多少天的消息在启动时清掉；`0` = 不清理 | `30` |
+| `CHAT_HISTORY_MESSAGES` | 重启后还原并喂给模型的**消息条数**上限（1 轮 = 2 条） | `24` |
 
 空字符串按"未设置"处理（compose 的 `${VAR:-}` 会传空串），与 `models/llm.py` 一致。
 """
@@ -48,6 +49,8 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_DB_PATH = os.path.join(_ROOT, "chat_history.db")
 
 DEFAULT_RETENTION_DAYS = 30
+# 还原并喂给模型的条数上限（约等于轮数 × 2）；与 Session.max_history 对齐
+DEFAULT_HISTORY_MESSAGES = 24
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS chat_messages (
@@ -87,13 +90,36 @@ def _resolve_retention_days() -> int:
         return DEFAULT_RETENTION_DAYS
 
 
+def _resolve_history_messages() -> int:
+    """还原/喂给模型的条数上限：CHAT_HISTORY_MESSAGES，默认 24（≈12 轮）。"""
+    raw = _env("CHAT_HISTORY_MESSAGES")
+    if not raw:
+        return DEFAULT_HISTORY_MESSAGES
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        logger.warning("[chat-store] CHAT_HISTORY_MESSAGES=%r 不是整数，按默认 %s 条",
+                       raw, DEFAULT_HISTORY_MESSAGES)
+        return DEFAULT_HISTORY_MESSAGES
+
 class ChatStore:
     """SQLite 版会话历史存储。方法都是同步的（单条 insert/select，微秒级）。"""
 
-    def __init__(self, path: Optional[str] = None, *, retention_days: Optional[int] = None):
+    def __init__(
+        self,
+        path: Optional[str] = None,
+        *,
+        retention_days: Optional[int] = None,
+        history_messages: Optional[int] = None,
+    ):
         self.path = resolve_db_path(path)
         self.retention_days = (
             _resolve_retention_days() if retention_days is None else max(0, retention_days)
+        )
+        self.history_messages = (
+            _resolve_history_messages()
+            if history_messages is None
+            else max(0, history_messages)
         )
         self._lock = threading.Lock()  # sqlite3 连接不跨线程共享，写入串行化
         self._pruned = False
@@ -119,8 +145,13 @@ class ChatStore:
     # ------------------------------------------------------------ #
     # 对外接口（ws_bridge 只用这四个）
     # ------------------------------------------------------------ #
-    def load(self, user_id: str, session_id: str, limit: int = 24) -> list[dict]:
-        """取最近 limit 条消息，按时间正序返回（直接喂给模型）。"""
+    def load(self, user_id: str, session_id: str, limit: Optional[int] = None) -> list[dict]:
+        """取最近 limit 条消息，按时间正序返回（直接喂给模型）。
+
+        limit 不传就用 `CHAT_HISTORY_MESSAGES`（默认 24 条 ≈ 12 轮）：
+        条数可配是为了控制上下文预算，跟"跨不跨会话"是两件事。
+        """
+        limit = self.history_messages if limit is None else limit
         if limit <= 0:
             return []
         try:
@@ -192,10 +223,12 @@ class NullChatStore(ChatStore):
     def __init__(self) -> None:  # 故意不调 super().__init__，不建库
         self.path = ":memory:"
         self.retention_days = 0
+        # 不落盘，但"喂多少条给模型"的预算仍然生效（内存会话的轮数上限跟着它走）
+        self.history_messages = _resolve_history_messages()
         self._lock = threading.Lock()
         self._pruned = True
 
-    def load(self, user_id: str, session_id: str, limit: int = 24) -> list[dict]:
+    def load(self, user_id: str, session_id: str, limit: Optional[int] = None) -> list[dict]:
         return []
 
     def append_messages(self, user_id: str, session_id: str, messages: list[dict]) -> int:
