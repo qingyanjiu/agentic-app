@@ -3363,6 +3363,27 @@ class PersonStatusClassifier:
         # 加载本地或 HuggingFace 上的 sentence-transformer 模型
         self.model = SentenceTransformer(LOCAL_MODEL_PATH)
 
+        # ---- 加载后自检 ----
+        # sentence-transformers 在畸形模型目录下可能返回「一个模块都没装上」的实例：
+        # 初始化不报错，等第一次 encode 才在 tokenize 里炸成
+        # AttributeError: 'NoneType' object has no attribute 'tokenize'，根因完全看不出来。
+        # 这里提前失败并点明检查项（scripts/pack.sh 打包时默认排除该权重目录，需手工 scp）。
+        if not os.path.isdir(LOCAL_MODEL_PATH):
+            logger.warning(
+                "[classifier] INTENT_MODEL_PATH=%s 不是本地目录，将按 HuggingFace 仓库名解析",
+                LOCAL_MODEL_PATH,
+            )
+        _modules = getattr(self.model, "_modules", None) or {}
+        if len(_modules) == 0 or self.model._first_module() is None:
+            raise RuntimeError(
+                "意图模型加载失败：%s 没有加载到任何模块。排查顺序："
+                "1) 目录是否存在，且含 model.safetensors / modules.json "
+                "（pack.sh 默认排除 agent/intent/models/*，需要手工 scp 到目标机）；"
+                "2) modules.json 里声明的每个 path 是否与目录内容一致；"
+                "3) INTENT_MODEL_PATH 是否指向了这份目录。已加载模块：%s"
+                % (LOCAL_MODEL_PATH, list(_modules))
+            )
+
         logger.info("[classifier] 开始预计算示例向量...")
 
         # 1. 各子类型中心向量（用于判断 query_type）
