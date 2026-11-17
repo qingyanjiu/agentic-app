@@ -70,6 +70,7 @@ class LoopAgent:
         max_steps: int = 8,
         temperature: float = 0.0,
         tool_timeout: float = 30.0,
+        max_tool_errors: int = 2,
         context_budget: int = 60_000,
         stream: bool = True,
         before_tool: BeforeTool | None = None,
@@ -86,6 +87,8 @@ class LoopAgent:
         self.temperature = temperature
         self.tool_timeout = tool_timeout
         self.context_budget = context_budget
+        # 同一轮里连续失败多少次就停止重试（见主循环里的兜底）
+        self.max_tool_errors = max(1, max_tool_errors)
         self.stream = stream
         self.before_tool = before_tool
         self.after_tool = after_tool
@@ -231,6 +234,7 @@ class LoopAgent:
         tools = self.registry.to_openai_tools()
         executed: list[dict] = []
         steps = 0
+        error_streak = 0
 
         while steps < self.max_steps:
             if self._cancelled(cancel):
@@ -329,6 +333,34 @@ class LoopAgent:
                 )
                 outcome = await self._execute(name, tc.function.arguments)
                 all_terminate = all_terminate and outcome.terminate
+                # 同一轮里模型会不停换工具/换参数重试，每轮都输出一段几乎相同的
+                # 解释；前端 answer 是追加语义，最后会堆成一屏重复内容
+                # （实测：台账接口连续超时两次 + 停止后补发的 summary，
+                #  用户看到同一段回答出现两遍）。连续失败到阈值就收手。
+                if outcome.is_error:
+                    error_streak += 1
+                else:
+                    error_streak = 0
+                if error_streak >= self.max_tool_errors:
+                    logger.warning(
+                        f"[loop] 连续 {error_streak} 次工具调用失败，停止重试：{name}"
+                    )
+                    await self._emit(
+                        handler,
+                        "error",
+                        {"message": f"连续 {error_streak} 次调用业务接口失败，已停止重试"},
+                    )
+                    return LoopResult(
+                        text=(
+                            f"业务接口连续 {error_streak} 次调用失败，已停止重试。\n\n"
+                            f"{outcome.text}\n\n"
+                            "可以稍后再试，或者换个问法把范围缩小一点。"
+                        ),
+                        messages=messages,
+                        tool_calls=executed,
+                        steps=steps,
+                        stop_reason="error",
+                    )
                 executed.append(
                     {
                         "name": name,
