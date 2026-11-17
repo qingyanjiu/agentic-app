@@ -163,12 +163,22 @@ class KnowledgeHttpClient:
             "Accept": "application/json",
         }
 
-    def build_payload(self, question: str, dataset_ids: Optional[list[str]] = None) -> dict:
-        """按平台口径拼请求体（单独抽出来，便于单测断言字段）。"""
+    def build_payload(
+        self,
+        question: str,
+        dataset_ids: Optional[list[str]] = None,
+        rerank_enable: Optional[bool] = None,
+    ) -> dict:
+        """按平台口径拼请求体（单独抽出来，便于单测断言字段）。
+
+        `rerank_enable` 显式传入时覆盖实例默认值：平台不支持重排模型会回
+        HTTP 500 Retrieval failed，retrieve() 用这个参数做一次「去重排」降级。
+        """
         ids = self.dataset_ids if dataset_ids is None else list(dataset_ids)
+        use_rerank = self.rerank_enable if rerank_enable is None else bool(rerank_enable)
         multiple: dict[str, Any] = {
             "top_k": self.top_k,
-            "reranking_enable": self.rerank_enable,
+            "reranking_enable": use_rerank,
             "weights": {
                 "vector_setting": {"vector_weight": 1.0},
                 "keyword_setting": {"keyword_weight": 0.0},
@@ -176,7 +186,7 @@ class KnowledgeHttpClient:
         }
         if self.score_threshold is not None:
             multiple["score_threshold"] = self.score_threshold
-        if self.rerank_enable:
+        if use_rerank:
             multiple["reranking_mode"] = "reranking_model"
             multiple["reranking_model"] = {
                 "provider": self.rerank_provider,
@@ -208,29 +218,62 @@ class KnowledgeHttpClient:
             question[:40],
         )
         started = time.monotonic()
-        try:
-            resp = await self._client_or_new().post(url, json=payload, headers=self._headers())
+
+        async def _request(body: dict) -> tuple[Any, Any]:
+            resp = await self._client_or_new().post(url, json=body, headers=self._headers())
             resp.raise_for_status()
-            data = resp.json()
+            return resp, resp.json()
+
+        try:
+            resp, data = await _request(payload)
         except httpx.HTTPStatusError as exc:
             status = exc.response.status_code if exc.response is not None else 0
             # 把服务端返回体带上，排查 key/数据集不对时最有用
             body = (exc.response.text or "")[:200] if exc.response is not None else ""
-            hint = ""
-            if status in (401, 403):
-                hint = "（鉴权失败：检查 KB_API_KEY 是否为 dataset-xxx 形式）"
-            elif status == 404:
-                hint = "（路径不存在：检查 KB_RETRIEVAL_PATH）"
-            elif status >= 500:
-                hint = "（服务端异常：检查平台日志）"
-            logger.error(
-                "[kb-http] 检索失败: HTTP %s 用时 %.2fs%s body=%s",
-                status,
-                time.monotonic() - started,
-                hint,
-                body,
-            )
-            raise RuntimeError(f"知识库接口返回 {status}: {body}") from exc
+            if self.rerank_enable and status >= 500:
+                # 实测：部分平台实例不支持 reranking_model（如 tong_yi/gte-rerank），
+                # 带 reranking_enable=true 直接回 HTTP 500 Retrieval failed。
+                # 这不是重试同一请求，而是换成平台能接受的参数形态再检一次。
+                logger.warning(
+                    "[kb-http] 重排不可用（HTTP %s body=%s），本次去掉 reranking 再检索一次",
+                    status,
+                    body,
+                )
+                try:
+                    resp, data = await _request(
+                        self.build_payload(question, dataset_ids, rerank_enable=False)
+                    )
+                    logger.info(
+                        "[kb-http] 去掉重排后检索成功: HTTP %s", getattr(resp, "status_code", "?")
+                    )
+                except httpx.HTTPStatusError as exc2:
+                    status2 = exc2.response.status_code if exc2.response is not None else 0
+                    body2 = (exc2.response.text or "")[:200] if exc2.response is not None else ""
+                    logger.error(
+                        "[kb-http] 去掉重排后仍失败: HTTP %s body=%s", status2, body2
+                    )
+                    raise RuntimeError(f"知识库接口返回 {status2}: {body2}") from exc2
+                except httpx.HTTPError as exc2:
+                    logger.error(
+                        "[kb-http] 去掉重排后仍失败: %s: %s", type(exc2).__name__, exc2
+                    )
+                    raise RuntimeError(f"知识库接口调用失败: {exc2}") from exc2
+            else:
+                hint = ""
+                if status in (401, 403):
+                    hint = "（鉴权失败：检查 KB_API_KEY 是否为 dataset-xxx 形式）"
+                elif status == 404:
+                    hint = "（路径不存在：检查 KB_RETRIEVAL_PATH）"
+                elif status >= 500:
+                    hint = "（服务端异常：检查平台日志）"
+                logger.error(
+                    "[kb-http] 检索失败: HTTP %s 用时 %.2fs%s body=%s",
+                    status,
+                    time.monotonic() - started,
+                    hint,
+                    body,
+                )
+                raise RuntimeError(f"知识库接口返回 {status}: {body}") from exc
         except httpx.TimeoutException as exc:
             logger.error(
                 "[kb-http] 检索超时: %s 用时 %.2fs（KB_TIMEOUT=%ss）",
@@ -264,10 +307,11 @@ class KnowledgeHttpClient:
             )
         else:
             logger.info(
-                "[kb-http] 检索成功: HTTP %s 用时 %.2fs | data 条数=%s | 文本 %s 字",
+                "[kb-http] 检索成功: HTTP %s 用时 %.2fs | data 条数=%s（去重后 %s 段）| 文本 %s 字",
                 status_code,
                 elapsed,
                 len(rows),
+                len(text.split("【来源：")) - 1,
                 len(text),
             )
         return text
@@ -306,12 +350,18 @@ class KnowledgeHttpClient:
             return EMPTY_HINT
 
         parts: list[str] = []
+        seen: set[str] = set()
         for row in rows:
             if not isinstance(row, dict):
                 continue
             content = str(row.get("content") or "").strip()
             if not content:
                 continue
+            # 平台按滑窗切分，同一段目录/标题会在多条结果里重复出现；
+            # 不去重会让 top_k 名额全被重复片段占满，正文片段永远挤不进来。
+            if content in seen:
+                continue
+            seen.add(content)
             if len(content) > self.segment_max_chars:
                 content = content[: self.segment_max_chars] + "…"
             meta = row.get("metadata") or {}
