@@ -1,20 +1,18 @@
 /* ============================================================
-   园区智能助手 · 前端逻辑
-   WebSocket 协议（与 app.py /chat/{user_id}/{session_id} 对应）：
-   - 发送: {"query": "..."}
-           {"query": "...", "mode": "kb"}    知识库直连
-           {"query": "...", "mode": "loop"}  强制走 loop 新链路（灰度测试用）
-           场景指令不单独设模式：后端自动识别，命中 L0 会交回旧链路
-           （{"query": "...", "mode": "scene", ...} 仅保留给脚本强制走场景）
-   - 接收:
+   园区智能助手 · 前端逻辑（对话演示页）
+
+   后端只剩 WS /chat/{user_id}/{session_id}：
+   - 发送：{"query": "...", "mode": "loop"}
+       mode 显式传 loop：本分支 loop 是唯一链路，传了就不依赖服务端 AGENT_MODE 的环境配置；
+       场景指令不单独设模式，后端按意图自动分流（{"mode":"scene"} 只留给脚本强制走场景）。
+   - 接收：
      {"event":"custom","data":{"type":"answer","content":"..."}}   回答，追加语义（流式分块）
      {"event":"custom","data":{"type":"ask","question":"..."}}     追问（读 question，不是 content）
      {"event":"custom","data":{"type":"tool","name":"..."}}        工具调用 → 上段文字落成过程稿
-     {"event":"custom","data":{"type":"intent_desc"}}              意图理解进度
+     {"event":"custom","data":{"type":"list","kind":"device",...}} 结构化清单（设备列表）
      {"event":"custom","data":{"type":"error","content":"..."}}    错误
-     {"status":"done","level":"L0/L1/L2","escalated":bool}         整轮结束（旧链路只带 status）
-     {"event":"on_tool_start"|"on_tool_end"}                       LangChain 生命周期（旧链路）
-     {"error":"..."}                                               全局错误
+     {"status":"done","level":"L0/L1/L2","escalated":bool}         整轮结束
+     {"error":"..."}                                              全局错误
 
    注意：后端不发 {"type":"done"}，结束统一认 {"status":"done"}。
    ============================================================ */
@@ -47,23 +45,6 @@ let reconnectTimer = null; // 断线重连定时器
 let reconnectAttempts = 0; // 连续重连失败次数
 let reconnectDelay = 1500;
 let sendTimeout = null; // 发送后迟迟连不上后端的兜底提示
-// 问答模式：agent=智能体问答（自动识别业务/场景） | kb=知识库直连 | loop=强制走 loop 新链路 | doc=报告生成
-let chatMode = 'agent';
-
-// 报告生成（/gen_doc 独立 WebSocket）状态
-let docWs = null;
-let docGenerating = false;
-let docPendingPayload = null;
-let docConnectTimer = null;
-
-// 一次生成 = 对话里的一个 doc-run 区块；卡片点击后用 run.markdown 渲染右侧预览
-let docRunSeq = 0;
-let docRuns = new Map();     // runId -> { id, el, markdown, fileName, ... }
-let activeDocRun = null;
-let activePreviewRunId = null;
-
-// 「报告内容」可选项（与 index.html 里的复选框、后端 TOPIC_ORDER 保持一致）
-const DOC_TOPICS = ['安防', '能耗', '通行', '网络', '设备', '食堂', '会议', '巡检'];
 
 // ------------------- DOM -------------------
 const messagesEl = document.getElementById('messages');
@@ -75,29 +56,9 @@ const sendBtn = document.getElementById('sendBtn');
 const newChatBtn = document.getElementById('newChatBtn');
 const connDot = document.getElementById('connDot');
 const connText = document.getElementById('connText');
-const modeAgentBtn = document.getElementById('modeAgentBtn');
-const modeKbBtn = document.getElementById('modeKbBtn');
-const modeLoopBtn = document.getElementById('modeLoopBtn');
-const modeDocBtn = document.getElementById('modeDocBtn');
 const sceneChipsEl = document.getElementById('sceneChips');
 const routeBarEl = document.getElementById('routeBar');
 
-// 报告配置模态框
-const docModal = document.getElementById('docModal');
-const docModalBackdrop = document.getElementById('docModalBackdrop');
-const docModalClose = document.getElementById('docModalClose');
-const docSubmitBtn = document.getElementById('docSubmitBtn');
-const docModalError = document.getElementById('docModalError');
-const docPeriodSeg = document.getElementById('docPeriodSeg');
-const docTopicsEl = document.getElementById('docTopics');
-
-// 文档预览抽屉（仅点击文档卡片时打开）
-const docPanel = document.getElementById('docPanel');
-const docCloseBtn = document.getElementById('docCloseBtn');
-const docStream = document.getElementById('docStream');
-const docPreviewTitle = document.getElementById('docPreviewTitle');
-const docPreviewMeta = document.getElementById('docPreviewMeta');
-const docDownloadBtn = document.getElementById('docDownloadBtn');
 
 // ------------------- 消息渲染 -------------------
 function escapeHtml(s) {
@@ -381,12 +342,7 @@ function sendMessage(text) {
     text = text.trim();
     if (!text) return;
 
-    // 报告生成模式：对话框里的一句话就是生成指令，结果卡片直接出现在对话里
-    if (chatMode === 'doc') {
-        if (docGenerating) return;
-        startDocGenerationFromChat(text);
-        return;
-    }
+
 
     if (turnActive) return;
 
@@ -395,22 +351,15 @@ function sendMessage(text) {
     addUserBubble(text);
     currentToolNames = [];
     addTypingIndicator();
-    setStatus(
-        chatMode === 'kb' ? '正在检索知识库…' : '正在思考…'
-    );
+    setStatus('正在思考…');
     turnActive = true;
     updateComposerState();
     chipsEl.classList.add('hidden');
     sceneChipsEl.classList.add('hidden');
     scrollToBottom(true);
 
-    // 知识库模式旁路；Loop 新链路用 mode=loop 强制命中灰度
-    const payload = { query: text };
-    if (chatMode === 'kb') {
-        payload.mode = 'kb';
-    } else if (chatMode === 'loop') {
-        payload.mode = 'loop';
-    }
+    // loop 是唯一链路：显式带 mode=loop，不依赖服务端 AGENT_MODE 怎么配
+    const payload = { query: text, mode: 'loop' };
     if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify(payload));
         clearTimeout(sendTimeout);
@@ -516,33 +465,19 @@ function finishTurn() {
     clearStatus();
     turnActive = false;
     updateComposerState();
-    // 业务快捷入口只在智能体模式；场景入口在 agent / loop 都恢复，方便连续测试
-    // （loop 下点场景指令正好验证 L0 handoff）
-    if (chatMode === 'agent' || chatMode === 'loop') {
-        chipsEl.classList.toggle('hidden', chatMode !== 'agent');
-        sceneChipsEl.classList.remove('hidden');
-    }
+    // 一轮结束：快捷入口恢复，方便连续测试
+    chipsEl.classList.remove('hidden');
+    sceneChipsEl.classList.remove('hidden');
 }
 
 // ------------------- 输入区 -------------------
 function updateComposerState() {
-    // 报告生成模式：输入框就是指令入口，生成过程中禁用
-    if (chatMode === 'doc') {
-        inputEl.disabled = docGenerating;
-        inputEl.placeholder = docGenerating
-            ? '报告生成中…'
-            : '描述要生成的报告，例如“生成2025年10月园区安防和能耗报告”';
-        sendBtn.disabled = docGenerating || !inputEl.value.trim();
-        return;
-    }
 
     inputEl.disabled = false;
     sendBtn.disabled = turnActive || !inputEl.value.trim();
     inputEl.placeholder = turnActive
         ? '助手正在回复…'
-        : chatMode === 'kb' ? '知识库问答：直接向园区知识库提问'
-            : chatMode === 'loop' ? 'Loop 新链路：可以问设备统计、跨域问题'
-                : '输入问题或场景指令，例如"切到 3 楼""重置视角"';
+        : '输入问题或场景指令，例如"切到 3 楼""重置视角"';
 }
 
 function autoGrow() {
@@ -584,135 +519,19 @@ document.querySelectorAll('.cap-card, .chip').forEach((el) => {
     });
 });
 
-// ------------------- 问答模式切换（智能体 / 知识库 / Loop 新链路 / 报告生成） -------------------
-// 场景控制不再单独设选项卡：场景指令和业务查询共用一个输入框，由后端自动识别
-function setMode(mode) {
-    if (chatMode === mode) return;
-    // 生成中禁止切走：面板关闭后进度状态会丢失
-    if (docGenerating && mode !== 'doc') return;
-
-    chatMode = mode;
-    const isAgent = mode === 'agent';
-    const isKb = mode === 'kb';
-    const isLoop = mode === 'loop';
-    const isDoc = mode === 'doc';
-
-    modeAgentBtn.classList.toggle('active', isAgent);
-    modeKbBtn.classList.toggle('active', isKb);
-    modeLoopBtn.classList.toggle('active', isLoop);
-    modeDocBtn.classList.toggle('active', isDoc);
-    modeAgentBtn.setAttribute('aria-selected', String(isAgent));
-    modeKbBtn.setAttribute('aria-selected', String(isKb));
-    modeLoopBtn.setAttribute('aria-selected', String(isLoop));
-    modeDocBtn.setAttribute('aria-selected', String(isDoc));
-
-    // 生成报告模式不再自动开右侧面板；右侧只在点击文档卡片时打开预览
-    if (!isDoc) closeDocPanel();
-
-    updateComposerState();
-    // 业务快捷入口只在智能体模式展示；场景入口在 agent / loop 都保留
-    // （loop 下点场景指令正好验证 L0 handoff 有没有交回旧链路）
-    chipsEl.classList.toggle('hidden', !isAgent);
-    sceneChipsEl.classList.toggle('hidden', isKb || isDoc);
-    if (!isDoc) inputEl.focus();
-}
-
-modeAgentBtn.addEventListener('click', () => setMode('agent'));
-modeKbBtn.addEventListener('click', () => setMode('kb'));
-modeLoopBtn.addEventListener('click', () => setMode('loop'));
-modeDocBtn.addEventListener('click', () => {
-    if (chatMode !== 'doc') setMode('doc');
-    openDocModal();
-});
-
-// ------------------- 报告生成（/gen_doc 独立 WebSocket） -------------------
-// ---- 报告配置模态框 ----
-function openDocModal() {
-    docModalError.hidden = true;
-    docModalError.textContent = '';
-    docModal.hidden = false;
-    document.body.classList.add('doc-modal-open');
-}
-
-function closeDocModal() {
-    docModal.hidden = true;
-    document.body.classList.remove('doc-modal-open');
-}
-
-function isDocModalOpen() {
-    return !docModal.hidden;
-}
-
-function setDocModalError(message) {
-    docModalError.textContent = message || '';
-    docModalError.hidden = !message;
-}
-
-function readDocConfig() {
-    const periodBtn = docPeriodSeg.querySelector('.doc-seg-btn.active');
-    const topics = Array.from(docTopicsEl.querySelectorAll('input[type="checkbox"]:checked'))
-        .map((el) => el.value)
-        .filter((v) => DOC_TOPICS.includes(v));
-    return {
-        period: periodBtn ? periodBtn.dataset.value : '日报',
-        topics,
-    };
-}
-
-// ---- 右侧文档预览抽屉（仅点击文档卡片时打开） ----
-function openDocPanel() {
-    docPanel.classList.add('open');
-    docPanel.setAttribute('aria-hidden', 'false');
-    // 非模态抽屉：把对话区整体左移，保证输入框和右侧面板同时可用
-    document.body.classList.add('doc-open');
-}
-
-function closeDocPanel() {
-    docPanel.classList.remove('open');
-    docPanel.setAttribute('aria-hidden', 'true');
-    document.body.classList.remove('doc-open');
-}
-
-// 新对话时清空报告相关状态（不碰后端连接，由 closeDocSocket 负责）
-function resetDocState() {
-    closeDocPanel();
-    closeDocModal();
-    docGenerating = false;
-    activeDocRun = null;
-    activePreviewRunId = null;
-    docRuns = new Map();
-    docStream.innerHTML = '';
-    docPreviewTitle.textContent = '文档预览';
-    docPreviewMeta.textContent = '点击对话中的文档卡片查看';
-    docDownloadBtn.hidden = true;
-    docDownloadBtn.href = '#';
-    docDownloadBtn.removeAttribute('download');
-    modeAgentBtn.disabled = false;
-    modeKbBtn.disabled = false;
-    updateComposerState();
-}
-
-// ------------------- 报告内容渲染（Markdown → HTML） -------------------
-function escapeDocHtml(text) {
-    return String(text)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;');
-}
-
+// ------------------- Markdown → HTML（聊天回答用） -------------------
 // 表格行：以 | 开头即可（模型经常漏写行尾的 |，不能要求首尾都有）
-function isDocTableLine(line) {
+function isTableLine(line) {
     const t = String(line || '').trim();
     return t.startsWith('|') && t.indexOf('|', 1) !== -1;
 }
 
-function isDocTableDivider(line) {
+function isTableDivider(line) {
     const t = String(line || '').trim();
     return t.startsWith('|') && t.includes('-') && /^[|\s:|-]+$/.test(t);
 }
 
-function splitDocTableRow(line) {
+function splitTableRow(line) {
     return line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
 }
 
@@ -755,15 +574,15 @@ function renderMarkdown(md, options = {}) {
                 i += 1;
             }
             if (i < lines.length) i += 1;
-            html.push(`<pre><code>${escapeDocHtml(buf.join('\n'))}</code></pre>`);
+            html.push(`<pre><code>${escapeHtml(buf.join('\n'))}</code></pre>`);
             continue;
         }
 
         // 表格
-        if (isDocTableLine(line)) {
+        if (isTableLine(line)) {
             const rows = [];
-            while (i < lines.length && isDocTableLine(lines[i])) {
-                if (!isDocTableDivider(lines[i])) rows.push(splitDocTableRow(lines[i]));
+            while (i < lines.length && isTableLine(lines[i])) {
+                if (!isTableDivider(lines[i])) rows.push(splitTableRow(lines[i]));
                 i += 1;
             }
             if (rows.length) {
@@ -817,7 +636,7 @@ function renderMarkdown(md, options = {}) {
         const para = [];
         while (i < lines.length && lines[i].trim()
             && !/^(#{1,6})\s+/.test(lines[i])
-            && !isDocTableLine(lines[i])
+            && !isTableLine(lines[i])
             && !isMdListLine(lines[i])
             && !/^```/.test(lines[i].trim())) {
             para.push(lines[i].trim());
@@ -828,383 +647,6 @@ function renderMarkdown(md, options = {}) {
 
     return html.join('\n');
 }
-
-// 报告预览：标题降一级
-function renderDocMarkdown(md) {
-    return renderMarkdown(md, { headingOffset: 1 });
-}
-
-// ------------------- 一次生成 = 对话里的一个文档区块 -------------------
-function docDisplayName(fileName) {
-    const name = String(fileName || '运营分析报告.docx');
-    return name.replace(/_\d{8,}\.docx$/i, '.docx');
-}
-
-function docTimeLabel(ts) {
-    const d = new Date(ts);
-    const pad = (n) => String(n).padStart(2, '0');
-    return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
-
-function docElapsedLabel(ms) {
-    const s = Math.max(1, Math.round(ms / 1000));
-    return s >= 60 ? `${Math.floor(s / 60)} 分 ${s % 60} 秒` : `${s} 秒`;
-}
-
-function docWordCount(text) {
-    return (String(text || '').match(/[一-龥]/g) || []).length;
-}
-
-function createDocRunBlock() {
-    const id = `doc-run-${++docRunSeq}`;
-    const wrap = document.createElement('div');
-    wrap.className = 'doc-run';
-    wrap.dataset.runId = id;
-    wrap.innerHTML = `
-        <div class="doc-run-head">
-            <span class="doc-run-spinner"></span>
-            <span class="doc-run-status">正在理解生成指令…</span>
-            <span class="doc-run-meta"></span>
-        </div>
-        <ul class="doc-run-steps"></ul>
-        <div class="doc-run-result" hidden></div>`;
-    messagesEl.appendChild(wrap);
-    scrollToBottom(true);
-
-    const run = {
-        id,
-        el: wrap,
-        statusEl: wrap.querySelector('.doc-run-status'),
-        metaEl: wrap.querySelector('.doc-run-meta'),
-        stepsEl: wrap.querySelector('.doc-run-steps'),
-        resultEl: wrap.querySelector('.doc-run-result'),
-        steps: new Map(),
-        markdown: '',
-        fileName: '',
-        downloadUrl: '',
-        startedAt: Date.now(),
-        finished: false,
-    };
-    docRuns.set(id, run);
-    return run;
-}
-
-function updateDocStep(run, d) {
-    if (!run || !d || !d.step) return;
-    let li = run.steps.get(d.step);
-    if (!li) {
-        li = document.createElement('li');
-        li.className = 'doc-step';
-        const dot = document.createElement('span');
-        dot.className = 'doc-step-dot';
-        const text = document.createElement('span');
-        text.className = 'doc-step-text';
-        li.appendChild(dot);
-        li.appendChild(text);
-        run.stepsEl.appendChild(li);
-        run.steps.set(d.step, li);
-    }
-    li.classList.remove('running', 'done', 'failed');
-    if (d.status) li.classList.add(d.status);
-    const label = li.querySelector('.doc-step-text');
-    if (d.message) label.textContent = d.message;
-    if (d.status === 'done' || d.status === 'failed') {
-        run.statusEl.textContent = d.message || run.statusEl.textContent;
-    }
-    scrollToBottom();
-}
-
-function showDocParams(run, d) {
-    if (!run || !d) return;
-    const bits = [d.company || '园区'];
-    if (d.period) bits.push(d.period);
-    if (Array.isArray(d.topics) && d.topics.length) bits.push(d.topics.join(' / '));
-    else if (d.start_date) bits.push(`${d.start_date} 至 ${d.end_date}`);
-    run.metaEl.textContent = bits.join(' · ');
-}
-
-function appendDocContent(run, chapter, content) {
-    if (!run || !content) return;
-    run.markdown += content;
-    const words = docWordCount(run.markdown);
-    const where = chapter && chapter !== '主标题' ? `正在写「${chapter}」` : '正在生成正文';
-    run.statusEl.textContent = `${where} · 已生成 ${words} 字`;
-    scrollToBottom();
-}
-
-function showDocResult(run, d) {
-    if (!run) return;
-    const fileName = d.file_name
-        || (d.file_path ? String(d.file_path).split(/[\\/]/).pop() : '运营分析报告.docx');
-    const httpBase = WS_BASE.replace(/^ws/, 'http');
-    let url = d.download_url || `/reports/${encodeURIComponent(fileName)}`;
-    if (url.startsWith('/')) url = httpBase + url;
-
-    run.fileName = fileName;
-    run.downloadUrl = url;
-
-    const display = docDisplayName(fileName);
-    const words = docWordCount(run.markdown);
-    const time = docTimeLabel(Date.now());
-
-    run.resultEl.innerHTML = `
-        <button class="doc-card" type="button">
-            <span class="doc-card-icon">W</span>
-            <span class="doc-card-meta">
-                <strong></strong>
-                <span></span>
-            </span>
-            <span class="doc-card-open">预览 ›</span>
-        </button>
-        <p class="doc-card-note"></p>
-        <a class="doc-card-download" href="#" download>下载 DOCX</a>`;
-
-    run.resultEl.querySelector('.doc-card-meta strong').textContent = display;
-    run.resultEl.querySelector('.doc-card-meta span').textContent = `创建时间：${time}`;
-    run.resultEl.querySelector('.doc-card-note').textContent =
-        `文档已经生成：《${display}》，正文 ${words} 字。点击卡片可在右侧查看 HTML 版全文。`;
-
-    const link = run.resultEl.querySelector('.doc-card-download');
-    link.href = url;
-    link.setAttribute('download', display);
-
-    run.resultEl.querySelector('.doc-card').addEventListener('click', () => openDocPreview(run.id));
-    run.resultEl.hidden = false;
-    scrollToBottom(true);
-}
-
-function finishDocRun(run) {
-    if (!run || run.finished) return;
-    run.finished = true;
-    run.el.classList.add('done');
-    run.el.querySelector('.doc-run-spinner')?.classList.add('hidden');
-    run.stepsEl.hidden = true;
-    const elapsed = docElapsedLabel(Date.now() - run.startedAt);
-    const words = docWordCount(run.markdown);
-    run.statusEl.textContent = `共用时 ${elapsed}`;
-    run.metaEl.textContent = words ? `正文 ${words} 字` : run.metaEl.textContent;
-    scrollToBottom();
-}
-
-function failDocRun(run, message) {
-    const text = message || '报告生成失败';
-    if (!run) {
-        addErrorBubble(text);
-        return;
-    }
-    run.el.classList.add('failed');
-    run.el.querySelector('.doc-run-spinner')?.classList.add('hidden');
-    run.statusEl.textContent = '生成失败';
-    run.resultEl.hidden = false;
-    run.resultEl.innerHTML = '';
-    const p = document.createElement('p');
-    p.className = 'doc-run-error';
-    p.textContent = text;
-    run.resultEl.appendChild(p);
-    scrollToBottom(true);
-}
-
-// 点击文档卡片：用该次生成的 Markdown 渲染右侧 HTML 预览
-function openDocPreview(runId) {
-    const run = docRuns.get(runId);
-    if (!run) return;
-    activePreviewRunId = runId;
-
-    docStream.innerHTML = renderDocMarkdown(run.markdown || '文档内容为空');
-    docStream.scrollTop = 0;
-    docPreviewTitle.textContent = docDisplayName(run.fileName);
-    docPreviewMeta.textContent = [
-        run.finished ? '生成完成' : '生成中',
-        `正文 ${docWordCount(run.markdown)} 字`,
-        docTimeLabel(run.startedAt),
-    ].join(' · ');
-
-    if (run.downloadUrl) {
-        docDownloadBtn.href = run.downloadUrl;
-        docDownloadBtn.setAttribute('download', docDisplayName(run.fileName));
-        docDownloadBtn.hidden = false;
-    } else {
-        docDownloadBtn.hidden = true;
-    }
-    openDocPanel();
-}
-
-function closeDocSocket() {
-    clearTimeout(docConnectTimer);
-    docConnectTimer = null;
-    docPendingPayload = null;
-    if (docWs) {
-        docWs.onopen = null;
-        docWs.onmessage = null;
-        docWs.onerror = null;
-        docWs.onclose = null;
-        docWs.close();
-        docWs = null;
-    }
-}
-
-function ensureDocSocket() {
-    if (docWs && (docWs.readyState === WebSocket.OPEN || docWs.readyState === WebSocket.CONNECTING)) {
-        return docWs;
-    }
-
-    const url = `${WS_BASE}/gen_doc/${getUserId()}/${sessionId}`;
-    docWs = new WebSocket(url);
-
-    docWs.onopen = () => {
-        clearTimeout(docConnectTimer);
-        docConnectTimer = null;
-        if (docPendingPayload) {
-            docWs.send(JSON.stringify(docPendingPayload));
-            docPendingPayload = null;
-        }
-    };
-    docWs.onmessage = (e) => handleDocMessage(e.data);
-    docWs.onerror = () => {
-        if (docGenerating) failDocGeneration('报告服务连接失败，请确认后端已启动');
-    };
-    docWs.onclose = () => {
-        docWs = null;
-        if (docGenerating) failDocGeneration('报告连接已断开，生成未完成');
-    };
-
-    return docWs;
-}
-
-function finishDocGeneration() {
-    docGenerating = false;
-    docPendingPayload = null;
-    clearTimeout(docConnectTimer);
-    docConnectTimer = null;
-    activeDocRun = null;
-    modeAgentBtn.disabled = false;
-    modeKbBtn.disabled = false;
-    updateComposerState();
-}
-
-function failDocGeneration(message) {
-    failDocRun(activeDocRun, message);
-    finishDocGeneration();
-}
-
-function handleDocMessage(raw) {
-    let data;
-    try {
-        data = JSON.parse(raw);
-    } catch {
-        return;
-    }
-
-    if (data.status === 'done') {
-        finishDocRun(activeDocRun);
-        finishDocGeneration();
-        return;
-    }
-    if (data.error) {
-        failDocGeneration(data.error);
-        return;
-    }
-    if (data.event !== 'custom') return;
-
-    const d = data.data || {};
-    const run = activeDocRun;
-    switch (d.type) {
-        case 'doc_step':
-            updateDocStep(run, d);
-            break;
-        case 'doc_params':
-            showDocParams(run, d);
-            break;
-        case 'doc_data':
-            // 数据采集结果：步骤状态已由 doc_step 更新，这里不额外渲染
-            break;
-        case 'chapter_content':
-            appendDocContent(run, d.chapter || '', d.content || '');
-            break;
-        case 'word_save':
-            break;
-        case 'final_file':
-            showDocResult(run, d);
-            break;
-        case 'error':
-            failDocRun(run, d.content || '报告生成失败');
-            finishDocGeneration();
-            break;
-        default:
-            break;
-    }
-}
-
-// 统一入口：payload = {instruction, company?, period?, topics?}（旧协议 {query} 后端仍兼容）
-function beginDocRun(payload, label) {
-    if (docGenerating) return;
-
-    addUserBubble(label || payload.instruction || '生成运营分析报告');
-    activeDocRun = createDocRunBlock();
-
-    docGenerating = true;
-    modeAgentBtn.disabled = true;
-    modeKbBtn.disabled = true;
-    updateComposerState();
-
-    const socket = ensureDocSocket();
-    if (socket.readyState === WebSocket.OPEN) {
-        socket.send(JSON.stringify(payload));
-    } else {
-        docPendingPayload = payload;
-        clearTimeout(docConnectTimer);
-        docConnectTimer = setTimeout(() => {
-            if (docGenerating) failDocGeneration('连接报告服务超时，请稍后重试');
-        }, 10000);
-    }
-}
-
-// 模态框：获取报告
-function startDocGeneration() {
-    if (docGenerating) return;
-    const cfg = readDocConfig();
-    if (!cfg.topics.length) {
-        setDocModalError('请至少选择一项报告内容');
-        return;
-    }
-    const company = '园区';
-    closeDocModal();
-    beginDocRun({
-        instruction: `生成${company}${cfg.period}运营分析报告，内容包含${cfg.topics.join('、')}`,
-        company,
-        period: cfg.period,
-        topics: cfg.topics,
-    });
-}
-
-// 对话框：一句话就是生成指令
-function startDocGenerationFromChat(instruction) {
-    beginDocRun({ instruction }, instruction);
-}
-
-docCloseBtn.addEventListener('click', closeDocPanel);
-docSubmitBtn.addEventListener('click', startDocGeneration);
-docModalClose.addEventListener('click', closeDocModal);
-docModalBackdrop.addEventListener('click', closeDocModal);
-docPeriodSeg.addEventListener('click', (e) => {
-    const btn = e.target.closest('.doc-seg-btn');
-    if (!btn) return;
-    docPeriodSeg.querySelectorAll('.doc-seg-btn')
-        .forEach((b) => b.classList.toggle('active', b === btn));
-});
-
-document.addEventListener('keydown', (e) => {
-    if (e.key !== 'Escape') return;
-    if (isDocModalOpen()) {
-        closeDocModal();
-        return;
-    }
-    if (docPanel.classList.contains('open')) {
-        closeDocPanel();
-        return;
-    }
-    if (chatMode === 'doc') setMode('agent');
-});
 
 // ------------------- 新对话 -------------------
 newChatBtn.addEventListener('click', (e) => {
@@ -1220,13 +662,11 @@ newChatBtn.addEventListener('click', (e) => {
     reconnectAttempts = 0;
     sessionId = crypto.randomUUID();
     sendQueue = [];
-    closeDocSocket();
-    resetDocState();
     finishTurn();
-    // 清空消息区，按当前模式恢复对应的快捷入口
+    // 清空消息区，快捷入口恢复
     messagesEl.innerHTML = '<div class="greeting">你好，我是园区智能助手。<br>点击下方场景快速体验，或直接输入你的问题。</div>';
-    chipsEl.classList.toggle('hidden', chatMode !== 'agent');
-    sceneChipsEl.classList.toggle('hidden', chatMode === 'kb' || chatMode === 'doc');
+    chipsEl.classList.remove('hidden');
+    sceneChipsEl.classList.remove('hidden');
     setConnState('disconnected');
     inputEl.focus();
 });
