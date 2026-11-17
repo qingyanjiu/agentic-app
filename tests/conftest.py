@@ -27,6 +27,22 @@ def run(coro):
 
 
 # ============================================================
+# 对话历史存储：测试默认不落盘
+# 默认实现会在项目根生成 chat_history.db，测试必须隔离掉；
+# 需要真 sqlite 的用例（tests/test_chat_store.py）自己把 CHAT_DB_PATH
+# 指到 tmp_path 再 reset_store()。
+# ============================================================
+@pytest.fixture(autouse=True)
+def _isolate_chat_store(monkeypatch):
+    from memory import chat_store
+
+    monkeypatch.setenv("CHAT_DB_PATH", ":memory:")
+    chat_store.reset_store()
+    yield
+    chat_store.reset_store()
+
+
+# ============================================================
 # FakeTool：模拟 LangChain MCP 工具
 # 记录每次调用（工具名 -> calls），便于断言"调没调对工具"
 # ============================================================

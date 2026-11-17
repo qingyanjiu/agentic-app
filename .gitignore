@@ -36,6 +36,10 @@ global_config.json
 *.csv
 *.xlsx
 *.db
+*.db-journal
+*.db-wal
+*.db-shm
+chat_history.db*
 memory_store.json
 memory_store.db
 

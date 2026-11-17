@@ -25,6 +25,7 @@
 | T13 | ~~旧链路历史无上限（persistor 语义不一致）~~ | — | — | — | 已作废（legacy 与 persistor 已删除） |
 | T14 | **上下文压缩优化**（4 个缺陷 + 缓存命中断裂） | P2 | 2~3 天 | T12 完成 + 全量切 loop | 高 |
 | T15 | **全局 history 与会话记忆**（跨进程/跨副本） | P2 | 2 天 | 与 T6 合并实施 | 高 |
+|  | └ 第 1 步「history 落盘」 | — | — | — | ✅ 已完成 2026-11-17（SQLite `memory/chat_store.py`）；剩 pending/追问态 + Redis |
 | T16 | **会话池容量与过期回收**（含 `session_state` 真泄漏） | P3 | 半天 | 无 | 中 |
 | T17 | **其余业务域接入结构化实体**（person/vehicle/告警 + 行内 `entity:` 链接） | P2 | 每域半天 | 前端 `list` 事件落地后 | 中 |
 | T18 | **loop/graph 解耦（删 legacy）** | — | — | — | ✅ 已完成（graph/ 已整体删除，见第 7 节） |

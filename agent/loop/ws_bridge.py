@@ -21,6 +21,8 @@ import os
 import time
 from typing import Any
 
+from memory.chat_store import get_store
+
 from .pipeline import ChatPipeline, PipelineResult, Session
 from .rollout import RolloutDecision
 
@@ -84,6 +86,43 @@ def get_session(user_id: str, session_id: str) -> Session:
     return session
 
 
+def restore_history(session: Session) -> int:
+    """从落盘的历史里补回本会话的上下文，返回补了几条。
+
+    只在内存里还没有历史时调用（重启后第一轮、或会话被 TTL 回收又回来）。
+    读失败不抛：拿不到历史就当新会话，别让持久化把对话带崩。
+    """
+    if session.history:
+        return 0
+    try:
+        history = get_store().load(
+            session.user_id, session.session_id, session.max_history * 2
+        )
+    except Exception as exc:  # 存储异常一律降级
+        logger.warning(f"[loop] 读取历史失败，按新会话处理: {exc}")
+        return 0
+    if history:
+        session.history = history
+        logger.info(
+            f"[loop] 已恢复历史 {len(history)} 条 -- "
+            f"{session.user_id}:{session.session_id}"
+        )
+    return len(history)
+
+
+def persist_messages(session: Session, messages: list[dict]) -> int:
+    """把本轮新增的消息写盘，返回写入条数。失败只记日志。"""
+    if not messages:
+        return 0
+    try:
+        return get_store().append_messages(
+            session.user_id, session.session_id, messages
+        )
+    except Exception as exc:
+        logger.warning(f"[loop] 历史写盘失败（本轮只留内存）: {exc}")
+        return 0
+
+
 def reset_sessions() -> None:
     """测试用。"""
     _sessions.clear()
@@ -142,6 +181,11 @@ async def handle_chat(
     """
     pipeline = get_pipeline(llm)
     session = get_session(user_id, session_id)
+    # 落盘的历史只在内存为空时补一次（重启后第一轮 / 会话被 TTL 回收又回来）。
+    # 放线程池里跑：sqlite 是同步 IO，别占住事件循环。
+    if not session.history:
+        await asyncio.to_thread(restore_history, session)
+    history_before = len(session.history)
     cancel = asyncio.Event()
     _active_cancels[f"{user_id}:{session_id}"] = cancel
     logger.info(
@@ -199,6 +243,15 @@ async def handle_chat(
     finally:
         # 本轮结束（正常/异常/被停止）都要摘掉，否则 request_stop 会打到已结束的轮次
         _active_cancels.pop(f"{user_id}:{session_id}", None)
+
+    # 本轮新增的消息写盘（answered / asked / aborted 都记）：只写真的进了 history 的部分，
+    # 所以不需要在每个 stop_reason 分支各写一次。handoff 不写（专用链路自己管上下文）。
+    new_messages = session.history[history_before:]
+    if result.stop_reason != "handoff" and new_messages:
+        try:
+            await asyncio.to_thread(persist_messages, session, new_messages)
+        except Exception as exc:  # persist_messages 内部已兜底，这里再保险一层
+            logger.warning(f"[loop] 历史写盘异常（忽略）: {exc}")
 
     if result.stop_reason == "handoff":
         # 场景控制等专用链路，交回旧流程

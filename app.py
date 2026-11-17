@@ -72,6 +72,13 @@ logger.info(
 )
 @app.on_event("startup")
 async def startup():
+    # 对话历史落盘：第一次取用会建表 + 清过期数据（CHAT_DB_PATH / CHAT_RETENTION_DAYS）
+    try:
+        from memory.chat_store import get_store
+
+        get_store()
+    except Exception as exc:  # 存储不可用不该拦住启动
+        logger.warning(f"[startup] 对话历史存储初始化失败（不落盘，仅内存）: {exc}")
     logger.info("[startup] 开始预加载意图识别模型...")
     from agent.intent import get_classifier
     await get_classifier()

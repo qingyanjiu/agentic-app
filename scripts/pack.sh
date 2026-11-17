@@ -51,7 +51,9 @@ EXCLUDES=(
     "exports/*"                  # 运行产物（导出的 docx 等）
     "uploads/*"                  # 图片上传已移除；留规则防止日后又生成运行时目录
     "reports/*"                  # 报告下载已移除，同上
-    # memory/ 只有 session_state.py 是代码：运行时会话在进程内存里，没有落盘文件要排除
+    # memory/ 里只有 session_state.py 和 chat_store.py 是代码；
+    # 对话历史落在项目根的 chat_history.db（SQLite），属于运行时数据
+    "chat_history.db*"
     "memory_store.db"
     "memory_store.json"
     "app.log"
