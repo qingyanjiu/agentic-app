@@ -59,6 +59,20 @@
 - [ ] 与 `mcp-sidecar` 连通（`/mcp/*` 全部返回正常，`scene` 通道可用）
 - [ ] 一次性对话跑通（WS `/chat`），而不是只看服务起来
 
+### 3.5 配置项治理（TODO）
+
+- [ ] **合并 `LLM_API_KEY` 与 `OPENAI_API_KEY`**（迟早要合，先把方案记下来）
+  - 现状：`models/llm.py:88` 是 `LLM_API_KEY or OPENAI_API_KEY`，两个名字并存；
+    `agent/intent/generate_intent_examples.py:53` 只读 `OPENAI_API_KEY`，所以现在哪个都删不掉。
+  - 目标：对外只留一个名字（建议 `LLM_API_KEY`，与 `LLM_TYPE` / `LLM_BASE_URL` / `LLM_MODEL` 一致），
+    旧名字走「读到就转写 + 打 deprecated 警告」的兼容映射，给一个发布周期过渡。
+  - 迁移步骤：
+    1. `models/llm.py` 加统一入口（如 `resolve_llm_api_key()`），顺序 `LLM_API_KEY → OPENAI_API_KEY`，
+       命中旧名时 `logger.warning` 提示改名；
+    2. 把 `generate_intent_examples.py`、`agent/loop/cli.py` 等直接 `os.getenv` 的地方改成走同一入口；
+    3. 部署模板（`.env.example` / `mcp-sidecar/env.docker.example` / `docker-compose.yml`）只留新名；
+    4. 观察一个发布周期后删掉兼容分支。
+  - 验收：只配 `LLM_API_KEY` 时主链路和脚本都正常；只配旧名时能跑但日志有改名提示。
 ---
 
 ## 4. 已知坑（本仓库实测，打包时必须处理）
