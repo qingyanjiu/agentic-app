@@ -180,6 +180,11 @@ async def handle_chat(
                     "data": {"type": "tool", "name": data.get("name") or ""},
                 },
             )
+        elif kind == "assistant_message":
+            # 工具直出（passthrough）时 agent 直接给出成品文本，这里以前没接：
+            # 只能靠结尾「streamed_chars == 0」兜底补发一次。一旦模型先说过话
+            # （streamed > 0），这段成品文本就会被整个丢掉。统一按追加发出去。
+            await on_delta(str(data.get("text") or ""))
         elif kind == "entities":
             # 结构化清单（设备列表这类）：前端直接渲染可点控件。
             # 文本回答里也带着逐行明细（旧前端能继续用），这份是为准的。
