@@ -243,13 +243,18 @@ init → check_missing_params
 ## ⚡ 快速开始
 
 ### 环境准备
+
+所有环境变量都有模板：**复制 `.env.example` 为 `.env` 后按环境改值**，
+`app.py` 启动时用 python-dotenv 读取（系统环境变量优先，compose/systemd 注入的值不会被覆盖）。
+
 ```bash
-# 设置API密钥（使用SiliconFlow API）
-export OPENAI_API_KEY="您的SiliconFlow API密钥"
-# 或使用Dify知识库密钥
-export DIFY_API_KEY="您的Dify API密钥"
-严禁有空格
+cp .env.example .env      # .env 已被 .gitignore 忽略，不会进仓库
+# 最少要改：LLM_API_KEY、MCP_BASE_URL
+# 知识库模式再加：KB_BASE_URL、KB_API_KEY（不配则退回 sidecar /mcp/knowledge）
 ```
+
+`DIFY_API_KEY` 已不再使用（知识库改走 KB_* 配置或 sidecar），
+变量含义见 `.env.example` 里的分组注释。
 
 ### Docker开发环境（推荐）
 ```bash

@@ -3,6 +3,18 @@ import json
 import os
 import re
 from typing import Optional
+
+# ---- .env 支持（可选）----
+# 仓库里只放 .env.example；真实 .env 被 .gitignore 忽略。
+# override=False：已经在环境里的变量（docker-compose / systemd 注入）优先，不会被 .env 覆盖。
+try:
+    from dotenv import load_dotenv
+except ImportError:  # 没装 python-dotenv 也能跑，纯靠系统环境变量
+    load_dotenv = None
+
+if load_dotenv is not None:
+    _ENV_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    load_dotenv(_ENV_FILE, override=False)
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
