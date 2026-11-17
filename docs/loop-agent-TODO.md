@@ -31,7 +31,7 @@
 | T18 | **loop/graph 解耦（删 legacy）** | — | — | — | ✅ 已完成（graph/ 已整体删除，见第 7 节） |
 | T19 | **楼层级监控画面能力**（场景侧 `scene` 只有单点位 tag） | P2 | 待评估 | 与场景/UE 侧确认 | 中 |
 | T20 | **skill 化改造**（域内口径交给 skill，router 保留兜底，见 `docs/loop-agent-skill方案.md`） | P2 | P0 半天 / P1 1 天 | 无（与 T18 可并行） | 中 |
-| T21 | **会话列表 + 会话标题**（按 `user_id` 列会话、给每个会话起名字，见第 11 节） | P2 | 1.5 天（后端 1 天 + 前端 0.5 天） | 对话历史已落盘 ✅ | 中 |
+| T21 | **会话列表 + 会话标题**（按 `user_id` 列会话、给每个会话起名字，见第 11 节） | P2 | 剩 1 天（会话表 + 标题） | 读接口已完成 ✅（`chat_api.py`，默认不挂载）；历史已落盘 ✅ | 中 |
 
 **顺序建议**：T1 → 等业务语料（T2）→ T3 → T4 → 用 T1 数据决定是否做 T5。
 
@@ -709,6 +709,11 @@ if state and (time.time() - state.last_update_time) > self.timeout:
 2. **会话标题**：每个会话有个能读的名字（"查 5 楼监控设备"），否则列表里全是 uuid。
 
 ### 11.2 数据层要动的地方
+
+**已完成（2026-11-17）**：消息读取 —— `memory/chat_store.load_messages()` / `count_messages()`
+和 `chat_api.py` 的 `GET /chat/sessions/{user}/{session}/messages`（默认不挂载，
+`CHAT_READ_API=1` 才注册；带 `before_id` 游标翻页、`has_more`、正序返回）。
+所以"点进历史会话把气泡画出来"这块后端已经齐了，缺的是会话列表与标题。
 
 现在只有 `chat_messages` 一张表，`(user_id, session_id)` 可以从表里 `GROUP BY` 出来，
 但标题、最后一条消息时间、消息数每次聚合太浪费，而标题又必须持久化（模型总结有成本）。

@@ -55,7 +55,23 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-# 没有 HTTP 业务接口：只有 WS /chat。
+# ============================================================
+# 会话历史只读接口（默认不挂载）
+#
+# 它没有任何鉴权（user_id 直接来自 URL），所以只有显式 CHAT_READ_API=1 才注册路由，
+# 仅供本地联调 / 内网回填历史；将来接上 sidecar 的 token 校验再正式对外。
+# 实现见 chat_api.py。
+# ============================================================
+if (os.getenv("CHAT_READ_API") or "").strip().lower() not in ("", "0", "false", "off", "no"):
+    from chat_api import build_chat_router
+
+    app.include_router(build_chat_router())
+    logger.info(
+        "[startup] 会话历史只读接口已挂载: "
+        "GET /chat/sessions/{user_id}/{session_id}/messages"
+    )
+
+# 默认对外只有 WS /chat；上面那个只读历史接口要 CHAT_READ_API=1 才挂。
 # 报告下载（/reports）、图片上传（/upload/image + /uploads）、语音调试页（/static）都已移除 ——
 # 它们属于 gen_doc / 多模态 / 语音这类"非 agent 能力"，以后按插件接入，不放在 agent 服务里。
 # 调试页是纯静态文件：直接打开 web/index.html（不经过本服务）。

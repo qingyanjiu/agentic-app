@@ -167,6 +167,65 @@ class ChatStore:
             return []
         return [{"role": r["role"], "content": r["content"]} for r in reversed(rows)]
 
+    def load_messages(
+        self,
+        user_id: str,
+        session_id: str,
+        limit: int = 200,
+        before_id: Optional[int] = None,
+    ) -> tuple[list[dict], bool]:
+        """按时间正序返回一段消息（给前端回显历史用），带"还有更早的"标记。
+
+        与 `load()` 的区别：`load()` 是**喂给模型**的最小集（只有 role/content，默认 24 条）；
+        这里是**给人看**的完整行（带 id / created_at），默认 200 条，支持 `before_id` 往前翻页。
+
+        :return: (messages, has_more)
+        """
+        limit = max(1, min(int(limit or 200), 500))
+        sql = (
+            "SELECT id, role, content, created_at FROM chat_messages "
+            "WHERE user_id = ? AND session_id = ?"
+        )
+        args: list = [user_id, session_id]
+        if before_id:
+            sql += " AND id < ?"
+            args.append(int(before_id))
+        sql += " ORDER BY id DESC LIMIT ?"
+        args.append(limit + 1)  # 多取一条用来判断 has_more
+        try:
+            with self._lock, self._connect() as conn:
+                rows = conn.execute(sql, args).fetchall()
+        except sqlite3.Error as exc:
+            logger.warning("[chat-store] 读取消息列表失败: %s", exc)
+            return [], False
+
+        has_more = len(rows) > limit
+        rows = rows[:limit]
+        messages = [
+            {
+                "id": r["id"],
+                "role": r["role"],
+                "content": r["content"],
+                "created_at": r["created_at"],
+            }
+            for r in reversed(rows)
+        ]
+        return messages, has_more
+
+    def count_messages(self, user_id: str, session_id: str) -> int:
+        """该会话有多少条消息（列表页显示"12 轮"用；失败返回 0）。"""
+        try:
+            with self._lock, self._connect() as conn:
+                row = conn.execute(
+                    "SELECT COUNT(*) AS n FROM chat_messages "
+                    "WHERE user_id = ? AND session_id = ?",
+                    (user_id, session_id),
+                ).fetchone()
+        except sqlite3.Error as exc:
+            logger.warning("[chat-store] 统计消息数失败: %s", exc)
+            return 0
+        return int(row["n"] if row else 0)
+
     def append_messages(self, user_id: str, session_id: str, messages: list[dict]) -> int:
         """批量追加消息，返回写入条数。content 为空的消息跳过。"""
         rows = [
@@ -230,6 +289,18 @@ class NullChatStore(ChatStore):
 
     def load(self, user_id: str, session_id: str, limit: Optional[int] = None) -> list[dict]:
         return []
+
+    def load_messages(
+        self,
+        user_id: str,
+        session_id: str,
+        limit: int = 200,
+        before_id: Optional[int] = None,
+    ) -> tuple[list[dict], bool]:
+        return [], False
+
+    def count_messages(self, user_id: str, session_id: str) -> int:
+        return 0
 
     def append_messages(self, user_id: str, session_id: str, messages: list[dict]) -> int:
         return 0
