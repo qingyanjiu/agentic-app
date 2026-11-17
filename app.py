@@ -77,6 +77,14 @@ logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(levelname)s - %(name)s - %(message)s'
 )
+# 同时打到控制台：debug 时在终端就能看到关键链路日志；文件里仍保留完整记录。
+# 控制台只放 INFO 及以上，避免第三方库的 DEBUG 淹没输出。
+_console_handler = logging.StreamHandler()
+_console_handler.setLevel(logging.INFO)
+_console_handler.setFormatter(
+    logging.Formatter('%(asctime)s - %(levelname)s - %(name)s - %(message)s')
+)
+logging.getLogger().addHandler(_console_handler)
 logger = logging.getLogger(__name__)
 app = FastAPI()
 # 添加 CORS 支持（解决跨域问题）

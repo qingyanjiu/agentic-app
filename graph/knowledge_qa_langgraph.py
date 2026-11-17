@@ -7,7 +7,7 @@ from langchain_core.prompts import PromptTemplate
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import StreamWriter
 
-from mcp_client.knowledge_http_client import KnowledgeHttpClient
+from mcp_client.knowledge_http_client import EMPTY_HINT, KnowledgeHttpClient
 from mcp_client.knowledge_http_client import build_from_env as build_kb_http_client
 from mcp_client.knowledge_mcp_client import KnowledgeMcpClient
 from mcp_client.mcp_loader import load_mcp_config
@@ -164,15 +164,26 @@ class KnowledgeQAPipeline:
         writer({"type": "tool", "content": "知识库检索 - 处理中..."})
 
         retrieved = None
+        channel = ""
+        logger.info(
+            "[kb] 开始检索: q=%r | 直连=%s | sidecar=%s",
+            question[:40],
+            "启用" if self.http_client is not None else "未配置",
+            "启用" if self.kb_client is not None else "未配置",
+        )
         if self.http_client is not None:
             try:
                 retrieved = await self.http_client.retrieve(question)
+                channel = "http-direct"
                 logger.info(
-                    f"[kb] HTTP 直连检索完成 question={question[:40]!r} "
-                    f"chars={len(retrieved or '')}"
+                    "[kb] 直连检索返回: chars=%s%s",
+                    len(retrieved or ""),
+                    "（空结果）" if retrieved == EMPTY_HINT else "",
                 )
             except Exception as e:
-                logger.warning(f"[kb] HTTP 直连检索失败，尝试 sidecar 兜底: {e}")
+                logger.warning(
+                    "[kb] 直连检索失败，改用 sidecar 兜底: %s: %s", type(e).__name__, e
+                )
                 retrieved = None
 
         if retrieved is None and self.kb_client is not None:
@@ -181,13 +192,23 @@ class KnowledgeQAPipeline:
                 # 语义见 RagflowKnowledgeMcp.searchKnowledge 的注释
                 retrieved = await self.kb_client.call_tool(
                     SEARCH_TOOL_NAME, {"question": question, "datasetIds": ""})
+                channel = "sidecar"
+                logger.info("[kb] sidecar 检索返回: chars=%s", len(retrieved or ""))
             except Exception as e:
-                logger.error(f"[kb] sidecar 检索失败: {e}")
+                logger.error("[kb] sidecar 检索失败: %s: %s", type(e).__name__, e)
                 retrieved = None
 
         if retrieved is None:
             retrieved = "知识库服务暂时不可用，请稍后重试。"
-
+            channel = "none"
+            logger.error("[kb] 两条检索通道都不可用，返回兜底文案")
+        else:
+            logger.info(
+                "[kb] 检索结束: 通道=%s | 空结果=%s | chars=%s",
+                channel,
+                retrieved == EMPTY_HINT,
+                len(retrieved),
+            )
         writer({"type": "tool", "content": "知识库检索 - 处理完成"})
         return {"retrieved": retrieved}
 

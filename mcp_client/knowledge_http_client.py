@@ -67,6 +67,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from typing import Any, Optional
 
 import httpx
@@ -199,18 +200,77 @@ class KnowledgeHttpClient:
 
         url = f"{self.base_url}{self.retrieval_path}"
         payload = self.build_payload(question, dataset_ids)
+        ids = payload.get("dataset_ids") or []
+        logger.info(
+            "[kb-http] 检索请求: POST %s | dataset_ids=%s | q=%r",
+            url,
+            ids if ids else "[]（空！多数平台=不检索任何库）",
+            question[:40],
+        )
+        started = time.monotonic()
         try:
             resp = await self._client_or_new().post(url, json=payload, headers=self._headers())
             resp.raise_for_status()
             data = resp.json()
         except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code if exc.response is not None else 0
             # 把服务端返回体带上，排查 key/数据集不对时最有用
             body = (exc.response.text or "")[:200] if exc.response is not None else ""
-            raise RuntimeError(f"知识库接口返回 {exc.response.status_code}: {body}") from exc
+            hint = ""
+            if status in (401, 403):
+                hint = "（鉴权失败：检查 KB_API_KEY 是否为 dataset-xxx 形式）"
+            elif status == 404:
+                hint = "（路径不存在：检查 KB_RETRIEVAL_PATH）"
+            elif status >= 500:
+                hint = "（服务端异常：检查平台日志）"
+            logger.error(
+                "[kb-http] 检索失败: HTTP %s 用时 %.2fs%s body=%s",
+                status,
+                time.monotonic() - started,
+                hint,
+                body,
+            )
+            raise RuntimeError(f"知识库接口返回 {status}: {body}") from exc
+        except httpx.TimeoutException as exc:
+            logger.error(
+                "[kb-http] 检索超时: %s 用时 %.2fs（KB_TIMEOUT=%ss）",
+                url,
+                time.monotonic() - started,
+                self.timeout,
+            )
+            raise RuntimeError(f"知识库接口超时: {exc}") from exc
         except httpx.HTTPError as exc:
+            logger.error(
+                "[kb-http] 检索失败: %s 用时 %.2fs %s: %s "
+                "（连接类失败请确认 KB_BASE_URL 在容器内可达、端口已开放）",
+                url,
+                time.monotonic() - started,
+                type(exc).__name__,
+                exc,
+            )
             raise RuntimeError(f"知识库接口调用失败: {exc}") from exc
 
-        return self._format(data)
+        rows = self._rows(data)
+        text = self._format(data)
+        elapsed = time.monotonic() - started
+        status_code = getattr(resp, "status_code", "?")
+        if text == EMPTY_HINT:
+            logger.warning(
+                "[kb-http] 检索成功但结果为空: HTTP %s 用时 %.2fs | data 条数=%s | dataset_ids=%s",
+                status_code,
+                elapsed,
+                len(rows),
+                ids if ids else "[]",
+            )
+        else:
+            logger.info(
+                "[kb-http] 检索成功: HTTP %s 用时 %.2fs | data 条数=%s | 文本 %s 字",
+                status_code,
+                elapsed,
+                len(rows),
+                len(text),
+            )
+        return text
 
     # ------------------------------------------------------------ #
     # 内部
@@ -228,14 +288,21 @@ class KnowledgeHttpClient:
             await self._client.aclose()
             self._client = None
 
-    def _format(self, data: Any) -> str:
-        """把 `{"data":[{title,content,...}]}` 归一化成带来源的多段文本。"""
-        rows = []
+    @staticmethod
+    def _rows(data: Any) -> list:
+        """从响应体里取出结果行列表（`{"data":[...]}` 与裸数组都兼容）。"""
         if isinstance(data, dict):
             rows = data.get("data") or []
         elif isinstance(data, list):
             rows = data
-        if not isinstance(rows, list) or not rows:
+        else:
+            return []
+        return rows if isinstance(rows, list) else []
+
+    def _format(self, data: Any) -> str:
+        """把 `{"data":[{title,content,...}]}` 归一化成带来源的多段文本。"""
+        rows = self._rows(data)
+        if not rows:
             return EMPTY_HINT
 
         parts: list[str] = []
@@ -263,6 +330,11 @@ def build_from_env(transport: Optional[httpx.AsyncBaseTransport] = None) -> Opti
     base_url = _env("KB_BASE_URL")
     api_key = _env("KB_API_KEY")
     if not base_url or not api_key:
+        logger.warning(
+            "[kb-http] 未启用平台直连：KB_BASE_URL %s、KB_API_KEY %s；知识库问答将走 sidecar /mcp/knowledge",
+            "已配置" if base_url else "为空",
+            "已配置" if api_key else "为空",
+        )
         return None
     raw_ids = _env("KB_DATASET_IDS")
     dataset_ids = [i.strip() for i in raw_ids.split(",") if i.strip()] if raw_ids else []
@@ -281,10 +353,21 @@ def build_from_env(transport: Optional[httpx.AsyncBaseTransport] = None) -> Opti
         transport=transport,
     )
     logger.info(
-        "[kb-http] 知识库 HTTP 直连就绪: %s%s（数据集 %s，top_k=%s）",
+        "[kb-http] 平台直连就绪: POST %s%s | 数据集=%s | top_k=%s | threshold=%s "
+        "| rerank=%s(%s/%s) | timeout=%ss | API key=已配置",
         client.base_url,
         client.retrieval_path,
-        ",".join(client.dataset_ids) or "全库",
+        ",".join(client.dataset_ids) or "(未指定)",
         client.top_k,
+        client.score_threshold if client.score_threshold is not None else "(不传)",
+        client.rerank_enable,
+        client.rerank_provider,
+        client.rerank_model,
+        client.timeout,
     )
+    if not dataset_ids:
+        logger.warning(
+            "[kb-http] KB_DATASET_IDS 为空，请求体里 dataset_ids=[]；"
+            "很多平台的实现会把空数组当作「不检索任何库」而返回空结果，建议显式配置库 ID"
+        )
     return client
