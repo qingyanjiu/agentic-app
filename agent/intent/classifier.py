@@ -3364,24 +3364,58 @@ class PersonStatusClassifier:
         self.model = SentenceTransformer(LOCAL_MODEL_PATH)
 
         # ---- 加载后自检 ----
-        # sentence-transformers 在畸形模型目录下可能返回「一个模块都没装上」的实例：
+        # sentence-transformers 在畸形模型目录下会返回「模块没装上」的实例：
         # 初始化不报错，等第一次 encode 才在 tokenize 里炸成
         # AttributeError: 'NoneType' object has no attribute 'tokenize'，根因完全看不出来。
-        # 这里提前失败并点明检查项（scripts/pack.sh 打包时默认排除该权重目录，需手工 scp）。
-        if not os.path.isdir(LOCAL_MODEL_PATH):
-            logger.warning(
-                "[classifier] INTENT_MODEL_PATH=%s 不是本地目录，将按 HuggingFace 仓库名解析",
-                LOCAL_MODEL_PATH,
-            )
+        # 这里提前失败，并把定位现场所需的全部信息一次性打出来。
         _modules = getattr(self.model, "_modules", None) or {}
-        if len(_modules) == 0 or self.model._first_module() is None:
+        try:
+            _first_module = self.model._first_module()
+        except Exception:  # 老版本 _modules 为空时这里抛 StopIteration
+            _first_module = None
+        if not _modules or _first_module is None:
+            import json as _json
+
+            _p = LOCAL_MODEL_PATH
+            _isdir = bool(_p) and os.path.isdir(_p)
+            _files = sorted(os.listdir(_p))[:20] if _isdir else []
+            _manifest = "(不存在)"
+            if _isdir and os.path.isfile(os.path.join(_p, "modules.json")):
+                try:
+                    with open(os.path.join(_p, "modules.json"), encoding="utf8") as _f:
+                        _manifest = _json.dumps(_json.load(_f), ensure_ascii=False)[:300]
+                except Exception as _exc:
+                    _manifest = "读取失败: %s" % _exc
+            try:
+                import sentence_transformers as _st
+                import transformers as _tf
+
+                _ver = "sentence-transformers=%s transformers=%s" % (
+                    _st.__version__,
+                    _tf.__version__,
+                )
+            except Exception:
+                _ver = "版本读取失败"
             raise RuntimeError(
-                "意图模型加载失败：%s 没有加载到任何模块。排查顺序："
-                "1) 目录是否存在，且含 model.safetensors / modules.json "
-                "（pack.sh 默认排除 agent/intent/models/*，需要手工 scp 到目标机）；"
+                "意图模型加载失败：没有加载到任何模块。\n"
+                "  INTENT_MODEL_PATH = %r\n"
+                "  isdir = %s\n"
+                "  目录内容 = %s\n"
+                "  modules.json = %s\n"
+                "  已加载模块 = %s\n"
+                "  版本 = %s\n"
+                "排查：1) 目录是否缺 model.safetensors（scripts/pack.sh 默认排除 "
+                "agent/intent/models/*，需手工 scp 到目标机）；"
                 "2) modules.json 里声明的每个 path 是否与目录内容一致；"
-                "3) INTENT_MODEL_PATH 是否指向了这份目录。已加载模块：%s"
-                % (LOCAL_MODEL_PATH, list(_modules))
+                "3) INTENT_MODEL_PATH 是否指向这份目录。"
+                % (
+                    _p,
+                    _isdir,
+                    _files,
+                    _manifest,
+                    {k: type(v).__name__ for k, v in _modules.items()},
+                    _ver,
+                )
             )
 
         logger.info("[classifier] 开始预计算示例向量...")
