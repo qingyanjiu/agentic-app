@@ -3,8 +3,7 @@ import json
 import os
 import re
 from typing import Optional
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File
-from fastapi.staticfiles import StaticFiles
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from models.llm import CustomLLMFactory
 # 旧链路的 LangGraphPipeline / McpSkillAgent 已随 graph/、skills/ 一起删除
@@ -56,25 +55,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-# 挂载报告文件目录为静态文件服务（绝对路径，避免启动目录不同导致下载 404）
-REPORT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reports")
-os.makedirs(REPORT_DIR, exist_ok=True)
-# 将 reports 目录挂载为静态目录，前端可直接访问 /reports/文件名.docx 下载
-app.mount("/reports", StaticFiles(directory=REPORT_DIR), name="reports")
-from fastapi.staticfiles import StaticFiles
+# 没有 HTTP 业务接口：只有 WS /chat。
+# 报告下载（/reports）、图片上传（/upload/image + /uploads）、语音调试页（/static）都已移除 ——
+# 它们属于 gen_doc / 多模态 / 语音这类"非 agent 能力"，以后按插件接入，不放在 agent 服务里。
+# 调试页是纯静态文件：直接打开 web/index.html（不经过本服务）。
 
-# 挂载静态文件目录
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
-
-# 图片上传目录
-UPLOAD_FOLDER = "/root/agentic-app/uploads"
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-
-# 挂载图片目录
-app.mount("/uploads", StaticFiles(directory=UPLOAD_FOLDER), name="uploads")
-# 前端访问图片的地址（你的服务地址）
-BASE_URL = "http://127.0.0.1:8001"
 # 全局模型：配置全部来自环境变量，见 models/llm.py 模块注释
 llm_factory = CustomLLMFactory()
 llm = llm_factory.llm
@@ -590,25 +575,6 @@ async def run_scene_control_graph(websocket, query: str, user_id: str, session_i
     )
     session_state.set(user_id, session_id, new_state)
 
-
-# 上传图片接口
-@app.post("/upload/image")
-async def upload_image(file: UploadFile = File(...)):
-    # 生成唯一文件名，防止重名
-    ext = file.filename.split(".")[-1]
-    filename = f"{uuid.uuid4()}.{ext}"
-    save_path = os.path.join(UPLOAD_FOLDER, filename)
-
-    # 保存图片
-    with open(save_path, "wb") as f:
-        f.write(await file.read())
-
-    # 返回可访问的URL
-    image_url = f"{BASE_URL}/uploads/{filename}"
-    return {
-        "image_url": image_url,
-        "filename": filename
-    }
 
 '''
 对话智能体

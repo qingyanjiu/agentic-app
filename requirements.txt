@@ -9,7 +9,6 @@
 # ---- Web 服务（入口 app.py）----
 fastapi==0.122.0
 uvicorn==0.38.0
-python-multipart==0.0.32        # /upload/image 的 UploadFile 需要
 pydantic==2.12.4
 
 # ---- 模型调用 ----

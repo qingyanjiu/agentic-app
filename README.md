@@ -34,19 +34,20 @@ LLM_API_KEY=sk-xxx
 MCP_BASE_URL=http://<sidecar-host>:2223/mcp    # Java MCP sidecar
 ```
 
-调试页：`http://127.0.0.1:8001/static/`（`web/`）。
+调试页：直接用浏览器打开 `web/index.html`（纯静态，后端不在 8001 时在 URL 上带 `?ws=ws://host:port`）。
+服务本身**只有 WS `/chat`** 一个业务端点，没有上传/报告/语音这类 HTTP 接口 —— 那些以后按插件接入。
 
 ## 目录速览
 
 ```
-app.py                 FastAPI 入口：WS /chat、/upload/image、分流编排
+app.py                 FastAPI 入口：WS /chat、分流编排
 agent/loop/            Loop Agent（router / pipeline / agent / domains / runtime / ws_bridge）
 agent/scene_control.py UE 场景控制编排（顺序调用，无图引擎）
 agent/intent/          意图分类（BGE 向量）+ 槽位抽取（正则/词典）
 mcp_client/            MCP 配置与直连客户端（scene / knowledge）
 memory/session_state.py 追问态会话（内存 + TTL）
 models/llm.py          唯一模型配置（openai 兼容 / ollama）
-web/  static/          调试页前端　tests/  pytest　scripts/  打包与冒烟
+web/                   调试页（纯静态，直接用浏览器打开）　tests/  pytest　scripts/  打包与冒烟
 ```
 
 ## 测试

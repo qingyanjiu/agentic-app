@@ -49,6 +49,8 @@ EXCLUDES=(
     ".tmp_stubs/*"
     ".vscode/*"
     "exports/*"                  # 运行产物（导出的 docx 等）
+    "uploads/*"                  # 图片上传已移除；留规则防止日后又生成运行时目录
+    "reports/*"                  # 报告下载已移除，同上
     # memory/ 只有 session_state.py 是代码：运行时会话在进程内存里，没有落盘文件要排除
     "memory_store.db"
     "memory_store.json"
