@@ -78,6 +78,10 @@ DEFAULT_RETRIEVAL_PATH = "/v1/api_key/datasets/draft"
 DEFAULT_TOP_K = 5
 DEFAULT_TIMEOUT = 20.0
 DEFAULT_SEGMENT_MAX_CHARS = 800
+# 混合检索权重，对应平台界面 Hybrid Search 的「SEMANTIC x / KEYWORD y」；
+# 截图里 SEMANTIC 0.3 / KEYWORD 0.7 就是 KB_VECTOR_WEIGHT=0.3、KB_KEYWORD_WEIGHT=0.7
+DEFAULT_VECTOR_WEIGHT = 1.0
+DEFAULT_KEYWORD_WEIGHT = 0.0
 EMPTY_HINT = "未检索到相关内容。"
 
 
@@ -130,6 +134,8 @@ class KnowledgeHttpClient:
         rerank_enable: bool = True,
         rerank_provider: str = "tong_yi",
         rerank_model: str = "gte-rerank",
+        vector_weight: float = DEFAULT_VECTOR_WEIGHT,
+        keyword_weight: float = DEFAULT_KEYWORD_WEIGHT,
         timeout: float = DEFAULT_TIMEOUT,
         segment_max_chars: int = DEFAULT_SEGMENT_MAX_CHARS,
         transport: Optional[httpx.AsyncBaseTransport] = None,
@@ -143,6 +149,13 @@ class KnowledgeHttpClient:
         self.rerank_enable = rerank_enable
         self.rerank_provider = rerank_provider
         self.rerank_model = rerank_model
+        # 混合检索权重：两者不能同时为 0（平台会返回空结果），否则回退纯向量
+        _vec = max(0.0, float(vector_weight))
+        _kw = max(0.0, float(keyword_weight))
+        if _vec <= 0.0 and _kw <= 0.0:
+            _vec, _kw = DEFAULT_VECTOR_WEIGHT, DEFAULT_KEYWORD_WEIGHT
+        self.vector_weight = _vec
+        self.keyword_weight = _kw
         self.timeout = timeout
         self.segment_max_chars = max(80, segment_max_chars)
         # transport 只在测试里注入（httpx.MockTransport），线上走默认
@@ -180,8 +193,8 @@ class KnowledgeHttpClient:
             "top_k": self.top_k,
             "reranking_enable": use_rerank,
             "weights": {
-                "vector_setting": {"vector_weight": 1.0},
-                "keyword_setting": {"keyword_weight": 0.0},
+                "vector_setting": {"vector_weight": self.vector_weight},
+                "keyword_setting": {"keyword_weight": self.keyword_weight},
             },
         }
         if self.score_threshold is not None:
@@ -388,6 +401,10 @@ def build_from_env(transport: Optional[httpx.AsyncBaseTransport] = None) -> Opti
         return None
     raw_ids = _env("KB_DATASET_IDS")
     dataset_ids = [i.strip() for i in raw_ids.split(",") if i.strip()] if raw_ids else []
+    # 混合检索权重（对应平台界面的 Hybrid Search：语义 X / 关键词 Y）。
+    # 0.0 是合法值，不能用 `or default` 兜底，否则纯关键词配置会被打回纯向量。
+    raw_vector = _env_float("KB_VECTOR_WEIGHT", DEFAULT_VECTOR_WEIGHT)
+    raw_keyword = _env_float("KB_KEYWORD_WEIGHT", DEFAULT_KEYWORD_WEIGHT)
     client = KnowledgeHttpClient(
         base_url,
         api_key,
@@ -398,18 +415,26 @@ def build_from_env(transport: Optional[httpx.AsyncBaseTransport] = None) -> Opti
         rerank_enable=_env_true("KB_RERANK_ENABLE", True),
         rerank_provider=_env("KB_RERANK_PROVIDER") or "tong_yi",
         rerank_model=_env("KB_RERANK_MODEL") or "gte-rerank",
+        vector_weight=(
+            float(raw_vector) if raw_vector is not None else DEFAULT_VECTOR_WEIGHT
+        ),
+        keyword_weight=(
+            float(raw_keyword) if raw_keyword is not None else DEFAULT_KEYWORD_WEIGHT
+        ),
         timeout=_env_float("KB_TIMEOUT", DEFAULT_TIMEOUT) or DEFAULT_TIMEOUT,
         segment_max_chars=_env_int("KB_SEGMENT_MAX_CHARS", DEFAULT_SEGMENT_MAX_CHARS),
         transport=transport,
     )
     logger.info(
         "[kb-http] 平台直连就绪: POST %s%s | 数据集=%s | top_k=%s | threshold=%s "
-        "| rerank=%s(%s/%s) | timeout=%ss | API key=已配置",
+        "| 权重 语义/关键词=%.2f/%.2f | rerank=%s(%s/%s) | timeout=%ss | API key=已配置",
         client.base_url,
         client.retrieval_path,
         ",".join(client.dataset_ids) or "(未指定)",
         client.top_k,
         client.score_threshold if client.score_threshold is not None else "(不传)",
+        client.vector_weight,
+        client.keyword_weight,
         client.rerank_enable,
         client.rerank_provider,
         client.rerank_model,
@@ -420,4 +445,6 @@ def build_from_env(transport: Optional[httpx.AsyncBaseTransport] = None) -> Opti
             "[kb-http] KB_DATASET_IDS 为空，请求体里 dataset_ids=[]；"
             "很多平台的实现会把空数组当作「不检索任何库」而返回空结果，建议显式配置库 ID"
         )
+    if client.vector_weight == 0 and client.keyword_weight == 0:
+        logger.warning("[kb-http] 语义/关键词权重都是 0，已回退为 1.0/0.0（纯向量）")
     return client
