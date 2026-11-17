@@ -7,6 +7,8 @@ from langchain_core.prompts import PromptTemplate
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import StreamWriter
 
+from mcp_client.knowledge_http_client import KnowledgeHttpClient
+from mcp_client.knowledge_http_client import build_from_env as build_kb_http_client
 from mcp_client.knowledge_mcp_client import KnowledgeMcpClient
 from mcp_client.mcp_loader import load_mcp_config
 from memory.store import MemoryStore
@@ -75,9 +77,16 @@ class KnowledgeQAPipeline:
     不需要模型填参，直调比套 ReAct 循环少两次 LLM 往返。
     '''
 
-    def __init__(self, llm: BaseChatModel, kb_client: KnowledgeMcpClient):
+    def __init__(
+        self,
+        llm: BaseChatModel,
+        kb_client: Optional[KnowledgeMcpClient] = None,
+        http_client: Optional[KnowledgeHttpClient] = None,
+    ):
         self.llm = llm
+        # 两条检索通道，至少有一个（create() 保证）；两个都配时优先 http_client
         self.kb_client = kb_client
+        self.http_client = http_client
         # 知识库模式自己的记忆存储（与其他管线共用 persistor，靠 kb- 前缀隔离）
         self.memory_store = MemoryStore()
         self.condense_prompt = PromptTemplate(
@@ -90,16 +99,31 @@ class KnowledgeQAPipeline:
     def create(cls, llm: BaseChatModel,
                yaml_path: str = "mcp_client/mcp_server_config.yaml") -> "KnowledgeQAPipeline":
         """
-        从 yaml 读 knowledge 端点地址并构建直连客户端。
-        握手延迟到首次检索时做（懒连接）：sidecar 未就绪时管线照常可建，
-        创建期不再发网络请求，app.py 的连接建立不会被拖慢/搞挂。
+        选检索通道，优先级：
+
+        1. **平台检索接口直连**（`mcp_client/knowledge_http_client.py`）—— 配了
+           `KB_BASE_URL` + `KB_API_KEY` 就用它：不经 sidecar，排查链路短；
+        2. **sidecar `/mcp/knowledge`** —— 没配 HTTP 配置时退回，等价于改造前行为。
+
+        握手/建连都延迟到首次检索（懒连接）：sidecar 未就绪或平台接口暂不可用时，
+        管线照常可建，app.py 的连接建立不会被拖慢/搞挂。
         """
-        kb_conf = load_mcp_config(yaml_path).get("knowledge")
-        if not kb_conf or not kb_conf.get("url"):
-            raise ValueError(f"MCP配置里缺少 knowledge 条目或 url（{yaml_path}），知识库模式不可用")
-        kb_client = KnowledgeMcpClient(kb_conf["url"])
-        logger.info(f"知识库直连客户端就绪: {kb_conf['url']}")
-        return cls(llm, kb_client)
+        http_client = build_kb_http_client()
+
+        kb_client = None
+        kb_conf = (load_mcp_config(yaml_path) or {}).get("knowledge")
+        if kb_conf and kb_conf.get("url"):
+            kb_client = KnowledgeMcpClient(kb_conf["url"])
+            logger.info(f"知识库 MCP 客户端就绪: {kb_conf['url']}")
+        elif http_client is None:
+            raise ValueError(
+                f"知识库两条通道都不可用：KB_BASE_URL/KB_API_KEY 未配置，"
+                f"且 yaml 里缺 knowledge 条目或 url（{yaml_path}）"
+            )
+
+        if http_client is not None:
+            logger.info("知识库检索优先走平台 HTTP 接口（sidecar 作为兜底）")
+        return cls(llm, kb_client, http_client)
 
     # ======================== 节点 ========================
 
@@ -129,19 +153,39 @@ class KnowledgeQAPipeline:
             search_query = query
         return {"search_query": search_query}
 
-    # @@@ 节点：知识库检索。直调 MCP 工具，不经过大模型
+    # @@@ 节点：知识库检索。不经过大模型，直接问知识库
+    #
+    # 两条通道（见 mcp_client/knowledge_http_client.py）：
+    #   ① 平台检索接口直连（配了 KB_BASE_URL + KB_API_KEY 时优先，失败也能看出是谁的问题）
+    #   ② sidecar /mcp/knowledge（① 没配或 ① 报错时兜底，等价于改造前的行为）
     async def retrieve_node(self, state: KbState, config, runtime, writer: StreamWriter) -> Dict[str, Any]:
         question = state["search_query"]
 
         writer({"type": "tool", "content": "知识库检索 - 处理中..."})
 
-        try:
-            # datasetIds 传空串 = 检索 sidecar yml 配置的默认范围（未配置则全库），
-            # 语义见 RagflowKnowledgeMcp.searchKnowledge 的注释
-            retrieved = await self.kb_client.call_tool(
-                SEARCH_TOOL_NAME, {"question": question, "datasetIds": ""})
-        except Exception as e:
-            logger.error(f"知识库检索失败: {e}")
+        retrieved = None
+        if self.http_client is not None:
+            try:
+                retrieved = await self.http_client.retrieve(question)
+                logger.info(
+                    f"[kb] HTTP 直连检索完成 question={question[:40]!r} "
+                    f"chars={len(retrieved or '')}"
+                )
+            except Exception as e:
+                logger.warning(f"[kb] HTTP 直连检索失败，尝试 sidecar 兜底: {e}")
+                retrieved = None
+
+        if retrieved is None and self.kb_client is not None:
+            try:
+                # datasetIds 传空串 = 检索 sidecar yml 配置的默认范围（未配置则全库），
+                # 语义见 RagflowKnowledgeMcp.searchKnowledge 的注释
+                retrieved = await self.kb_client.call_tool(
+                    SEARCH_TOOL_NAME, {"question": question, "datasetIds": ""})
+            except Exception as e:
+                logger.error(f"[kb] sidecar 检索失败: {e}")
+                retrieved = None
+
+        if retrieved is None:
             retrieved = "知识库服务暂时不可用，请稍后重试。"
 
         writer({"type": "tool", "content": "知识库检索 - 处理完成"})

@@ -1,0 +1,290 @@
+"""知识库检索的 **HTTP 直连** 客户端（走平台封装的检索接口，不经 sidecar）。
+
+## 为什么加这条通道
+
+`/mcp/knowledge` 那条链路（`KnowledgeMcpClient` → sidecar → RAGFlow `/api/v1/*`）
+依赖 sidecar 容器里能访问 RAGFlow。实测线上 sidecar 里配的是
+`http://localhost:9380/api/v1/...`，容器内连不上 → 检索恒返回
+「知识库服务暂时不可用」。平台另给了一套检索接口（下面这套），Python 侧直连更快也更好排查。
+
+两条通道的关系：
+
+| 顺序 | 通道 | 何时用 |
+|---|---|---|
+| 1 | **HTTP 直连（本文件）** | 配了 `KB_BASE_URL` + `KB_API_KEY` 时优先用 |
+| 2 | MCP `/mcp/knowledge` | 没配 HTTP 配置时退回（现状行为）；HTTP 调用报错时兜底一次 |
+
+## 请求（平台口径）
+
+```
+POST {KB_BASE_URL}/v1/api_key/datasets/draft
+Authorization: Bearer {KB_API_KEY}
+Content-Type: application/json
+
+{
+  "inputs": "外来人员入园需要什么手续",
+  "dataset_ids": ["1213360", "1210129"],
+  "retrieval_mode": "multiple",
+  "retry_config": {"max_retries": 0, "retry_interval": 0, "retry_enabled": false},
+  "multiple_retrieval_config": {
+    "top_k": 5,
+    "score_threshold": 0.13,
+    "reranking_mode": "reranking_model",
+    "reranking_enable": true,
+    "reranking_model": {"provider": "tong_yi", "model": "gte-rerank"},
+    "weights": {
+      "vector_setting":  {"vector_weight": 1.0},
+      "keyword_setting": {"keyword_weight": 0.0}
+    }
+  }
+}
+```
+
+响应：`{"data": [{"metadata": {...}, "title": "...", "content": "...", "position": 1}], "inputs": "..."}`
+
+## 环境变量（都支持"空串按未设置"）
+
+| 变量 | 作用 | 默认 |
+|---|---|---|
+| `KB_BASE_URL` | 检索服务地址，如 `http://10.204.146.44:8082`；**不配则本通道不启用** | 空 |
+| `KB_API_KEY` | `Authorization: Bearer <key>`，平台给的 `dataset-xxx` | 空 |
+| `KB_RETRIEVAL_PATH` | 检索路径（平台版本不同可能变） | `/v1/api_key/datasets/draft` |
+| `KB_DATASET_IDS` | 知识库 ID，多个用英文逗号分隔；留空 = 不指定范围（全库） | 空 |
+| `KB_TOP_K` | 召回条数 | `5` |
+| `KB_SCORE_THRESHOLD` | 分数阈值；留空则不传该字段 | 空 |
+| `KB_RERANK_ENABLE` | 是否开启重排 | `1` |
+| `KB_RERANK_PROVIDER` / `KB_RERANK_MODEL` | 重排模型 | `tong_yi` / `gte-rerank` |
+| `KB_TIMEOUT` | 请求超时（秒） | `20` |
+| `KB_SEGMENT_MAX_CHARS` | 单条片段喂给模型时的最大字符数（防止撑爆上下文） | `800` |
+
+## 故意不做的
+
+- 不在这里组织答案：本类只负责"问题进、检索文本出"，prompt 与流式作答留在
+  `graph/knowledge_qa_langgraph.py`；
+- 不重试：检索慢时重试只会让首字更慢，失败直接抛给上层兜底文案。
+"""
+from __future__ import annotations
+
+import logging
+import os
+from typing import Any, Optional
+
+import httpx
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_RETRIEVAL_PATH = "/v1/api_key/datasets/draft"
+DEFAULT_TOP_K = 5
+DEFAULT_TIMEOUT = 20.0
+DEFAULT_SEGMENT_MAX_CHARS = 800
+EMPTY_HINT = "未检索到相关内容。"
+
+
+def _env(name: str) -> str:
+    """读环境变量并去空白；空串视为未设置。"""
+    return (os.getenv(name) or "").strip()
+
+
+def _env_float(name: str, default: Optional[float] = None) -> Optional[float]:
+    raw = _env(name)
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning("[kb-http] %s=%r 不是数字，按默认 %s", name, raw, default)
+        return default
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = _env(name)
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning("[kb-http] %s=%r 不是整数，按默认 %s", name, raw, default)
+        return default
+
+
+def _env_true(name: str, default: bool = True) -> bool:
+    raw = _env(name).lower()
+    if not raw:
+        return default
+    return raw not in ("0", "false", "off", "no")
+
+
+class KnowledgeHttpClient:
+    """平台检索接口的极简客户端：一次请求换一段可读文本。"""
+
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str,
+        *,
+        retrieval_path: str = DEFAULT_RETRIEVAL_PATH,
+        dataset_ids: Optional[list[str]] = None,
+        top_k: int = DEFAULT_TOP_K,
+        score_threshold: Optional[float] = None,
+        rerank_enable: bool = True,
+        rerank_provider: str = "tong_yi",
+        rerank_model: str = "gte-rerank",
+        timeout: float = DEFAULT_TIMEOUT,
+        segment_max_chars: int = DEFAULT_SEGMENT_MAX_CHARS,
+        transport: Optional[httpx.AsyncBaseTransport] = None,
+    ):
+        self.base_url = (base_url or "").rstrip("/")
+        self.api_key = api_key or ""
+        self.retrieval_path = retrieval_path if retrieval_path.startswith("/") else f"/{retrieval_path}"
+        self.dataset_ids = list(dataset_ids or [])
+        self.top_k = max(1, top_k)
+        self.score_threshold = score_threshold
+        self.rerank_enable = rerank_enable
+        self.rerank_provider = rerank_provider
+        self.rerank_model = rerank_model
+        self.timeout = timeout
+        self.segment_max_chars = max(80, segment_max_chars)
+        # transport 只在测试里注入（httpx.MockTransport），线上走默认
+        self._transport = transport
+        self._client: Optional[httpx.AsyncClient] = None
+
+    # ------------------------------------------------------------ #
+    # 对外
+    # ------------------------------------------------------------ #
+    @property
+    def available(self) -> bool:
+        return bool(self.base_url and self.api_key)
+
+    def _headers(self) -> dict:
+        return {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+
+    def build_payload(self, question: str, dataset_ids: Optional[list[str]] = None) -> dict:
+        """按平台口径拼请求体（单独抽出来，便于单测断言字段）。"""
+        ids = self.dataset_ids if dataset_ids is None else list(dataset_ids)
+        multiple: dict[str, Any] = {
+            "top_k": self.top_k,
+            "reranking_enable": self.rerank_enable,
+            "weights": {
+                "vector_setting": {"vector_weight": 1.0},
+                "keyword_setting": {"keyword_weight": 0.0},
+            },
+        }
+        if self.score_threshold is not None:
+            multiple["score_threshold"] = self.score_threshold
+        if self.rerank_enable:
+            multiple["reranking_mode"] = "reranking_model"
+            multiple["reranking_model"] = {
+                "provider": self.rerank_provider,
+                "model": self.rerank_model,
+            }
+        return {
+            "inputs": question,
+            "dataset_ids": ids,
+            "retrieval_mode": "multiple",
+            "retry_config": {"max_retries": 0, "retry_interval": 0, "retry_enabled": False},
+            "multiple_retrieval_config": multiple,
+        }
+
+    async def retrieve(self, question: str, dataset_ids: Optional[list[str]] = None) -> str:
+        """检索并返回可直接拼进 prompt 的文本；失败抛异常（由调用方兜底）。"""
+        question = (question or "").strip()
+        if not question:
+            return EMPTY_HINT
+        if not self.available:
+            raise RuntimeError("知识库检索未配置（KB_BASE_URL / KB_API_KEY 为空）")
+
+        url = f"{self.base_url}{self.retrieval_path}"
+        payload = self.build_payload(question, dataset_ids)
+        try:
+            resp = await self._client_or_new().post(url, json=payload, headers=self._headers())
+            resp.raise_for_status()
+            data = resp.json()
+        except httpx.HTTPStatusError as exc:
+            # 把服务端返回体带上，排查 key/数据集不对时最有用
+            body = (exc.response.text or "")[:200] if exc.response is not None else ""
+            raise RuntimeError(f"知识库接口返回 {exc.response.status_code}: {body}") from exc
+        except httpx.HTTPError as exc:
+            raise RuntimeError(f"知识库接口调用失败: {exc}") from exc
+
+        return self._format(data)
+
+    # ------------------------------------------------------------ #
+    # 内部
+    # ------------------------------------------------------------ #
+    def _client_or_new(self) -> httpx.AsyncClient:
+        if self._client is None:
+            kwargs: dict[str, Any] = {"timeout": self.timeout}
+            if self._transport is not None:
+                kwargs["transport"] = self._transport
+            self._client = httpx.AsyncClient(**kwargs)
+        return self._client
+
+    async def aclose(self) -> None:
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
+
+    def _format(self, data: Any) -> str:
+        """把 `{"data":[{title,content,...}]}` 归一化成带来源的多段文本。"""
+        rows = []
+        if isinstance(data, dict):
+            rows = data.get("data") or []
+        elif isinstance(data, list):
+            rows = data
+        if not isinstance(rows, list) or not rows:
+            return EMPTY_HINT
+
+        parts: list[str] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            content = str(row.get("content") or "").strip()
+            if not content:
+                continue
+            if len(content) > self.segment_max_chars:
+                content = content[: self.segment_max_chars] + "…"
+            meta = row.get("metadata") or {}
+            title = str(row.get("title") or meta.get("document_name") or "未命名文档").strip()
+            dataset = str(meta.get("dataset_name") or "").strip()
+            source = f"{title}（{dataset}）" if dataset else title
+            parts.append(f"【来源：{source}】\n{content}")
+
+        if not parts:
+            return EMPTY_HINT
+        return "\n\n".join(parts)
+
+
+def build_from_env(transport: Optional[httpx.AsyncBaseTransport] = None) -> Optional[KnowledgeHttpClient]:
+    """按环境变量造客户端；`KB_BASE_URL` 或 `KB_API_KEY` 为空时返回 None（= 不启用该通道）。"""
+    base_url = _env("KB_BASE_URL")
+    api_key = _env("KB_API_KEY")
+    if not base_url or not api_key:
+        return None
+    raw_ids = _env("KB_DATASET_IDS")
+    dataset_ids = [i.strip() for i in raw_ids.split(",") if i.strip()] if raw_ids else []
+    client = KnowledgeHttpClient(
+        base_url,
+        api_key,
+        retrieval_path=_env("KB_RETRIEVAL_PATH") or DEFAULT_RETRIEVAL_PATH,
+        dataset_ids=dataset_ids,
+        top_k=_env_int("KB_TOP_K", DEFAULT_TOP_K),
+        score_threshold=_env_float("KB_SCORE_THRESHOLD"),
+        rerank_enable=_env_true("KB_RERANK_ENABLE", True),
+        rerank_provider=_env("KB_RERANK_PROVIDER") or "tong_yi",
+        rerank_model=_env("KB_RERANK_MODEL") or "gte-rerank",
+        timeout=_env_float("KB_TIMEOUT", DEFAULT_TIMEOUT) or DEFAULT_TIMEOUT,
+        segment_max_chars=_env_int("KB_SEGMENT_MAX_CHARS", DEFAULT_SEGMENT_MAX_CHARS),
+        transport=transport,
+    )
+    logger.info(
+        "[kb-http] 知识库 HTTP 直连就绪: %s%s（数据集 %s，top_k=%s）",
+        client.base_url,
+        client.retrieval_path,
+        ",".join(client.dataset_ids) or "全库",
+        client.top_k,
+    )
+    return client
