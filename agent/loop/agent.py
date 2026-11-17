@@ -26,11 +26,17 @@ from typing import Awaitable, Callable
 
 from openai import AsyncOpenAI
 
+from .env import env_positive_float
 from .registry import ToolRegistry
-from .types import LoopEvent, LoopResult, ToolOutcome, parse_args
+from .types import LoopEvent, LoopResult, ToolOutcome, ToolTimeoutError, parse_args
 from .validate import compress_tool_messages, validate_args
 
 logger = logging.getLogger(__name__)
+
+# 外层工具超时略大于 MCP 单次调用超时（10s），留 2s 给重连和序列化开销。
+# 原则：宁可 10 秒后告诉用户「接口超时」，也不让人无限等——平台慢接口
+# 是服务端的事，不该由用户的时间来承担。
+DEFAULT_TOOL_TIMEOUT = 12.0
 
 EventHandler = Callable[[LoopEvent], Awaitable[None] | None]
 
@@ -69,7 +75,7 @@ class LoopAgent:
         system_prompt: str | None = None,
         max_steps: int = 8,
         temperature: float = 0.0,
-        tool_timeout: float = 30.0,
+        tool_timeout: float | None = None,
         max_tool_errors: int = 2,
         context_budget: int = 60_000,
         stream: bool = True,
@@ -85,7 +91,11 @@ class LoopAgent:
         )
         self.max_steps = max_steps
         self.temperature = temperature
-        self.tool_timeout = tool_timeout
+        self.tool_timeout = (
+            env_positive_float("LOOP_TOOL_TIMEOUT", DEFAULT_TOOL_TIMEOUT)
+            if tool_timeout is None
+            else tool_timeout
+        )
         self.context_budget = context_budget
         # 同一轮里连续失败多少次就停止重试（见主循环里的兜底）
         self.max_tool_errors = max(1, max_tool_errors)
@@ -235,6 +245,7 @@ class LoopAgent:
         executed: list[dict] = []
         steps = 0
         error_streak = 0
+        terminated = False
 
         while steps < self.max_steps:
             if self._cancelled(cancel):
@@ -413,7 +424,21 @@ class LoopAgent:
                         )
 
             if all_terminate:
+                terminated = True
                 break
+
+        # 工具明确要求结束本轮（如接口超时）：让模型基于已有结果收尾，
+        # 不再换工具重试，也不要把这种正常收尾误报成"达到最大步数"。
+        if terminated:
+            summary = await self._finalize(messages)
+            await self._emit(handler, "done", {"steps": steps})
+            return LoopResult(
+                text=summary,
+                messages=messages,
+                tool_calls=executed,
+                steps=steps,
+                stop_reason="answered",
+            )
 
         # 步数用尽：再要一次不带工具的总结，避免给用户一个空回答
         await self._emit(handler, "error", {"message": "达到最大工具调用步数"})
@@ -475,14 +500,27 @@ class LoopAgent:
                 ),
                 is_error=True,
             )
+        except ToolTimeoutError as exc:
+            # 超时后不再让模型换工具/换参数重试：本轮直接收尾，
+            # 由 _finalize 基于这条 tool message 给用户一句明确的超时说明。
+            logger.warning(f"[loop] 工具 {name} 超时：{exc}")
+            return ToolOutcome(
+                text=(
+                    f"{exc}。请直接告诉用户接口超时、稍后再试，"
+                    "不要换工具或换参数重试。"
+                ),
+                is_error=True,
+                terminate=True,
+            )
         except asyncio.TimeoutError:
             logger.warning(f"[loop] 工具 {name} 超时（>{self.tool_timeout}s）")
             return ToolOutcome(
                 text=(
                     f"工具 {name} 执行超时（超过 {self.tool_timeout:.0f} 秒）。"
-                    f"请缩小查询范围后重试，或换一种方式回答用户。"
+                    f"请直接告诉用户接口超时、稍后再试，不要换工具或换参数重试。"
                 ),
                 is_error=True,
+                terminate=True,
             )
         except Exception as exc:
             logger.exception(f"[loop] 工具 {name} 执行异常")

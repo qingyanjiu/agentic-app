@@ -18,6 +18,15 @@ from typing import Any, Awaitable, Callable
 from .entities import EntityList
 
 
+class ToolTimeoutError(RuntimeError):
+    """工具调用超时。
+
+    与普通执行异常区分开：超时说明服务端可能仍在执行，重连重试只会让用户
+    再等一个超时周期。上层收到它应直接把错误交回 agent 结束本轮，而不是
+    换工具/换参数继续试。
+    """
+
+
 @dataclass(slots=True)
 class ToolOutcome:
     """一次工具执行的返回值。

@@ -249,7 +249,7 @@ init → check_missing_params
 
 ```bash
 cp .env.example .env      # .env 已被 .gitignore 忽略，不会进仓库
-# 最少要改：LLM_API_KEY、MCP_BASE_URL
+# 最少要改：LLM_API_KEY、MCP_BASE_URL、MCP_API_KEY
 # 知识库模式再加：KB_BASE_URL、KB_API_KEY（不配则退回 sidecar /mcp/knowledge）
 ```
 
@@ -574,7 +574,7 @@ MCP服务器在 `mcp_client/mcp_server_config.yaml` 中配置：
 mcp_servers:
   local:
     transport: streamable_http
-    url: http://192.168.0.112:2222/mcp
+    url: http://192.168.0.112:2223/mcp
 
   math_server:
     transport: stdio
@@ -588,6 +588,11 @@ mcp_servers:
     headers:
       Authorization: "Bearer YOUR_TOKEN"
 ```
+
+> 连接 Java sidecar 时，`MCP_API_KEY` 会由 `mcp_client/mcp_config.py` 的
+> `apply_api_key()` 自动注入到每个 server 的 `headers`，不需要在 yaml 里写
+> `Authorization`。yaml 里手写的 header 优先，可用于单条端点覆盖。
+> sidecar 未配置 key 时，所有 `/mcp/**` 请求都会返回 401。
 
 支持的传输类型：`streamable_http`、`stdio`、`sse`
 
@@ -647,7 +652,17 @@ async def load_mcp_tools():
 # all_tools = rag_tools + dynamic_tools + mcp_tools
 ```
 
-配置MCP服务器时，需在 `mcp_server_config.yaml` 中定义服务器地址、传输协议和认证信息。
+配置MCP服务器时，需在 `mcp_server_config.yaml` 中定义服务器地址和传输协议；
+访问 sidecar 的 API Key 从环境变量 `MCP_API_KEY` 统一注入，不要写进 yaml。
+
+工具调用超时默认 `MCP_CALL_TIMEOUT=15` 秒、连接超时 `MCP_CONNECT_TIMEOUT=10` 秒；
+外层 `LOOP_TOOL_TIMEOUT=17` 秒（比单次调用略大，给重连和序列化留余量）。
+
+设计原则：**宁可 15 秒后告诉用户「接口超时」，也不让人无限等**。平台慢接口
+（如 `devicequery/listOnly` 全量台账）超时后，客户端主动放弃、不重连重试，
+错误直接交回 agent 结束本轮；sidecar 侧那次调用会写失败（日志里可能出现
+`Broken pipe`），这是预期代价，不是 bug。
+同一轮内连续 2 次工具失败就会停止重试并给出明确提示（`max_tool_errors`）。
 
 ## 🧪 部署
 
@@ -784,8 +799,8 @@ agentic-app/
   - `/reports/`: 生成报告下载
 
 ### 9. `mcp_client/` 模块
-- **`mcp_loader.py`**：MCP配置加载器。`load_mcp_config()` 函数从 YAML 文件读取 MCP 服务器配置，`get_mcp_tools()` 异步函数加载配置并通过 `MultiServerMCPClient` 获取 LangChain 兼容的工具列表。这实现了与多个 MCP 服务器的动态集成。
-- **`mcp_server_config.yaml`**：MCP服务器配置文件。以 YAML 格式定义多个 MCP 服务器的连接信息，当前配置包含 `local` 服务器（使用 streamable_http 传输连接到指定 URL），支持扩展添加更多服务器。
+- **`mcp_loader.py`**：MCP配置加载器。`load_mcp_config()` 从 YAML 读取配置、补全地址，并通过 `apply_api_key()` 把 `MCP_API_KEY` 注入到每个 server 的请求头；`get_mcp_tools()` 异步加载配置并通过 `MultiServerMCPClient` 获取 LangChain 兼容的工具列表。这实现了与多个 MCP 服务器的动态集成。
+- **`mcp_server_config.yaml`**：MCP服务器配置文件。以 YAML 格式定义多个 MCP 服务器的连接信息（当前 15 个端点，含 `direct_client` 的 scene/knowledge），支持扩展添加更多服务器。
 
 ### 10. `asr/` 语音识别模块
 - **`voice_asr.py`**: Whisper语音识别核心模块

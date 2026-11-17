@@ -8,6 +8,7 @@ from types import SimpleNamespace as NS
 import pytest
 
 from agent.loop.runtime import McpToolbox, extract_text
+from agent.loop.types import ToolTimeoutError
 
 
 class _FakeSession:
@@ -76,3 +77,44 @@ def test_tools_for_returns_name_description_map():
     mapping = asyncio.run(box.tools_for("s"))
 
     assert mapping == {"t1": "demo"}
+
+
+def test_timeouts_are_env_configurable(monkeypatch):
+    monkeypatch.setenv("MCP_CALL_TIMEOUT", "42")
+    monkeypatch.setenv("MCP_CONNECT_TIMEOUT", "7")
+
+    box = McpToolbox()
+
+    assert box.timeout == 42
+    assert box.connect_timeout == 7
+
+
+def test_timeout_env_falls_back_on_invalid_value(monkeypatch):
+    monkeypatch.setenv("MCP_CALL_TIMEOUT", "not-a-number")
+    monkeypatch.setenv("MCP_CONNECT_TIMEOUT", "-3")
+
+    box = McpToolbox()
+
+    assert box.timeout == 10.0
+    assert box.connect_timeout == 10.0
+
+
+def test_timeout_is_not_retried():
+    """超时说明服务端可能还在执行，重试只会把同一个慢调用再发一遍。"""
+
+    class _SlowSession:
+        def __init__(self):
+            self.calls = 0
+
+        async def call_tool(self, name, arguments=None):
+            self.calls += 1
+            await asyncio.sleep(1)
+
+    box = McpToolbox(timeout=0.01)
+    slow = _SlowSession()
+    box._sessions["s"] = slow
+
+    with pytest.raises(ToolTimeoutError, match="超时"):
+        asyncio.run(box.call("s", "t1", {}))
+
+    assert slow.calls == 1

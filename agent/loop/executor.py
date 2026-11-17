@@ -15,11 +15,15 @@ import asyncio
 import logging
 from typing import Awaitable, Callable
 
+from .env import env_positive_float
 from .registry import ToolRegistry
-from .types import ToolOutcome
+from .types import ToolOutcome, ToolTimeoutError
 from .validate import validate_args
 
 logger = logging.getLogger(__name__)
+
+# 与 LoopAgent 的外层超时保持一致：略大于 MCP 单次调用超时（10s）。
+DEFAULT_TOOL_TIMEOUT = 12.0
 
 BeforeTool = Callable[[str, dict], Awaitable[ToolOutcome | None]]
 AfterTool = Callable[[str, dict, ToolOutcome], Awaitable[ToolOutcome]]
@@ -29,12 +33,16 @@ class Executor:
     def __init__(
         self,
         registry: ToolRegistry,
-        timeout: float = 30.0,
+        timeout: float | None = None,
         before_tool: BeforeTool | None = None,
         after_tool: AfterTool | None = None,
     ) -> None:
         self.registry = registry
-        self.timeout = timeout
+        self.timeout = (
+            env_positive_float("LOOP_TOOL_TIMEOUT", DEFAULT_TOOL_TIMEOUT)
+            if timeout is None
+            else timeout
+        )
         self.before_tool = before_tool
         self.after_tool = after_tool
 
@@ -83,9 +91,18 @@ class Executor:
         except asyncio.TimeoutError:
             logger.warning(f"[executor] 工具 {tool} 超时（>{self.timeout}s）")
             return ToolOutcome(
-                text=f"工具 {tool} 执行超时（超过 {self.timeout:.0f} 秒）。",
+                text=(
+                    f"工具 {tool} 执行超时（超过 {self.timeout:.0f} 秒）。"
+                    "接口超时，请稍后再试。"
+                ),
                 is_error=True,
-                escalate=True,
+            )
+        except ToolTimeoutError as exc:
+            # 超时后不 escalate：转 L2 只会把同一个慢接口再调一次。
+            logger.warning(f"[executor] 工具 {tool} 调用超时：{exc}")
+            return ToolOutcome(
+                text=f"{exc}。接口超时，请稍后再试。",
+                is_error=True,
             )
         except Exception as exc:
             logger.exception(f"[executor] 工具 {tool} 执行异常")
