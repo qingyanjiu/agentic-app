@@ -95,7 +95,7 @@ def test_timeout_env_falls_back_on_invalid_value(monkeypatch):
 
     box = McpToolbox()
 
-    assert box.timeout == 10.0
+    assert box.timeout == 15.0
     assert box.connect_timeout == 10.0
 
 

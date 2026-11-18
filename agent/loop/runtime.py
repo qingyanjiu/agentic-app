@@ -35,7 +35,7 @@ DEFAULT_MCP_CONFIG = "mcp_client/mcp_server_config.yaml"
 # "Broken pipe"），属于预期，不是 bug；平台接口本身仍会跑完。
 # 超时后不再重连重试，直接把错误交回 agent 结束本轮。
 # 需要临时放宽时用 MCP_CALL_TIMEOUT 覆盖，但别超过外层的 LOOP_TOOL_TIMEOUT。
-DEFAULT_CALL_TIMEOUT = 10.0
+DEFAULT_CALL_TIMEOUT = 15.0
 DEFAULT_CONNECT_TIMEOUT = 10.0
 
 

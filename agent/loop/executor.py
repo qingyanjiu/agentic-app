@@ -22,8 +22,8 @@ from .validate import validate_args
 
 logger = logging.getLogger(__name__)
 
-# 与 LoopAgent 的外层超时保持一致：略大于 MCP 单次调用超时（10s）。
-DEFAULT_TOOL_TIMEOUT = 12.0
+# 与 LoopAgent 的外层超时保持一致：略大于 MCP 单次调用超时（15s）。
+DEFAULT_TOOL_TIMEOUT = 17.0
 
 BeforeTool = Callable[[str, dict], Awaitable[ToolOutcome | None]]
 AfterTool = Callable[[str, dict, ToolOutcome], Awaitable[ToolOutcome]]

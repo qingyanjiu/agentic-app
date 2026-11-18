@@ -33,10 +33,10 @@ from .validate import compress_tool_messages, validate_args
 
 logger = logging.getLogger(__name__)
 
-# 外层工具超时略大于 MCP 单次调用超时（10s），留 2s 给重连和序列化开销。
-# 原则：宁可 10 秒后告诉用户「接口超时」，也不让人无限等——平台慢接口
+# 外层工具超时略大于 MCP 单次调用超时（15s），留 2s 给重连和序列化开销。
+# 原则：宁可 15 秒后告诉用户「接口超时」，也不让人无限等——平台慢接口
 # 是服务端的事，不该由用户的时间来承担。
-DEFAULT_TOOL_TIMEOUT = 12.0
+DEFAULT_TOOL_TIMEOUT = 17.0
 
 EventHandler = Callable[[LoopEvent], Awaitable[None] | None]
 
