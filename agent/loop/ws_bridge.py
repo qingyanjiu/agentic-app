@@ -231,6 +231,10 @@ async def handle_chat(
                     "data": {"type": "tool", "name": data.get("name") or ""},
                 },
             )
+        elif kind == "assistant_message":
+            # 工具直出（passthrough）和「步数用尽」的总结都是成品文本，
+            # 这里不接的话只能靠结尾 streamed==0 兜底补发，前面说过话就丢了。
+            await on_delta(str(data.get("text") or ""))
         elif kind == "entities":
             # 结构化清单（设备列表这类）：前端直接渲染可点控件。
             # 文本回答里也带着逐行明细（旧前端能继续用），这份是为准的。

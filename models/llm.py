@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from typing import AsyncIterator
 
 # 全局采样参数（与具体模型无关）
 TEMPERATURE = 0  # 0=确定性输出
@@ -168,6 +169,72 @@ class ChatClient:
         if self.type == "ollama":
             return Completion(content=await self._chat_ollama(prompt))
         return Completion(content=await self._chat_openai(prompt))
+
+    async def astream(self, prompt: str) -> AsyncIterator[str]:
+        """流式返回文本增量（KB 问答这类要边生成边上屏的场景用）。
+
+        与 `ainvoke` 同一份配置：openai 走 SDK 的 stream，ollama 走
+        /api/chat 的 NDJSON 流。调用方负责拼提示词和收尾。
+        """
+        if self.type == "ollama":
+            async for piece in self._stream_ollama(prompt):
+                yield piece
+            return
+        async for piece in self._stream_openai(prompt):
+            yield piece
+
+    async def _stream_openai(self, prompt: str) -> AsyncIterator[str]:
+        kwargs = {
+            "model": self.model_name,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
+            "stream": True,
+        }
+        if self.reasoning_effort:
+            kwargs["reasoning_effort"] = self.reasoning_effort
+        if self.extra_body:
+            kwargs["extra_body"] = self.extra_body
+
+        stream = await self._openai_client().chat.completions.create(**kwargs)
+        async for chunk in stream:
+            choices = getattr(chunk, "choices", None) or []
+            if not choices:
+                continue
+            delta = getattr(choices[0], "delta", None)
+            text = getattr(delta, "content", None) if delta is not None else None
+            if text:
+                yield text
+
+    async def _stream_ollama(self, prompt: str) -> AsyncIterator[str]:
+        import json as _json
+
+        import httpx
+
+        url = f"{self.openai_api_base.rstrip('/')}/api/chat"
+        payload = {
+            "model": self.model_name,
+            "messages": [{"role": "user", "content": prompt}],
+            "stream": True,
+            "think": False,
+            "options": {"temperature": self.temperature, "num_predict": self.max_tokens},
+        }
+        async with httpx.AsyncClient(timeout=120) as client:
+            async with client.stream("POST", url, json=payload) as resp:
+                resp.raise_for_status()
+                async for line in resp.aiter_lines():
+                    line = (line or "").strip()
+                    if not line:
+                        continue
+                    try:
+                        data = _json.loads(line)
+                    except ValueError:
+                        continue
+                    text = (data.get("message") or {}).get("content") or ""
+                    if text:
+                        yield text
+                    if data.get("done"):
+                        break
 
     # ------------------------------------------------------------ #
     # 两种后端

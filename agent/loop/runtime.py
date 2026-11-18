@@ -8,7 +8,7 @@
 设计：
 - 每个 server 一个长连接（AsyncExitStack 持有），首次使用时懒建立；
 - 同一 server 并发建连用 asyncio.Lock 保护，避免重复握手；
-- 调用失败（连接失效）时丢弃缓存、重连一次；业务错误（isError）不重试；
+- 调用失败（连接失效）时丢弃缓存、重连一次；超时不重试，直接把错误交回上层；业务错误（isError）不重试；
 - close() 供进程退出 / 测试使用。
 """
 from __future__ import annotations
@@ -22,10 +22,19 @@ from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 import yaml
 
+from .env import env_positive_float
+from .types import ToolTimeoutError
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_MCP_CONFIG = "mcp_client/mcp_server_config.yaml"
 
+# 单次 MCP 工具调用超时。原则：宁可 15 秒后判超时，也不让用户无限等——
+# 平台慢接口是服务端的事，不该由用户的时间来承担。
+# 可用 MCP_CALL_TIMEOUT 覆盖，但别超过外层 LOOP_TOOL_TIMEOUT（默认 17s）。
+# 超时后不再重连重试：服务端很可能还在执行，重试只是把同一个慢调用再发一遍。
+DEFAULT_CALL_TIMEOUT = 15.0
+DEFAULT_CONNECT_TIMEOUT = 10.0
 
 def load_servers(yaml_path: str) -> dict:
     """读 mcp_server_config.yaml 的 mcp_servers 段（url 已按 mcp_base_url 补全）。
@@ -81,12 +90,20 @@ class McpToolbox:
     def __init__(
         self,
         yaml_path: str = DEFAULT_MCP_CONFIG,
-        timeout: float = 15.0,
-        connect_timeout: float = 10.0,
+        timeout: float | None = None,
+        connect_timeout: float | None = None,
     ) -> None:
         self.yaml_path = yaml_path
-        self.timeout = timeout
-        self.connect_timeout = connect_timeout
+        self.timeout = (
+            env_positive_float("MCP_CALL_TIMEOUT", DEFAULT_CALL_TIMEOUT)
+            if timeout is None
+            else timeout
+        )
+        self.connect_timeout = (
+            env_positive_float("MCP_CONNECT_TIMEOUT", DEFAULT_CONNECT_TIMEOUT)
+            if connect_timeout is None
+            else connect_timeout
+        )
         self._sessions: dict[str, ClientSession] = {}
         self._stacks: dict[str, AsyncExitStack] = {}
         self._locks: dict[str, asyncio.Lock] = {}
@@ -203,6 +220,16 @@ class McpToolbox:
             result = await asyncio.wait_for(
                 session.call_tool(tool_name, payload), self.timeout
             )
+        except asyncio.TimeoutError:
+            # 超时说明服务端很可能还在执行：立即重连重试只会把同一个慢调用
+            # 再发一遍，用户还要多等一个超时周期。丢掉连接，交给上层报超时。
+            logger.warning(
+                f"[mcp] {server}/{tool_name} 调用超时（>{self.timeout:.0f}s），不再重试"
+            )
+            await self._drop(server)
+            raise ToolTimeoutError(
+                f"MCP 工具 {tool_name} 调用超时（超过 {self.timeout:.0f} 秒）"
+            ) from None
         except Exception as exc:
             logger.warning(f"[mcp] {server}/{tool_name} 调用失败，尝试重连：{exc}")
             await self._drop(server)

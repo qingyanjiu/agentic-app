@@ -14,6 +14,7 @@ pydantic==2.12.4
 # ---- 模型调用 ----
 openai==2.7.2                   # agent/loop 与 models/llm.py 唯一的模型客户端
 httpx==0.28.1                   # 场景(/mcp/scene)、知识库(/mcp/knowledge) 的直连客户端
+python-dotenv==1.2.1           # app.py 读取项目根 .env（override=False，系统环境优先）
 
 # ---- MCP 官方 SDK（agent/loop/runtime.py 用它列工具/调工具）----
 mcp==1.30.0

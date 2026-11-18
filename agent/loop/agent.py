@@ -26,11 +26,17 @@ from typing import Awaitable, Callable
 
 from openai import AsyncOpenAI
 
+from .env import env_positive_float
 from .registry import ToolRegistry
-from .types import LoopEvent, LoopResult, ToolOutcome, parse_args
+from .types import LoopEvent, LoopResult, ToolOutcome, ToolTimeoutError, parse_args
 from .validate import compress_tool_messages, validate_args
 
 logger = logging.getLogger(__name__)
+
+# 外层工具超时略大于 MCP 单次调用超时（15s），留 2s 给重连和序列化开销。
+# 原则：宁可 15 秒后告诉用户「接口超时」，也不让人无限等——平台慢接口
+# 是服务端的事，不该由用户的时间来承担。
+DEFAULT_TOOL_TIMEOUT = 17.0
 
 EventHandler = Callable[[LoopEvent], Awaitable[None] | None]
 
@@ -69,7 +75,8 @@ class LoopAgent:
         system_prompt: str | None = None,
         max_steps: int = 8,
         temperature: float = 0.0,
-        tool_timeout: float = 30.0,
+        tool_timeout: float | None = None,
+        max_tool_errors: int = 2,
         context_budget: int = 60_000,
         stream: bool = True,
         before_tool: BeforeTool | None = None,
@@ -84,8 +91,14 @@ class LoopAgent:
         )
         self.max_steps = max_steps
         self.temperature = temperature
-        self.tool_timeout = tool_timeout
+        self.tool_timeout = (
+            env_positive_float("LOOP_TOOL_TIMEOUT", DEFAULT_TOOL_TIMEOUT)
+            if tool_timeout is None
+            else tool_timeout
+        )
         self.context_budget = context_budget
+        # 同一轮里连续失败多少次就停止重试（见主循环里的兜底）
+        self.max_tool_errors = max(1, max_tool_errors)
         self.stream = stream
         self.before_tool = before_tool
         self.after_tool = after_tool
@@ -136,10 +149,12 @@ class LoopAgent:
         messages: list[dict],
         tools: list[dict],
         handler: EventHandler | None,
-    ) -> tuple[str, list, str | None]:
-        """返回 (文本, tool_calls, finish_reason)。
+    ) -> tuple[str, list, str | None, int]:
+        """返回 (文本, tool_calls, finish_reason, 已流出去的字符数)。
 
-        流式下 tool_calls 的 arguments 是分片字符串，必须按 index 累加。
+        流式下 tool_calls 的 arguments 是分片字符串，必须按 index 累加；
+        第 4 项用来判断还要不要补发 assistant_message——流过就别重复发，
+        否则前端会把同一段回答追加两遍。
         """
         if not self.stream:
             response = await self.client.chat.completions.create(
@@ -155,6 +170,7 @@ class LoopAgent:
                 message.content or "",
                 list(message.tool_calls or []),
                 getattr(choice, "finish_reason", None),
+                0,
             )
 
         stream = await self.client.chat.completions.create(
@@ -208,7 +224,8 @@ class LoopAgent:
             for index, slot in sorted(slots.items())
             if slot["name"]
         ]
-        return "".join(parts), tool_calls, finish_reason
+        text = "".join(parts)
+        return text, tool_calls, finish_reason, len(text)
 
     # ------------------------------------------------------------------ #
     # 主循环
@@ -231,6 +248,8 @@ class LoopAgent:
         tools = self.registry.to_openai_tools()
         executed: list[dict] = []
         steps = 0
+        error_streak = 0
+        terminated = False
 
         while steps < self.max_steps:
             if self._cancelled(cancel):
@@ -243,7 +262,7 @@ class LoopAgent:
 
             steps += 1
             try:
-                text, tool_calls, finish_reason = await self._call_model(
+                text, tool_calls, finish_reason, streamed = await self._call_model(
                     messages, tools, handler
                 )
             except Exception as exc:  # 网络/鉴权/模型侧错误
@@ -260,7 +279,10 @@ class LoopAgent:
             # 没有工具调用 → 本轮就是最终回答
             if not tool_calls:
                 text = text.strip()
-                await self._emit(handler, "assistant_message", {"text": text})
+                # 流式模式这段文本已经通过 assistant_delta 发过了，
+                # 再发一次 assistant_message 会让前端把同一段回答显示两遍。
+                if streamed == 0 and text:
+                    await self._emit(handler, "assistant_message", {"text": text})
                 await self._emit(handler, "done", {"steps": steps})
                 return LoopResult(
                     text=text,
@@ -329,6 +351,34 @@ class LoopAgent:
                 )
                 outcome = await self._execute(name, tc.function.arguments)
                 all_terminate = all_terminate and outcome.terminate
+                # 同一轮里模型会不停换工具/换参数重试，每轮都输出一段几乎相同的
+                # 解释；前端 answer 是追加语义，最后会堆成一屏重复内容
+                # （实测：台账接口连续超时两次 + 停止后补发的 summary，
+                #  用户看到同一段回答出现两遍）。连续失败到阈值就收手。
+                if outcome.is_error:
+                    error_streak += 1
+                else:
+                    error_streak = 0
+                if error_streak >= self.max_tool_errors:
+                    logger.warning(
+                        f"[loop] 连续 {error_streak} 次工具调用失败，停止重试：{name}"
+                    )
+                    await self._emit(
+                        handler,
+                        "error",
+                        {"message": f"连续 {error_streak} 次调用业务接口失败，已停止重试"},
+                    )
+                    return LoopResult(
+                        text=(
+                            f"业务接口连续 {error_streak} 次调用失败，已停止重试。\n\n"
+                            f"{outcome.text}\n\n"
+                            "可以稍后再试，或者换个问法把范围缩小一点。"
+                        ),
+                        messages=messages,
+                        tool_calls=executed,
+                        steps=steps,
+                        stop_reason="error",
+                    )
                 executed.append(
                     {
                         "name": name,
@@ -381,11 +431,29 @@ class LoopAgent:
                         )
 
             if all_terminate:
+                terminated = True
                 break
+
+        # 工具明确要求结束本轮（如接口超时）：让模型基于已有结果收尾，
+        # 不再换工具重试，也不要把这种正常收尾误报成"达到最大步数"。
+        if terminated:
+            summary = await self._finalize(messages)
+            await self._emit(handler, "done", {"steps": steps})
+            return LoopResult(
+                text=summary,
+                messages=messages,
+                tool_calls=executed,
+                steps=steps,
+                stop_reason="answered",
+            )
 
         # 步数用尽：再要一次不带工具的总结，避免给用户一个空回答
         await self._emit(handler, "error", {"message": "达到最大工具调用步数"})
         summary = await self._finalize(messages)
+        # 这段总结是刚刚才生成的，一个字符都没流过，必须主动发一次；
+        # 否则 ws_bridge 只在 streamed==0 时才补发，前面说过话就把它丢了。
+        if summary.strip():
+            await self._emit(handler, "assistant_message", {"text": summary})
         return LoopResult(
             text=summary,
             messages=messages,
@@ -443,14 +511,27 @@ class LoopAgent:
                 ),
                 is_error=True,
             )
+        except ToolTimeoutError as exc:
+            # 超时后不再让模型换工具/换参数重试：本轮直接收尾，
+            # 由 _finalize 基于这条 tool message 给用户一句明确的超时说明。
+            logger.warning(f"[loop] 工具 {name} 超时：{exc}")
+            return ToolOutcome(
+                text=(
+                    f"{exc}。请直接告诉用户接口超时、稍后再试，"
+                    "不要换工具或换参数重试。"
+                ),
+                is_error=True,
+                terminate=True,
+            )
         except asyncio.TimeoutError:
             logger.warning(f"[loop] 工具 {name} 超时（>{self.tool_timeout}s）")
             return ToolOutcome(
                 text=(
                     f"工具 {name} 执行超时（超过 {self.tool_timeout:.0f} 秒）。"
-                    f"请缩小查询范围后重试，或换一种方式回答用户。"
+                    f"请直接告诉用户接口超时、稍后再试，不要换工具或换参数重试。"
                 ),
                 is_error=True,
+                terminate=True,
             )
         except Exception as exc:
             logger.exception(f"[loop] 工具 {name} 执行异常")

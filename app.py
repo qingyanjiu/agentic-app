@@ -2,6 +2,19 @@
 import json
 import os
 import re
+
+# ---- .env 支持（可选）----
+# 仓库里只放 .env.example；真实 .env 被 .gitignore 忽略。
+# override=False：已经在环境里的变量（compose / systemd / shell）优先，
+# .env 只补缺。没装 python-dotenv 也能跑，纯靠系统环境变量。
+try:
+    from dotenv import load_dotenv
+except ImportError:  # pragma: no cover
+    load_dotenv = None
+
+if load_dotenv is not None:
+    _ENV_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    load_dotenv(_ENV_FILE, override=False)
 from typing import Optional
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -45,6 +58,14 @@ logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(levelname)s - %(name)s - %(message)s'
 )
+# 同时打到控制台：debug / docker logs 时能直接看到关键链路日志；
+# 文件里仍保留完整记录，控制台只放 INFO 及以上，避免第三方 DEBUG 淹没输出。
+_console_handler = logging.StreamHandler()
+_console_handler.setLevel(logging.INFO)
+_console_handler.setFormatter(
+    logging.Formatter('%(asctime)s - %(levelname)s - %(name)s - %(message)s')
+)
+logging.getLogger().addHandler(_console_handler)
 logger = logging.getLogger(__name__)
 app = FastAPI()
 # 添加 CORS 支持（解决跨域问题）
@@ -334,6 +355,120 @@ def _scene_mcp_url() -> str:
             url = ""
     _scene_url_cache = url
     return url
+
+
+
+
+# ============================================================
+# 知识库问答（payload.mode=kb）
+#
+# 检索：平台 HTTP 直连接口（mcp_client/knowledge_http_client.py，配了
+#       KB_BASE_URL + KB_API_KEY 才启用）→ 失败回退 sidecar /mcp/knowledge。
+# 作答：ChatClient.astream 流式回 answer 事件，结束时补 done。
+# 与 loop 链路共用同一条 WS 通道，靠 payload.mode 区分。
+# ============================================================
+KB_SYSTEM_PROMPT = """你是园区知识库问答助手，只回答规章制度、管理办法、操作规范、说明文档这类知识库问题。
+
+规则：
+- 只依据【检索结果】回答，禁止编造结果里没有的内容。
+- 引用哪条就在句末标注来源，格式：（来源：文档名）。
+- 检索结果为空，或内容里明确说"未检索到相关内容"时，直接回答"未在知识库中检索到相关内容，建议换个问法再试试。"
+- 用户问在园人数、设备状态这类实时数据时，说明实时数据请切回「智能体问答」模式。
+- 用中文回答，条理清晰，可以引用原文。"""
+
+_kb_mcp_url_cache = None
+
+
+def _knowledge_mcp_url() -> str:
+    """sidecar 知识库检索端点（兜底通道）；没配置返回空串。结果缓存一次。"""
+    global _kb_mcp_url_cache
+    if _kb_mcp_url_cache is not None:
+        return _kb_mcp_url_cache
+    url = ""
+    try:
+        from mcp_client.mcp_config import load_servers
+
+        conf = load_servers(os.path.join(BASE_DIR, "mcp_client", "mcp_server_config.yaml"))
+        url = ((conf.get("knowledge") or {}).get("url")) or ""
+    except Exception as e:
+        logger.warning(f"读取 knowledge MCP 配置失败(知识库兜底通道不可用): {e}")
+    _kb_mcp_url_cache = url
+    return url
+
+
+async def kb_retrieve(query: str) -> str:
+    """知识库检索：平台 HTTP 直连优先，sidecar 兜底，都失败给可读文案。"""
+    # 1) 平台接口直连（零 langchain，走 httpx）
+    direct = None
+    try:
+        from mcp_client.knowledge_http_client import build_from_env as _build_kb_http
+
+        direct = _build_kb_http()
+    except Exception as e:
+        logger.warning(f"[kb] 初始化平台直连失败: {type(e).__name__} {e}")
+    if direct is not None:
+        try:
+            return await direct.retrieve(query)
+        except Exception as e:
+            logger.warning(
+                f"[kb] 平台直连检索失败，改用 sidecar 兜底: {type(e).__name__} {e}"
+            )
+
+    # 2) sidecar /mcp/knowledge（datasetIds 传空串 = 用 sidecar 配置的默认范围）
+    url = _knowledge_mcp_url()
+    if url:
+        try:
+            from mcp_client.knowledge_mcp_client import KnowledgeMcpClient
+
+            client = KnowledgeMcpClient(url)
+            try:
+                return await client.call_tool(
+                    "ragflow:searchKnowledge", {"question": query, "datasetIds": ""}
+                )
+            finally:
+                await client.aclose()
+        except Exception as e:
+            logger.error(f"[kb] sidecar 检索失败: {type(e).__name__} {e}")
+
+    return "知识库服务暂时不可用，请稍后重试。"
+
+
+async def _handle_kb_turn(websocket, query: str, llm) -> None:
+    """一轮知识库问答：检索 → 拼提示词 → 流式作答 → done。"""
+    retrieved = await kb_retrieve(query)
+    prompt = f"{KB_SYSTEM_PROMPT}\n\n用户问题：{query}\n\n【检索结果】\n{retrieved}"
+
+    sent = 0
+    try:
+        async for piece in llm.astream(prompt):
+            if not piece:
+                continue
+            sent += len(piece)
+            await websocket.send_text(
+                json.dumps(
+                    {"event": "custom", "data": {"type": "answer", "content": piece}},
+                    ensure_ascii=False,
+                )
+            )
+    except Exception as e:
+        logger.exception("[kb] 作答失败")
+        await websocket.send_text(
+            json.dumps(
+                {"event": "custom", "data": {"type": "error", "content": f"知识库作答失败：{e}"}},
+                ensure_ascii=False,
+            )
+        )
+
+    # 模型一个字都没吐（异常或空回复）：至少把检索结果原样给前端，别白屏
+    if sent == 0:
+        await websocket.send_text(
+            json.dumps(
+                {"event": "custom", "data": {"type": "answer", "content": retrieved}},
+                ensure_ascii=False,
+            )
+        )
+
+    await websocket.send_text(json.dumps({"status": "done"}))
 
 
 async def get_scene_graph():
@@ -675,16 +810,9 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
             # 以为在查、实际落到 loop 兜底。
             # ============================================================
             if payload.get("mode") == "kb" and query:
-                await websocket.send_text(json.dumps({
-                    "event": "custom",
-                    "data": {
-                        "type": "answer",
-                        "content": "知识库问答暂未接入，请切回「智能体问答」模式提问。",
-                    },
-                }, ensure_ascii=False))
-                # answer 必配 done，否则前端回合不结束（排查记录案例 14）
-                await websocket.send_text(json.dumps({"status": "done"}))
+                await _handle_kb_turn(websocket, query, llm)
                 continue
+
 
             # ============================================================
             # Loop Agent 灰度（新链路）

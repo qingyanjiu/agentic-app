@@ -89,6 +89,22 @@ for probe in ".git/" "agent/intent/models/" ".env" "global_config.json" \
     fi
 done
 
+# 反向自检：必需的代码包必须在包里（部署后启动即 import，缺一个就崩）。
+# 踩过的坑："memory/*" 曾被当成运行时数据整目录排除，线上直接
+# ModuleNotFoundError: No module named 'memory'。
+LISTING="$(unzip -Z1 "$OUT" || true)"
+for need in "memory/session_state.py" "memory/chat_store.py" \
+    "agent/loop/agent.py" "agent/loop/ws_bridge.py" \
+    "mcp_client/knowledge_http_client.py" "mcp_client/knowledge_mcp_client.py" \
+    "models/llm.py" "app.py"; do
+    if printf '%s\n' "$LISTING" | grep -qx "$need"; then
+        echo "  [ok] 包含 $need"
+    else
+        echo "  [x] 缺少 $need（检查 EXCLUDES 是否误排了代码目录）"
+        failed=1
+    fi
+done
+
 # 模型不在包里是预期行为，提示一下
 echo
 if unzip -Z1 "$OUT" | grep -q "^agent/intent/models/"; then
