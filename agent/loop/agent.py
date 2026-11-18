@@ -149,10 +149,12 @@ class LoopAgent:
         messages: list[dict],
         tools: list[dict],
         handler: EventHandler | None,
-    ) -> tuple[str, list, str | None]:
-        """返回 (文本, tool_calls, finish_reason)。
+    ) -> tuple[str, list, str | None, int]:
+        """返回 (文本, tool_calls, finish_reason, 已流出去的字符数)。
 
-        流式下 tool_calls 的 arguments 是分片字符串，必须按 index 累加。
+        流式下 tool_calls 的 arguments 是分片字符串，必须按 index 累加；
+        第 4 项用来判断还要不要补发 assistant_message——流过就别重复发，
+        否则前端会把同一段回答追加两遍。
         """
         if not self.stream:
             response = await self.client.chat.completions.create(
@@ -168,6 +170,7 @@ class LoopAgent:
                 message.content or "",
                 list(message.tool_calls or []),
                 getattr(choice, "finish_reason", None),
+                0,
             )
 
         stream = await self.client.chat.completions.create(
@@ -221,7 +224,8 @@ class LoopAgent:
             for index, slot in sorted(slots.items())
             if slot["name"]
         ]
-        return "".join(parts), tool_calls, finish_reason
+        text = "".join(parts)
+        return text, tool_calls, finish_reason, len(text)
 
     # ------------------------------------------------------------------ #
     # 主循环
@@ -258,7 +262,7 @@ class LoopAgent:
 
             steps += 1
             try:
-                text, tool_calls, finish_reason = await self._call_model(
+                text, tool_calls, finish_reason, streamed = await self._call_model(
                     messages, tools, handler
                 )
             except Exception as exc:  # 网络/鉴权/模型侧错误
@@ -275,7 +279,10 @@ class LoopAgent:
             # 没有工具调用 → 本轮就是最终回答
             if not tool_calls:
                 text = text.strip()
-                await self._emit(handler, "assistant_message", {"text": text})
+                # 流式模式这段文本已经通过 assistant_delta 发过了，
+                # 再发一次 assistant_message 会让前端把同一段回答显示两遍。
+                if streamed == 0 and text:
+                    await self._emit(handler, "assistant_message", {"text": text})
                 await self._emit(handler, "done", {"steps": steps})
                 return LoopResult(
                     text=text,
@@ -443,6 +450,10 @@ class LoopAgent:
         # 步数用尽：再要一次不带工具的总结，避免给用户一个空回答
         await self._emit(handler, "error", {"message": "达到最大工具调用步数"})
         summary = await self._finalize(messages)
+        # 这段总结是刚刚才生成的，一个字符都没流过，必须主动发一次；
+        # 否则 ws_bridge 只在 streamed==0 时才补发，前面说过话就把它丢了。
+        if summary.strip():
+            await self._emit(handler, "assistant_message", {"text": summary})
         return LoopResult(
             text=summary,
             messages=messages,
