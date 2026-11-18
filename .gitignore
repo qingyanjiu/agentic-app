@@ -51,6 +51,8 @@ memory_store.db
 *.jpeg
 *.gif
 reports/
+# 打包产物（scripts/pack.sh 生成 agentic-app-src-<时间>.zip）
+*.zip
 
 # --- 虚拟环境 / 依赖 ---
 .venv/
