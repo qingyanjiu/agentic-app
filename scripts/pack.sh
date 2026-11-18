@@ -49,7 +49,11 @@ EXCLUDES=(
     ".tmp_stubs/*"
     ".vscode/*"
     "exports/*"                  # 运行产物（导出的 docx 等）
-    "memory/*"                   # 运行时记忆
+    # memory/ 是**代码包**（store.py / memory_persistor*.py / session_state.py），
+    # 不能整目录排除，只排运行时数据文件，否则部署后启动即
+    # ModuleNotFoundError: No module named 'memory'
+    "memory/*.db"
+    "memory/*.db-*"
     "memory_store.db"
     "memory_store.json"
     "app.log"
@@ -85,6 +89,22 @@ for probe in ".git/" "agent/intent/models/" ".env" "global_config.json" \
     fi
 done
 
+
+# 反向自检：必需的代码包必须在包里。
+# 之前 EXCLUDES 里的 "memory/*" 把整个 memory 包排掉了，部署后
+# from memory.store import MemoryStore 直接 ModuleNotFoundError: No module named 'memory'
+# —— 这个包是代码（store.py / memory_persistor*.py / session_state.py），不是运行时数据。
+# 先把清单取到变量：unzip -Z1 在 pipefail 下可能返回非 0（zip 里有目录条目时），
+# 直接 `unzip | grep -q` 会让 if 永远走 else，自检假报警。
+LISTING="$(unzip -Z1 "$OUT" || true)"
+for need in "memory/store.py" "memory/session_state.py"; do
+    if printf '%s\n' "$LISTING" | grep -qx "$need"; then
+        echo "  [ok] 包含 $need"
+    else
+        echo "  [x] 缺少 $need（检查 EXCLUDES 是否误排了 memory/）"
+        failed=1
+    fi
+done
 # 模型不在包里是预期行为，提示一下
 echo
 if unzip -Z1 "$OUT" | grep -q "^agent/intent/models/"; then
