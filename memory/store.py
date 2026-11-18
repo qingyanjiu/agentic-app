@@ -16,7 +16,7 @@ import logging
 logging.basicConfig(
     filename='app.log',
     # 追加模式 'a'，覆盖模式 'w' 
-    filemode='w',
+    filemode='a',
     level=logging.DEBUG,
     format='%(asctime)s - %(levelname)s - %(name)s - %(message)s'
 )
@@ -40,8 +40,13 @@ def memory_persistor_factory(persistor_type='json') -> MemoryPersistor:
 加载时直接初始化，保证单例
 '''
 config = get_config()
-memory_persistor_type = config['memory_persistor']['type']
-memory_buffer_window = config['memory_persistor']['memory_buffer_window']
+# global_config.json 被 pack.sh 当密钥文件排除（里面有 redis 密码 / dify key），
+# 但模块级这里强依赖它会在部署机上直接崩：
+#   FileNotFoundError: 'global_config.json'
+# 所以缺文件时退回默认配置：sqlite 本地文件持久化，不需要任何外部服务。
+_persistor_conf = config.get('memory_persistor') or {}
+memory_persistor_type = _persistor_conf.get('type') or 'sqlite'
+memory_buffer_window = int(_persistor_conf.get('memory_buffer_window') or 10)
 memory_persistor = memory_persistor_factory(memory_persistor_type)
 
 class MemoryStore:
