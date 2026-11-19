@@ -362,3 +362,98 @@ def test_device_status_tool_uses_formatter():
 
     assert out.text.startswith("设备类型统计（各类合计 386 台）：")
     assert "itemStyle" not in out.text
+
+
+class TestTimeArgs:
+    """时间参数怎么落到 MCP：全用固定输入，不依赖"今天"是哪天。
+
+    历史事故：「本周的会议安排」原本连 startTime/endTime 都没传（工具参数是
+    {}），平台按默认口径返回，用户看到的不是本周；补上后又发现两处边界错：
+    span 的 end 是"现在时刻"（周四问本周只查到周四），point 的 end 取了 [0]
+    （「下周」变成只查第一天）。
+    """
+
+    def _args(self, query_type, date_slot):
+        from agent.loop.domains._generic import time_args_for
+
+        build = time_args_for("room_meet_list_by_day")
+        return build({"event_type": query_type, "date": date_slot})
+
+    def test_span_week_end_extends_to_sunday(self):
+        # 2026-11-19 是周四，jionlp 给的 end 就是"现在"
+        args = self._args(
+            "room_meet_list_by_day",
+            {
+                "time_type": "span",
+                "start_time": "2026-11-16T00:00:00",
+                "end_time": "2026-11-19T16:22:13",
+                "raw": "本周",
+            },
+        )
+        assert args == {"startTime": "2026-11-16", "endTime": "2026-11-22"}
+
+    def test_span_month_end_extends_to_month_end(self):
+        args = self._args(
+            "room_meet_list_by_day",
+            {
+                "time_type": "span",
+                "start_time": "2026-11-01T00:00:00",
+                "end_time": "2026-11-19T16:22:13",
+                "raw": "本月",
+            },
+        )
+        assert args == {"startTime": "2026-11-01", "endTime": "2026-11-30"}
+
+    def test_span_without_span_word_keeps_original_end(self):
+        """「近三天」这类本来就该到"现在"，不能补到周末。"""
+        args = self._args(
+            "room_meet_list_by_day",
+            {
+                "time_type": "span",
+                "start_time": "2026-11-17T00:00:00",
+                "end_time": "2026-11-19T16:22:13",
+                "raw": "近三天",
+            },
+        )
+        assert args == {"startTime": "2026-11-17", "endTime": "2026-11-19"}
+
+    def test_point_single_day(self):
+        args = self._args(
+            "room_meet_list_by_day",
+            {
+                "time_type": "point",
+                "start_time": ["2026-11-19 00:00:00", "2026-11-19 23:59:59"],
+                "end_time": ["2026-11-19 00:00:00", "2026-11-19 23:59:59"],
+                "raw": "今天的会议安排",
+            },
+        )
+        assert args == {"startTime": "2026-11-19", "endTime": "2026-11-19"}
+
+    def test_point_multi_day_range_keeps_last_day(self):
+        """jionlp 给「下周」的是 [首日, 末日]，结束日必须取 [-1]。"""
+        args = self._args(
+            "room_meet_list_by_day",
+            {
+                "time_type": "point",
+                "start_time": ["2026-11-23 00:00:00", "2026-11-29 23:59:59"],
+                "end_time": ["2026-11-23 00:00:00", "2026-11-29 23:59:59"],
+                "raw": "下周的会议安排",
+            },
+        )
+        assert args == {"startTime": "2026-11-23", "endTime": "2026-11-29"}
+
+    def test_query_type_outside_whitelist_gets_no_args(self):
+        """其它子类型的工具没有这两个参数，多传会被 MCP schema 拒。"""
+        args = self._args(
+            "meeting_statistics",
+            {
+                "time_type": "span",
+                "start_time": "2026-11-16T00:00:00",
+                "end_time": "2026-11-19T16:22:13",
+                "raw": "本周",
+            },
+        )
+        assert args == {}
+
+    def test_missing_date_slot_yields_empty(self):
+        assert self._args("room_meet_list_by_day", {}) == {}
