@@ -815,3 +815,44 @@ def test_energy_graph_wires_unit_rule_end_to_end():
     )
     assert "千瓦时" in llm.prompts[0], "端到端路径同样要带单位口径"
     assert final.get("done") is True
+
+
+def test_information_task_trend_prompt_says_monthly_only():
+    """「任务趋势」取的是月度节目发布量，提示词不能再暗示"按时间/当天"。
+
+    sidecar 的 getTaskTrend 请求体只有 producerCode/protocolVersion，startTime/
+    endTime 直接忽略，数据是平台固定的近几个月月度数量。旧提示词写「按时间列出
+    任务执行量趋势」，还把 slots 里解析出的「本次查询时间范围：今天」塞给模型，
+    结果模型会把月度数字说成"今天发布了 N 个节目"。
+    """
+    from graph.information_status_langgraph import _llm_format_information_result
+
+    llm = FakeLLM(reply="近几个月按月发布量。")
+    asyncio.run(_llm_format_information_result(
+        llm, "task_trend", {"original_query": "今天的任务执行趋势",
+                            "slots": {"date": TODAY_DATE}},
+        '{"xData":["2026-06"],"count":[12]}',
+    ))
+    prompt = llm.prompts[0]
+
+    assert "按月" in prompt, prompt
+    assert "只有" in prompt and "月度口径" in prompt, prompt
+    # 关键：不能把"今天"当成这批数据的时间范围喂给模型
+    assert "本次查询的时间范围" not in prompt, prompt
+    assert "按时间列出" not in prompt, prompt
+
+
+def test_information_other_subtypes_keep_query_time_line():
+    """其余子类型继续带"本次查询时间范围"，这次改动不要波及它们。"""
+    from graph.information_status_langgraph import _llm_format_information_result
+
+    llm = FakeLLM(reply="今天发布 3 条。")
+    asyncio.run(_llm_format_information_result(
+        llm, "info_view", {"original_query": "今天发了多少条信息",
+                           "slots": {"date": TODAY_DATE}},
+        '{"statisticList":[]}',
+    ))
+    prompt = llm.prompts[0]
+
+    assert "本次查询的时间范围" in prompt, prompt
+

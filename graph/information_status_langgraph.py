@@ -78,19 +78,29 @@ async def _llm_format_information_result(
         requirement = {
             "info_view": "列出信息发布设备统计、类型占比和设备列表；",
             "broadcast_view": "列出广播设备在线/离线/占用统计；",
-            "task_trend": "按时间列出任务执行量趋势；",
-            "program_count": "按时间列出节目数量趋势；",
+            "task_trend": "按月份列出节目发布数量趋势（数据源固定近几个月，不能按天/周）；",
+            "program_count": "按月份列出节目数量趋势（同上，固定月度口径）；",
             "info_equip": "列出信息发布设备明细；",
             "broadcast_equip": "列出广播设备明细及当前任务；",
         }.get(event_type, "把返回数据整理清楚；")
 
-        # 省略式追问（如「昨天呢」）时 original_query 仍是上一轮原话，其中的时间词
-        # 不代表本次查询；把 slots 里真实查询时间显式交给 LLM，避免回答被原话带偏
-        _qt = format_query_time(state.get("slots", {}).get("date"))
-        query_time_line = (
-            f"本次查询的时间范围：{_qt}（回答中的时间表述以此为准，不要沿用原话里的时间词）\n"
-            if _qt else ""
-        )
+        # 「任务执行趋势」「节目数量趋势」取的是平台固定的月度口径：接口不接受
+        # 按天/周的时间范围，传 startTime/endTime 也会被忽略。这时再把「本次查询
+        # 时间范围：昨天」塞给模型，它就会把月度数字说成昨天的，等于编数据。
+        if event_type in ("task_trend", "program_count"):
+            query_time_line = (
+                "注意：本接口固定返回近几个月的**按月**节目发布数量，不接受按天/周"
+                "的时间范围。用户问「今天/昨天」时无法精确到天，回答必须先说明只有"
+                "月度口径，再给月份数据，不要把这些数字说成某一天的。\n"
+            )
+        else:
+            # 省略式追问（如「昨天呢」）时 original_query 仍是上一轮原话，其中的时间词
+            # 不代表本次查询；把 slots 里真实查询时间显式交给 LLM，避免回答被原话带偏
+            _qt = format_query_time(state.get("slots", {}).get("date"))
+            query_time_line = (
+                f"本次查询的时间范围：{_qt}（回答中的时间表述以此为准，不要沿用原话里的时间词）\n"
+                if _qt else ""
+            )
 
         prompt = (
             "你是智慧园区信息发布助手。下面是一次 MCP 工具查询的原始返回，"
