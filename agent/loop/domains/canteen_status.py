@@ -1,7 +1,13 @@
 """食堂管理业务域（3 个子类型）。"""
 from agent.intent.slots import extract_canteen_status_slots
 
-from ._generic import QueryDomain, build_from, preview_from, route_from
+from ._generic import (
+    QueryDomain,
+    build_from,
+    preview_from,
+    route_from,
+    time_args_for,
+)
 
 CONFIG = QueryDomain(
     name="canteen_status",
@@ -19,6 +25,9 @@ CONFIG = QueryDomain(
         "dining_count": "canteen:getDiningCount",
     },
     default_type="week_menu",
+    # 只有这两个工具真用时间（sidecar 拼进 query string）；week_menu 不接受，
+    # 一起传会被 MCP schema 拒。
+    args_builder=time_args_for("dish_rank", "dining_count"),
 )
 
 
