@@ -9,6 +9,22 @@ from ._generic import (
     time_args_for,
 )
 
+# 时间参数在这个域里是三种形态，一个域只能挂一个 args_builder，所以串起来用：
+# 每个 builder 只认自己白名单里的子类型，不属于自己的返回 {}。
+_YMD_ARGS = time_args_for(
+    "ai_alert", "ai_inspection", "alarm_detail", "ai_alarm_list"
+)
+# getAlertSituation 把时间拼进 query string，但格式是 ISO，不是 yyyy-MM-dd
+_ISO_ARGS = time_args_for("ai_trend", mode="iso")
+# getInspectionTrend 的参数名是 date 且只支持单日；「本周」这种区间不传，
+# 否则会把整周压成周一那一天
+_DATE_ARGS = time_args_for("inspection_trend", mode="date")
+
+
+def _security_args(slots: dict) -> dict:
+    return _YMD_ARGS(slots) or _ISO_ARGS(slots) or _DATE_ARGS(slots)
+
+
 CONFIG = QueryDomain(
     name="security_status",
     server="security",
@@ -35,13 +51,7 @@ CONFIG = QueryDomain(
         "ai_alarm_list": "security:getAlarmListWithType",
     },
     default_type="alarm_list",
-    # 这四个工具真用时间（sidecar 放 POST body，格式 yyyy-MM-dd）。
-    # 另外两个不能走同一套：
-    #   ai_trend -> getAlertSituation 要 ISO（2026-09-01T00:00:00）
-    #   inspection_trend -> getInspectionTrend 的参数名是 date，不是 startTime
-    args_builder=time_args_for(
-        "ai_alert", "ai_inspection", "alarm_detail", "ai_alarm_list"
-    ),
+    args_builder=_security_args,
     # 接口正常但没数据时别让模型说成"服务异常"（实测 getSecurityAlarmList 返回 "null"）
     empty_hint="这个时间段没有安防告警事件",
     required={"alarm_detail": ("alarm_id",)},

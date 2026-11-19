@@ -488,5 +488,42 @@ class TestTimeArgs:
         from agent.loop.domains import canteen_status as c, security_status as s
 
         assert c.preview_plan("本周菜谱")["args"] == {}
-        assert s.preview_plan("本周异常预警趋势")["args"] == {}
         assert s.preview_plan("今天的安防告警列表")["args"] == {}
+
+    def test_security_iso_mode_for_alert_situation(self):
+        """getAlertSituation 要 ISO（2026-09-01T00:00:00），不是 yyyy-MM-dd。"""
+        from agent.loop.domains import security_status as s
+
+        args = s.preview_plan("今天的安防告警趋势")["args"]
+        assert args["startTime"].endswith("T00:00:00"), args
+        assert args["endTime"].endswith("T23:59:59"), args
+
+    def test_security_date_mode_only_for_single_day(self):
+        """getInspectionTrend 只有 date；区间宁可不传，也不能压成周一那一天。"""
+        from agent.loop.domains import security_status as s
+
+        single = s.preview_plan("今天的巡查趋势")
+        assert single["query_type"] == "inspection_trend"
+        assert set(single["args"]) == {"date"}, single
+        assert s.preview_plan("本周巡查趋势")["args"] == {}
+
+    def test_fire_days_mode(self):
+        """消防只有 days（从今天往前 N 天），区间末日不是今天就不传。"""
+        from agent.loop.domains import emergency_fire as f
+
+        assert f.preview_plan("今天火警几条")["args"] == {"days": 1}
+        assert f.preview_plan("近三天的火警")["args"] == {"days": 3}
+        assert f.preview_plan("昨天有几条火警")["args"] == {}
+
+    def test_count_fallback_still_gets_time_args(self):
+        """count 是抽取器的"没认出"标记，回落 default_type 后参数不能丢。
+
+        修之前：resolve 把 query_type 改成 fire_alarm_list 去选工具，却把原始
+        slots（query_type='count'）交给 args_builder，白名单判空 →
+        「今天火警几条」静默退化成后端的默认 7 天。
+        """
+        from agent.loop.domains import emergency_fire as f
+
+        plan = f.preview_plan("今天火警几条")
+        assert plan["query_type"] == "fire_alarm_list"
+        assert plan["args"] == {"days": 1}

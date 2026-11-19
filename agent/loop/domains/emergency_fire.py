@@ -1,7 +1,13 @@
 """消防态势业务域（4 个子类型）。"""
 from agent.intent.slots import extract_emergency_fire_slots
 
-from ._generic import QueryDomain, build_from, preview_from, route_from
+from ._generic import (
+    QueryDomain,
+    build_from,
+    preview_from,
+    route_from,
+    time_args_for,
+)
 
 CONFIG = QueryDomain(
     name="emergency_fire",
@@ -20,6 +26,8 @@ CONFIG = QueryDomain(
         "month_repair": "fire:getMonthRepair",
     },
     default_type="fire_alarm_list",
+    # 后端只有 days（近 N 天，从今天往前推），没有区间参数。
+    args_builder=time_args_for("fire_alarm_num", "fire_alarm_list", mode="days"),
 )
 
 
