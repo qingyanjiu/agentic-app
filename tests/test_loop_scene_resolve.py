@@ -367,6 +367,25 @@ def test_restore_building_plans_switch_floor_99():
         "arguments": {},
     }
 
+
+def test_env_commands_are_not_device_references():
+    """时间/天气是 scene_set_env 的活，不能被当成设备名去查台账。
+
+    线上事故：「时间切到晚上」「切到下雨天」都回了「匹配到 12 台设备，请选择」
+    ＋「这个条件匹配到 579 台设备」。环境解析本身是对的（能算出 20:00:00 /
+    小雨），纯粹是被设备解析在进场景图之前劫走了。
+    """
+    from agent.loop.scene_resolve import has_device_reference
+    from graph.scene_control_langgraph import _rule_based_plan
+
+    for query in ["时间切到晚上", "时间切到20点", "切到下雨天", "改成晴天", "切到20点"]:
+        assert has_device_reference(query) is False, query
+        plan = _rule_based_plan(query, {})
+        assert plan is not None and plan["tool"] == "scene_set_env", (query, plan)
+
+    # 设备类型词优先：「打开晚上的监控」仍然要解析设备
+    assert has_device_reference("打开晚上的监控") is True
+
 def test_floor_only_request_lists_whole_floor(monkeypatch):
     """「打开7F监控」是看整层，不是选一台：把该层全部点位列出来，别只说 6 台。"""
     from agent.loop.scene_resolve import clarify_entities, clarify_headline

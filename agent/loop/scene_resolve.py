@@ -62,6 +62,15 @@ def _ordinal_index(query: str) -> int | None:
 
 _TYPE_WORD_RE = re.compile(r"监控|摄像头|画面|视频|门禁|道闸|梯控|广播|电表|水表")
 
+# 环境指令（时间/天气）永远不需要设备解析。漏了这张表，「时间切到晚上」
+# 「切到下雨天」会被当成设备名去查台账，回一句「匹配到 12 台设备，请选择」。
+# 必须放在 _TYPE_WORD_RE 之后判断：「打开晚上的监控」仍要解析设备。
+_ENV_WORD = re.compile(
+    r"时间|几点|\d{1,2}\s*[点:：]|"
+    r"晚上|白天|傍晚|中午|上午|下午|清晨|早上|夜晚|夜间|深夜|凌晨|"
+    r"天气|下雨|雨天|小雨|大雨|晴天|晴朗|下雪|小雪|大雪|雾天|大雾|阴天|台风"
+)
+
 # 追问态出口话术：用户既没给序号、也没说出设备名 → 不再猜，直接放开追问。
 # 调用方（app.py）看到这句要清掉会话态，否则下一句还会被当成补答。
 ESCAPE_CLARIFY = (
@@ -95,6 +104,10 @@ def has_device_reference(query: str) -> bool:
         return True
     if _TYPE_WORD_RE.search(text):
         return True
+    # 环境指令（时间/天气）交给 scene_set_env，不查台账。放在设备类型词之后：
+    # 「打开晚上的监控」仍是设备诉求。
+    if _ENV_WORD.search(text):
+        return False
     residual = _STRIP_ACTION.sub("", text).strip(" 的，,。：:")
     if len(residual) < 3 or _SCOPE_WORD.search(residual):
         return False
