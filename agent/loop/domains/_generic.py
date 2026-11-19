@@ -14,7 +14,7 @@ from typing import Callable
 from ..govern import govern
 from ..registry import DomainSpec
 from ..runtime import McpToolbox
-from ..types import DomainPlan, ToolOutcome, ToolSpec, tool_schema
+from ..types import DomainPlan, ToolOutcome, ToolSpec, ToolTimeoutError, tool_schema
 
 _QUERY_PARAM = {
     "query": {
@@ -44,6 +44,8 @@ class QueryDomain:
     empty_hint: str = ""
     # 可选：把接口原文转成面向用户的文本（图表 JSON → 人话列表这类）
     formatter: Callable[[str, str], str] | None = None
+    # 可选：query_type → 接口超时时的业务话术（默认按域描述拼一个）
+    timeout_hints: dict[str, str] = field(default_factory=dict)
 
     def resolve(self, query: str) -> tuple[str, str | None, dict, list[str]]:
         slots = self.extract_slots(query) or {}
@@ -117,6 +119,10 @@ def build_from(cfg: QueryDomain, toolbox: McpToolbox) -> DomainSpec:
 
         try:
             raw = await toolbox.call(cfg.server, tool, args)
+        except ToolTimeoutError as exc:
+            # 超时 = 根本没取到数据；空 = 接口正常但没数据。两者话术必须分开，
+            # 否则用户看到「一会儿说超时、一会儿说为空」，会以为服务坏了。
+            return ToolOutcome(_timeout_note(cfg, query_type, exc), is_error=True)
         except Exception as exc:
             return ToolOutcome(f"查询失败：{exc}", is_error=True)
 
@@ -172,4 +178,20 @@ def _empty_note(cfg: QueryDomain, query_type: str) -> str:
         f"{conclusion}（接口正常返回、值为空，不是故障）。"
         f"直接按这个结论回答用户即可；不要说接口异常、服务异常、数据未生成，"
         f"也不要让用户稍后再试。"
+    )
+
+
+def _timeout_note(cfg: QueryDomain, query_type: str, exc: BaseException) -> str:
+    """接口超时：说清「这次没取到」，不要说成「没有数据」。
+
+    与 `_empty_note` 严格区分：空 = 接口正常返回但没数据；超时 = 压根没拿到。
+    域可以按子类型给更贴业务的话术（见 QueryDomain.timeout_hints）。
+    """
+    conclusion = cfg.timeout_hints.get(query_type) or (
+        f"{cfg.description.split('：')[0]}接口超时"
+    )
+    return (
+        f"{conclusion}（本次没取到数据，不代表没有数据）。"
+        f"请直接告诉用户接口超时、稍后再试；不要说成「没有数据」「没有查到」，"
+        f"也不要换工具或换参数重试。原始错误：{exc}"
     )
