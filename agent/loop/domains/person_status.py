@@ -55,7 +55,22 @@ _PERSON_FIELD = {
 }
 
 
-def _pick(raw: str, query_type: str) -> str:
+# 三类指标各自的识别词。只有**恰好命中一类**才裁剪成那一项：
+#   「现在在园多少人」       命中 1 类 -> 只给实时在园
+#   「查询今日人员态势」      命中 0 类 -> 三项全给（泛问）
+#   「包括在园、进入、离开」  命中 3 类 -> 三项全给（点名多项）
+# 后两种都必须把后端那句原文交出去，否则模型只看到一个数字，
+# 与 sidecar 里 tool description「没明确指定时返回全部三项」的契约相反。
+_METRIC_HINTS = {
+    "realtime": re.compile(
+        r"在园|在线人数|实时.{0,4}人数|现在.{0,4}多少|当前.{0,4}多少|目前.{0,4}多少"
+    ),
+    "enter": re.compile(r"进入|入园|进来|进了多少|来了多少"),
+    "leave": re.compile(r"离开|出园|出去|走了多少|出了多少"),
+}
+
+
+def _pick(raw: str, query_type: str, query: str = "") -> str:
     """从后端那句中文里挑出用户问的那一项。
 
     flow / structure 是图表数据（时间轴序列、公司人数），不是这句话，
@@ -64,6 +79,12 @@ def _pick(raw: str, query_type: str) -> str:
     spec = _PERSON_FIELD.get(query_type)
     if spec is None:
         return raw
+    if query:
+        hits = [name for name, pat in _METRIC_HINTS.items() if pat.search(query)]
+        # count 是兜底类型，问句只说「在园人数」时也该认作实时在园
+        target = "realtime" if query_type == "count" else query_type
+        if len(hits) != 1 or hits[0] != target:
+            return raw
     pattern, label = spec
     match = re.search(pattern, raw or "")
     if not match:
@@ -117,7 +138,9 @@ def build_domain(toolbox: McpToolbox) -> DomainSpec:
             logger.warning(f"[loop] 人员态势查询失败（{tool_name}）：{exc}")
             return ToolOutcome(f"人员态势查询失败：{exc}", is_error=True)
 
-        return ToolOutcome(govern(_pick(raw, query_type), label=f"person_{query_type}"))
+        return ToolOutcome(
+            govern(_pick(raw, query_type, query), label=f"person_{query_type}")
+        )
 
     return DomainSpec(
         name="person_status",
