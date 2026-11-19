@@ -13,11 +13,14 @@ CONFIG = QueryDomain(
         "「会议室现在有人吗」「今天的会议列表」。工具会自己判断子类型。"
         "重要口径：后端这几个接口**都不支持按会议室/楼层过滤**（"
         "getMeetingStatistics、getMeetingRoomOverview、getMeetingRoomStatus 无参数；"
-        "getRoomMeetListByDay 只有 startTime/endTime）。所以统计类结果"
-        "（预约场次、平均时长、会议室概览/状态）一律是**全园区口径**。"
-        "用户点名某个会议室（如「1F 北开标室」）时，必须在回答里说明"
-        "「接口不支持按会议室过滤，以下为全园区数据」，不能把它当成该会议室的结论；"
-        "要某个会议室的具体安排，只能查当天会议列表后按 roomName 自行筛选。"
+        "getRoomMeetListByDay 只有 startTime/endTime，返回字段里也没有会议室名）。"
+        "所以统计类结果（预约场次、平均时长、会议室概览/状态）一律是**全园区口径**。"
+        "用户点名某个会议室（如「1F 北开标室」）时，必须说明"
+        "「接口不支持按会议室过滤，以下为全园区数据」，不能把它当成该会议室的结论。"
+        "另外 getMeetingRoomStatus 返回的是三个维度：meetingRoomCount = freeCount + "
+        "usedCount（当前状态，两者互斥）；meetingRoomReservationCount 是「今日预约」的"
+        "独立维度，**不要与空闲/使用中相加，也不要凑成等于总数**。"
+        "按这个格式回答：「会议室共 N 间：当前空闲 X 间、使用中 Y 间；今日另有 Z 间有预约」。"
     ),
     extract_slots=extract_meeting_status_slots,
     tool_map={
