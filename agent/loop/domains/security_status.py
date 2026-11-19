@@ -1,7 +1,13 @@
 """安防态势业务域（11 个子类型）。"""
 from agent.intent.slots import extract_security_status_slots
 
-from ._generic import QueryDomain, build_from, preview_from, route_from
+from ._generic import (
+    QueryDomain,
+    build_from,
+    preview_from,
+    route_from,
+    time_args_for,
+)
 
 CONFIG = QueryDomain(
     name="security_status",
@@ -29,6 +35,13 @@ CONFIG = QueryDomain(
         "ai_alarm_list": "security:getAlarmListWithType",
     },
     default_type="alarm_list",
+    # 这四个工具真用时间（sidecar 放 POST body，格式 yyyy-MM-dd）。
+    # 另外两个不能走同一套：
+    #   ai_trend -> getAlertSituation 要 ISO（2026-09-01T00:00:00）
+    #   inspection_trend -> getInspectionTrend 的参数名是 date，不是 startTime
+    args_builder=time_args_for(
+        "ai_alert", "ai_inspection", "alarm_detail", "ai_alarm_list"
+    ),
     # 接口正常但没数据时别让模型说成"服务异常"（实测 getSecurityAlarmList 返回 "null"）
     empty_hint="这个时间段没有安防告警事件",
     required={"alarm_detail": ("alarm_id",)},

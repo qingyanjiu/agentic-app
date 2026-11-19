@@ -457,3 +457,36 @@ class TestTimeArgs:
 
     def test_missing_date_slot_yields_empty(self):
         assert self._args("room_meet_list_by_day", {}) == {}
+
+    def test_canteen_and_security_send_time_to_the_right_tools(self):
+        """食堂/安防里真用时间的工具要带上 yyyy-MM-dd 的区间。"""
+        import re
+
+        from agent.loop.domains import canteen_status as c, security_status as s
+
+        for plan in (
+            c.preview_plan("今天多少人吃饭"),      # dining_count
+            c.preview_plan("本周菜品排行"),        # dish_rank
+            s.preview_plan("今天的AI告警情况"),     # getAiAlertSituation
+            s.preview_plan("今天的AI巡查事件"),     # getAiInspectionEvents
+            s.preview_plan("今天的分类告警明细"),   # getAlarmListWithType
+        ):
+            args = plan["args"]
+            assert set(args) == {"startTime", "endTime"}, plan
+            assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", args["startTime"]), plan
+            assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", args["endTime"]), plan
+            assert args["startTime"] <= args["endTime"], plan
+
+    def test_time_not_sent_to_tools_that_cannot_use_it(self):
+        """这三处传了也没用（或格式不对），必须保持空参数。
+
+        - week_menu：sidecar 方法无时间参数，多传会被 schema 拒
+        - ai_trend -> getAlertSituation：要 ISO（2026-09-01T00:00:00），不是 yyyy-MM-dd
+        - inspection_trend -> getInspectionTrend：参数名是 date，不是 startTime
+        - alarm_list -> getSecurityAlarmList：无参数，时间由后端自己定
+        """
+        from agent.loop.domains import canteen_status as c, security_status as s
+
+        assert c.preview_plan("本周菜谱")["args"] == {}
+        assert s.preview_plan("本周异常预警趋势")["args"] == {}
+        assert s.preview_plan("今天的安防告警列表")["args"] == {}
