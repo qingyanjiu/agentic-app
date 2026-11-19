@@ -80,18 +80,32 @@ def _natural_span_end(start_ymd: str | None, raw) -> str | None:
     return None
 
 
-def time_args_for(*query_types: str) -> Callable[[dict], dict]:
-    """生成 args_builder：只给列出的子类型传 startTime / endTime（yyyy-MM-dd）。
+def time_args_for(*query_types: str, mode: str = "ymd") -> Callable[[dict], dict]:
+    """生成 args_builder：只给列出的子类型传时间参数。
 
-    为什么必须按子类型白名单：sidecar 里多数统计工具没有这两个参数，MCP 会按
-    schema 校验入参，多传会直接报错。实测：
-      meeting:getRoomMeetListByDay                真用（放进 POST body）
-      canteen:getDishPopularity / getDiningCount  真用（拼 query string）
+    为什么必须按子类型白名单：sidecar 里多数统计工具没有时间参数，MCP 会按
+    schema 校验入参，多传会直接报错。实测哪些真用：
+      meeting:getRoomMeetListByDay                放进 POST body
+      canteen:getDishPopularity / getDiningCount  拼 query string
+      security:getAiAlertSituation / getAiInspectionEvents /
+               getAlarmListWithType                放进 POST body
+      security:getAlertSituation                  拼 query string，但**要 ISO 格式**
+      security:getInspectionTrend                 参数名是 date，只支持单日
+      fire:getFireAlarmNum / getFireAlarmList     参数名是 days（近 N 天）
       information:*（6 个全覆盖）                   签名收这两个参数，实现直接忽略：
           请求体里只有 producerCode / protocolVersion，时间不进 URL 也不进 body。
           所以**不要**给 information 配 args_builder ——「任务趋势/节目数量」取的是
           平台固定的近几个月月度节目发布量，传了也不会按天/周查，模型还会以为
           拿到的是「昨天」的数据。
+
+    mode 决定参数形态：
+      ymd   startTime/endTime = yyyy-MM-dd（默认，多数工具）
+      iso   startTime/endTime = yyyy-MM-ddT00:00:00 / yyyy-MM-ddT23:59:59
+      date  date = yyyy-MM-dd，接口只支持单日；区间不传（宁可用后端默认当天，
+            也不要把「本周」压成周一那一天）
+      days  days = 整数，接口语义是「从今天往前 N 天」；只有区间末日就是今天
+            才对得上，否则不传（「昨天的火警」不能变成"近 1 天"）
+
     不配 args_builder 的域一律用空参数——「本周的会议安排」曾经就是这样
     退化成平台默认口径的。
     """
@@ -101,14 +115,27 @@ def time_args_for(*query_types: str) -> Callable[[dict], dict]:
         query_type = slots.get("query_type") or slots.get("event_type") or ""
         if query_type not in allowed:
             return {}
-        date = slots.get("date") or {}
-        args: dict = {}
-        start = _ymd(_first_range_value(date.get("start_time")))
-        end = _ymd(_last_range_value(date.get("end_time")))
+        date_slot = slots.get("date") or {}
+        start = _ymd(_first_range_value(date_slot.get("start_time")))
+        end = _ymd(_last_range_value(date_slot.get("end_time")))
         # span（本周/本月）的 end_time 是「现在时刻」：周四问「本周的会议安排」
         # 只会查 周一~周四，周五到周日的会议全被切掉。补到自然周期末尾。
-        if date.get("time_type") == "span":
-            end = _natural_span_end(start, date.get("raw")) or end
+        # days 模式例外：它是「从今天往前 N 天」，补到周末反而多算几天。
+        if mode != "days" and date_slot.get("time_type") == "span":
+            end = _natural_span_end(start, date_slot.get("raw")) or end
+
+        if mode == "days":
+            return _days_args(start, end)
+        if mode == "date":
+            return {"date": start} if start and start == end else {}
+        if mode == "iso":
+            args: dict = {}
+            if start:
+                args["startTime"] = f"{start}T00:00:00"
+            if end:
+                args["endTime"] = f"{end}T23:59:59"
+            return args
+        args = {}
         if start:
             args["startTime"] = start
         if end:
@@ -116,6 +143,24 @@ def time_args_for(*query_types: str) -> Callable[[dict], dict]:
         return args
 
     return _build
+
+
+def _days_args(start: str | None, end: str | None) -> dict:
+    """把区间换算成「近 N 天」。
+
+    这类接口（fire 的两个）只收一个 days，后端从**今天**往前推 N 天，传不进
+    具体区间。所以只有区间末日就是今天才对得上；对不上（「昨天的火警」
+    「上周的火警」）宁可不传、让后端用它的默认 7 天，也不要给一个会被误解的 N。
+    """
+    if not start or not end:
+        return {}
+    try:
+        first, last = date.fromisoformat(start), date.fromisoformat(end)
+    except ValueError:
+        return {}
+    if last != date.today():
+        return {}
+    return {"days": max(1, (last - first).days + 1)}
 
 @dataclass(frozen=True)
 class QueryDomain:
@@ -156,7 +201,15 @@ class QueryDomain:
             query_type = self.default_type
         tool = self.tool_map.get(query_type)
         missing = [k for k in self.required.get(query_type, ()) if not slots.get(k)]
-        args = self.args_builder(slots) if self.args_builder else {}
+        # args_builder 必须看到**规范化后**的子类型。slots 里给的是 `count`
+        # （抽取器"没认出"标记）时上面已经回落成 default_type，但原始 slots
+        # 仍是 count —— 白名单校验会因此判空，参数就静默丢了。
+        # 实例：消防「今天火警几条」-> count -> fire_alarm_list，days 必须算出来。
+        args = (
+            self.args_builder(dict(slots, query_type=query_type))
+            if self.args_builder
+            else {}
+        )
         return query_type, tool, args, missing
 
 
