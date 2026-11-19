@@ -21,6 +21,16 @@ CONFIG = QueryDomain(
         "parking_duration_rank": "vehicle_status:getParkingRank",
     },
     default_type="parking_space",
+    # 车位结构这个接口实测不稳（同一问题一次 15s 超时、一次返回空），
+    # 超时话术必须和「空」区分开，否则用户看到的结论自相矛盾。
+    timeout_hints={
+        "parking_structure": "车位结构接口超时，本次未取到车位结构数据",
+        "parking_space": "停车位接口超时，本次未取到剩余车位数据",
+        "traffic_flow": "车流量接口超时，本次未取到车流量数据",
+        "official_vehicle": "公务车统计接口超时，本次未取到数据",
+        "parking_duration_rank": "停车时长排行接口超时，本次未取到数据",
+    },
+    empty_hint="该时段车位结构没有数据",
 )
 
 
