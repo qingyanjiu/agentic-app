@@ -1,7 +1,15 @@
 """会议管理业务域（6 个子类型）。"""
 from agent.intent.slots import extract_meeting_status_slots
 
-from ._generic import QueryDomain, build_from, preview_from, route_from
+
+from ._generic import (  # noqa: E402
+    QueryDomain,
+    build_from,
+    preview_from,
+    route_from,
+    time_args_for,
+)
+
 
 CONFIG = QueryDomain(
     name="meeting_status",
@@ -29,6 +37,9 @@ CONFIG = QueryDomain(
         "room_meet_list_by_day": "meeting:getRoomMeetListByDay",
     },
     default_type="meeting_statistics",
+    # 时间必须显式传下去：不配 args_builder 时 _generic 一律用空参数，
+    # 「本周的会议安排」会退化成平台的默认口径，用户看到的就不是本周。
+    args_builder=time_args_for("room_meet_list_by_day"),
 )
 
 

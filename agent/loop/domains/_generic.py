@@ -8,6 +8,8 @@
 """
 from __future__ import annotations
 
+from datetime import date, timedelta
+
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -23,6 +25,94 @@ _QUERY_PARAM = {
     }
 }
 
+
+def _first_range_value(value):
+    """时间 slot 有两种形状。
+
+    - span（本周 / 近三天）：start_time、end_time 是字符串
+    - point（今天 / 明天 / 下周）：给的是列表。单日是 [当天开始, 当天结束]，
+      跨天区间是 [区间首日, 区间末日] —— 所以开始取 [0]、结束取 [-1]。
+    """
+    if isinstance(value, (list, tuple)):
+        return value[0] if value else None
+    return value
+
+
+def _last_range_value(value):
+    """取区间的"结束那一侧"。
+
+    point 形态不只是单日：jionlp 对「下周」给的是
+    ['2026-11-23 00:00:00', '2026-11-29 23:59:59']（区间首末两天）。
+    两端都取 [0] 会让「下周的会议安排」变成只查 11-23 一天。
+    """
+    if isinstance(value, (list, tuple)):
+        return value[-1] if value else None
+    return value
+
+
+def _ymd(value) -> str | None:
+    """转成平台要的 yyyy-MM-dd（slot 可能是 2026-11-19T00:00:00）。"""
+    if not value:
+        return None
+    text = str(value)
+    return text[:10] if len(text) >= 10 else None
+
+
+def _natural_span_end(start_ymd: str | None, raw) -> str | None:
+    """span 类时间的结束日补到自然周/月末。
+
+    jionlp 对「本周」「本月」给的是 start~现在，不是 start~周末/月末。
+    关键词判断放在这里（确定性代码）而不是交给模型：它只影响边界日，
+    判断错会静默少查几天数据，用户看不出来。
+    """
+    if not start_ymd:
+        return None
+    text = str(raw or "")
+    try:
+        start = date.fromisoformat(start_ymd)
+    except ValueError:
+        return None
+    if any(w in text for w in ("本周", "这周", "本星期", "这星期")):
+        return (start + timedelta(days=6 - start.weekday())).isoformat()
+    if any(w in text for w in ("本月", "这个月", "本月份")):
+        nxt = start.replace(day=28) + timedelta(days=4)
+        return (nxt - timedelta(days=nxt.day)).isoformat()
+    return None
+
+
+def time_args_for(*query_types: str) -> Callable[[dict], dict]:
+    """生成 args_builder：只给列出的子类型传 startTime / endTime（yyyy-MM-dd）。
+
+    为什么必须按子类型白名单：sidecar 里多数统计工具没有这两个参数，MCP 会按
+    schema 校验入参，多传会直接报错。实测接受时间参数的只有：
+      meeting:getRoomMeetListByDay
+      canteen:getDishPopularity / getDiningCount
+      information:getInfoView / getBroadcastView / getTaskTrend /
+                  getProgramCount / getInfoPublishiEquip / getBroadcastEquip
+    不配 args_builder 的域一律用空参数——「本周的会议安排」曾经就是这样
+    退化成平台默认口径的。
+    """
+    allowed = frozenset(query_types)
+
+    def _build(slots: dict) -> dict:
+        query_type = slots.get("query_type") or slots.get("event_type") or ""
+        if query_type not in allowed:
+            return {}
+        date = slots.get("date") or {}
+        args: dict = {}
+        start = _ymd(_first_range_value(date.get("start_time")))
+        end = _ymd(_last_range_value(date.get("end_time")))
+        # span（本周/本月）的 end_time 是「现在时刻」：周四问「本周的会议安排」
+        # 只会查 周一~周四，周五到周日的会议全被切掉。补到自然周期末尾。
+        if date.get("time_type") == "span":
+            end = _natural_span_end(start, date.get("raw")) or end
+        if start:
+            args["startTime"] = start
+        if end:
+            args["endTime"] = end
+        return args
+
+    return _build
 
 @dataclass(frozen=True)
 class QueryDomain:
