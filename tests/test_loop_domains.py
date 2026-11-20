@@ -527,3 +527,25 @@ class TestTimeArgs:
         plan = f.preview_plan("今天火警几条")
         assert plan["query_type"] == "fire_alarm_list"
         assert plan["args"] == {"days": 1}
+
+    def test_person_flow_type_granularity(self):
+        """人员流动只有 day/week/month 三档，按问法映射，不能传区间。
+
+        sidecar 的 getTodayPersonnelFlow 只有一个 type 参数（day=今天按小时、
+        week=近7天、month=近30天）。之前 loop 侧一律传空参数，于是
+        「本周进入人数趋势」拿到的是今天的按小时数据。
+        """
+        from agent.loop.domains import person_status as p
+
+        for query, expected in (
+            ("今天人员进出情况", "day"),
+            ("本周进入人数趋势", "week"),
+            ("本月人员流动", "month"),
+            ("人员流动情况", "day"),
+        ):
+            plan = p.preview_plan(query)
+            assert plan["tool"].endswith("getTodayPersonnelFlow"), plan
+            assert plan["args"] == {"type": expected}, plan
+
+        # 接口表达不了的粒度：不传 type，由模型说明只有这三档
+        assert p.preview_plan("昨天人员流动")["args"] == {}
