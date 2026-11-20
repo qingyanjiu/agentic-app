@@ -141,3 +141,64 @@ def test_config_missing_file_raises(tmp_path):
 
     with pytest.raises(FileNotFoundError):
         load_servers(str(tmp_path / "not_exist.yaml"))
+
+
+# ------------------------------------------------------------ API Key 注入（SEC-08）
+# 这段在"彻底去 langchain"时被误删过一次：函数和调用一起没了，于是**所有**
+# MCP 请求都不带 key，sidecar 一律 401（missing or invalid MCP API key），
+# 场景指令直接报「场景服务暂时不可用」。这里锁住行为，别再被顺手动掉。
+def test_api_key_is_injected_into_headers(monkeypatch):
+    from mcp_client.mcp_config import apply_api_key
+
+    monkeypatch.setenv("MCP_API_KEY", "demo-key")
+    servers = {
+        "scene": {"url": "http://h/mcp/scene", "direct_client": True},
+        "meeting": {"url": "http://h/mcp/meetingStatus"},
+    }
+
+    out = apply_api_key(servers)
+
+    assert out["scene"]["headers"]["Authorization"] == "Bearer demo-key"
+    assert out["meeting"]["headers"]["Authorization"] == "Bearer demo-key"
+
+
+def test_empty_api_key_injects_nothing(monkeypatch):
+    """空串按"未设置"处理：不注入，让 sidecar 自己决定（返回 401）。"""
+    from mcp_client.mcp_config import apply_api_key
+
+    monkeypatch.setenv("MCP_API_KEY", "")
+    servers = {"scene": {"url": "http://h/mcp/scene"}}
+
+    assert apply_api_key(servers)["scene"].get("headers") is None
+
+
+def test_existing_authorization_is_kept(monkeypatch):
+    """单条自己写了 Authorization 的，不能被全局 key 覆盖。"""
+    from mcp_client.mcp_config import apply_api_key
+
+    monkeypatch.setenv("MCP_API_KEY", "demo-key")
+    servers = {"special": {"url": "http://h/x", "headers": {"Authorization": "Bearer own"}}}
+
+    assert apply_api_key(servers)["special"]["headers"]["Authorization"] == "Bearer own"
+
+
+def test_load_servers_injects_api_key(monkeypatch):
+    """load_servers 必须真的调用 apply_api_key —— 函数在、调用没了同样白搭。"""
+    from mcp_client.mcp_config import load_servers
+
+    monkeypatch.setenv("MCP_API_KEY", "demo-key")
+    conf = load_servers("mcp_client/mcp_server_config.yaml")
+
+    scene = conf["scene"]
+    assert scene["headers"]["Authorization"] == "Bearer demo-key"
+
+
+def test_scene_client_sends_authorization(monkeypatch):
+    """scene 是 direct_client，不走 McpToolbox，鉴权头得自己带。"""
+    from mcp_client.scene_mcp_client import SceneMcpClient
+
+    monkeypatch.setenv("MCP_API_KEY", "demo-key")
+    headers = SceneMcpClient("http://h/mcp/scene")._headers("sess-1")
+
+    assert headers["Authorization"] == "Bearer demo-key"
+    assert headers["X-Session-Id"] == "sess-1"

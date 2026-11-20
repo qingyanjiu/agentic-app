@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import os
 from typing import Optional
 
 import httpx
@@ -248,6 +249,12 @@ class SceneMcpClient:
 
     def _headers(self, x_session_id: Optional[str] = None) -> dict:
         headers = {"Content-Type": "application/json", "Accept": ACCEPT_HEADER}
+        # sidecar SEC-08：/mcp/** 的应用层 API Key；与 sidecar 的 MCP_API_KEY 一致。
+        # 这段在去 langchain 时被误删过 —— scene 是 direct_client，不走 McpToolbox，
+        # 少了它这里会单独 401（missing or invalid MCP API key），而其它域照常。
+        api_key = (os.getenv("MCP_API_KEY") or "").strip()
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
         if self._session_id:
             headers["Mcp-Session-Id"] = self._session_id
         if x_session_id:
