@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
 
@@ -116,6 +117,57 @@ def _flow_type(date_slot: dict) -> str | None:
     return None
 
 
+_FLOW_LABEL = {
+    "day": "今天按小时",
+    "week": "近 7 天按天",
+    "month": "近 30 天按天",
+}
+
+
+def _format_flow(raw: str, flow_type: str | None) -> str:
+    """把人员流动的图表 JSON 翻成"哪组是进入、哪组是离开"。
+
+    后端返回 {"category":[...], "data":{"oneData":[...],"twoData":[...]}}，
+    oneData=进入 / twoData=离开 这层含义只写在 MCP 工具描述里，字段名本身
+    没有任何语义。不转换的话模型只能猜，实测会输出「结果未标注哪组是进入、
+    哪组是离开」，甚至「第一组/第二组」这种用户看不懂的代称。
+    """
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError):
+        return raw
+    if not isinstance(payload, dict):
+        return raw
+    category = payload.get("category") or []
+    data = payload.get("data") or {}
+    if not isinstance(data, dict):
+        return raw
+    enter = data.get("oneData") or []
+    leave = data.get("twoData") or []
+    if not category or not (enter or leave):
+        return raw
+
+    def _num(seq, index):
+        return seq[index] if index < len(seq) else 0
+
+    rows = []
+    for index, label in enumerate(category):
+        going_in, going_out = _num(enter, index), _num(leave, index)
+        # 小时粒度有 24 个点、大部分是 0，全列出来会把有用信息冲掉
+        if not going_in and not going_out:
+            continue
+        rows.append(f"- {label} 进入 {going_in} 人、离开 {going_out} 人")
+
+    total_in = sum(x for x in enter if isinstance(x, (int, float)))
+    total_out = sum(x for x in leave if isinstance(x, (int, float)))
+    scope = _FLOW_LABEL.get(flow_type or "", "按时间")
+    head = (
+        f"人员流动（{scope}）：进入合计 {total_in} 人，离开合计 {total_out} 人。"
+    )
+    if not rows:
+        return f"{head}各时段进入、离开均为 0。"
+    return head + "\n" + "\n".join(rows)
+
 
 def preview_plan(query: str) -> dict:
     slots = extract_person_status_slots(query)
@@ -178,6 +230,8 @@ def build_domain(toolbox: McpToolbox) -> DomainSpec:
             logger.warning(f"[loop] 人员态势查询失败（{tool_name}）：{exc}")
             return ToolOutcome(f"人员态势查询失败：{exc}", is_error=True)
 
+        if query_type == "flow":
+            raw = _format_flow(raw, args.get("type"))
         return ToolOutcome(
             govern(_pick(raw, query_type, query), label=f"person_{query_type}")
         )

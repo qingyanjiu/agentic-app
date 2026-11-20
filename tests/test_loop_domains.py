@@ -549,3 +549,29 @@ class TestTimeArgs:
 
         # 接口表达不了的粒度：不传 type，由模型说明只有这三档
         assert p.preview_plan("昨天人员流动")["args"] == {}
+
+    def test_person_flow_formatter_labels_enter_leave(self):
+        """oneData/twoData 本身没有语义，必须在工具层翻成进入/离开。
+
+        线上实测：模型拿到原始 JSON 后输出「结果未标注哪组是进入、哪组是离开，
+        00:00 2 / 5」——用户根本看不出哪组是哪组。
+        """
+        from agent.loop.domains.person_status import _format_flow
+
+        raw = (
+            '{"category":["08:00","09:00"],'
+            '"data":{"oneData":[262,12],"twoData":[50,24]}}'
+        )
+        text = _format_flow(raw, "day")
+        assert "进入合计 274 人" in text, text
+        assert "离开合计 74 人" in text, text
+        assert "08:00 进入 262 人、离开 50 人" in text, text
+        assert "今天按小时" in text, text
+
+        # 全零时段不列：小时粒度 24 个点，全列出来会把有用信息冲掉
+        zero = '{"category":["00:00","08:00"],"data":{"oneData":[0,5],"twoData":[0,0]}}'
+        assert "00:00" not in _format_flow(zero, "day")
+
+        # 不是 JSON 就原样返回，别把正常文本吃掉
+        assert _format_flow("null", "day") == "null"
+        assert _format_flow("实时在园人数：375人", "day") == "实时在园人数：375人"
