@@ -202,3 +202,17 @@ def test_scene_client_sends_authorization(monkeypatch):
 
     assert headers["Authorization"] == "Bearer demo-key"
     assert headers["X-Session-Id"] == "sess-1"
+
+
+def test_knowledge_client_sends_authorization(monkeypatch):
+    """知识库 sidecar 兜底路径也是自己建连接，鉴权头同样得自己带。
+
+    这是同一批漏删的第三处：知识库主链路走平台 HTTP 直连（自带 dataset token），
+    所以少这个头平时看不出来，只有 sidecar 兜底时才 401。
+    """
+    from mcp_client.knowledge_mcp_client import KnowledgeMcpClient
+
+    monkeypatch.setenv("MCP_API_KEY", "demo-key")
+    headers = KnowledgeMcpClient("http://h/mcp/knowledge")._headers()
+
+    assert headers["Authorization"] == "Bearer demo-key"

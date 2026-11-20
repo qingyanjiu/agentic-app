@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 from typing import Optional
 
 import httpx
@@ -155,6 +156,12 @@ class KnowledgeMcpClient:
 
     def _headers(self) -> dict:
         headers = {"Content-Type": "application/json", "Accept": ACCEPT_HEADER}
+        # sidecar SEC-08：/mcp/** 的应用层 API Key，与 sidecar 的 MCP_API_KEY 一致。
+        # 和 mcp_config.apply_api_key / SceneMcpClient._headers 是同一件事 ——
+        # 三个客户端各自建连接，谁也替不了谁，删任一处的效果都是那条链路 401。
+        api_key = (os.getenv("MCP_API_KEY") or "").strip()
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
         if self._session_id:
             headers["Mcp-Session-Id"] = self._session_id
         return headers
