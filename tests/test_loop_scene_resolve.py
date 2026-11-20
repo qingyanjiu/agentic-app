@@ -328,6 +328,45 @@ def test_has_device_reference_truth_table():
         assert has_device_reference(query) is False, query
 
 
+
+def test_restore_building_is_scene_not_device():
+    """「恢复楼栋」「切回楼栋」是视角指令：整栋楼 = floor 99。
+
+    线上事故：用户说「恢复楼栋」，被当成设备名去查台账，回了
+    「匹配到 12 台设备，请选择」+ 一串门禁。漏的是两个词表 ——
+    「恢复」不在动作词里，「楼栋」不在范围词里。
+    """
+    from agent.loop.scene_resolve import has_device_reference
+
+    for query in ["恢复楼栋", "切回楼栋", "恢复整栋楼", "回到楼栋"]:
+        assert has_device_reference(query) is False, query
+
+    # 真·设备线索不能被顺带放过
+    for query in ["打开7F西通道监控", "恢复7楼的门禁", "7楼有哪些监控"]:
+        assert has_device_reference(query) is True, query
+
+
+def test_restore_building_plans_switch_floor_99():
+    """场景图的规则兜底要把它落到 scene_switch_floor(99)，别落到 LLM 猜。"""
+    from agent.scene_control import _extract_floor, _rule_based_plan
+
+    assert _extract_floor("恢复楼栋") == 99
+    assert _extract_floor("切回楼栋") == 99
+    assert _extract_floor("切回整栋楼") == 99
+    # 具体楼层不能被整栋规则吞掉
+    assert _extract_floor("切到3楼") == 3
+    assert _extract_floor("恢复视角") is None
+
+    assert _rule_based_plan("恢复楼栋", {}) == {
+        "tool": "scene_switch_floor",
+        "arguments": {"floor": 99, "focus": True},
+    }
+    # 「恢复视角」仍是另一个动作，不能被整栋规则截走
+    assert _rule_based_plan("恢复视角", {}) == {
+        "tool": "scene_recover_view",
+        "arguments": {},
+    }
+
 def test_floor_only_request_lists_whole_floor(monkeypatch):
     """「打开7F监控」是看整层，不是选一台：把该层全部点位列出来，别只说 6 台。"""
     from agent.loop.scene_resolve import clarify_entities, clarify_headline
