@@ -84,11 +84,14 @@ def time_args_for(*query_types: str) -> Callable[[dict], dict]:
     """生成 args_builder：只给列出的子类型传 startTime / endTime（yyyy-MM-dd）。
 
     为什么必须按子类型白名单：sidecar 里多数统计工具没有这两个参数，MCP 会按
-    schema 校验入参，多传会直接报错。实测接受时间参数的只有：
-      meeting:getRoomMeetListByDay
-      canteen:getDishPopularity / getDiningCount
-      information:getInfoView / getBroadcastView / getTaskTrend /
-                  getProgramCount / getInfoPublishiEquip / getBroadcastEquip
+    schema 校验入参，多传会直接报错。实测：
+      meeting:getRoomMeetListByDay                真用（放进 POST body）
+      canteen:getDishPopularity / getDiningCount  真用（拼 query string）
+      information:*（6 个全覆盖）                   签名收这两个参数，实现直接忽略：
+          请求体里只有 producerCode / protocolVersion，时间不进 URL 也不进 body。
+          所以**不要**给 information 配 args_builder ——「任务趋势/节目数量」取的是
+          平台固定的近几个月月度节目发布量，传了也不会按天/周查，模型还会以为
+          拿到的是「昨天」的数据。
     不配 args_builder 的域一律用空参数——「本周的会议安排」曾经就是这样
     退化成平台默认口径的。
     """
