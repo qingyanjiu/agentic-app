@@ -3,6 +3,14 @@ import json
 import os
 import re
 
+# 项目根目录：读 mcp_server_config.yaml / .env 这类"相对仓库根"的路径都靠它。
+# 注意：这段定义在去 langchain 时被误删，但 _scene_mcp_url() 还在用 —— 于是
+# 读取 scene 配置抛 NameError 被 except 吞掉，场景地址恒为空，
+# scene_available 因此为 False，所有场景指令都不再分流，直接落到
+# 「这个说法我暂时没理解」的兜底。日志特征：
+#   WARNING - 读取 scene MCP 配置失败(仅场景控制不可用): name 'BASE_DIR' is not defined
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 # ---- .env 支持（可选）----
 # 仓库里只放 .env.example；真实 .env 被 .gitignore 忽略。
 # override=False：已经在环境里的变量（compose / systemd / shell）优先，

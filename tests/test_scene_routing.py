@@ -318,3 +318,47 @@ def test_business_center_blocks_ambiguous_other_query():
         "三楼",
     )
 
+
+
+# ------------------------------------------------------------ 场景地址可用性
+# 分流要成立，scene_available 必须为真；它来自 _scene_mcp_url()。
+# 这里用静态检查 + 配置检查，不 import app.py（那会拉起模型，几十秒）。
+def test_app_defines_base_dir():
+    """app.py 必须定义模块级 BASE_DIR。
+
+    历史事故：彻底去 langchain 时把 BASE_DIR 的定义一起删了，但
+    _scene_mcp_url() 还在用它读 mcp_server_config.yaml：
+
+        NameError: name 'BASE_DIR' is not defined
+        → except 吞掉 → url = ""
+        → scene_available = False
+        → 所有场景指令不再分流，全落到「这个说法我暂时没理解」的兜底
+        （日志特征：[场景分流] matched=True, route=False）
+    """
+    import ast
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parent.parent / "app.py").read_text()
+    tree = ast.parse(source)
+
+    assigned = {
+        target.id
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    }
+    used = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+
+    assert "BASE_DIR" in used, "app.py 已经不用 BASE_DIR 了？确认后再删这条测试"
+    assert "BASE_DIR" in assigned, "BASE_DIR 被删了但还有地方在用，会导致场景地址恒为空"
+
+
+def test_scene_server_url_configured():
+    """mcp_server_config.yaml 里必须有 scene.url，否则场景控制整体不可用。"""
+    from mcp_client.mcp_config import load_servers
+
+    conf = load_servers("mcp_client/mcp_server_config.yaml")
+    scene = conf.get("scene") or {}
+    assert scene.get("url"), f"scene.url 未配置：{scene}"
+    assert scene.get("direct_client") is True, "scene 必须 direct_client（逐请求注入 X-Session-Id）"
