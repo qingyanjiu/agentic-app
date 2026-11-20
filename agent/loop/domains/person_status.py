@@ -91,6 +91,31 @@ def _pick(raw: str, query_type: str, query: str = "") -> str:
         return raw
     return f"{label}：{match.group(1)}人"
 
+# 「人员流动」的粒度只有三档，由 sidecar 的 type 参数决定，不能传区间。
+# 顺序有意义：month 先判（「本月」里也有「月」），再 week，最后 day。
+_FLOW_TYPE_HINTS = (
+    (
+        "month",
+        ("本月", "这个月", "近30天", "近三十天", "近一个月", "最近一个月", "近1个月"),
+    ),
+    ("week", ("本周", "这周", "近7天", "近七天", "近一周", "近1周", "最近一周")),
+    ("day", ("今天", "今日", "现在", "当前", "目前")),
+)
+
+
+def _flow_type(date_slot: dict) -> str | None:
+    """把问句的时间粒度映射成 sidecar 的 type（day / week / month）。
+
+    接口没有区间参数，所以「昨天」「上周」这类对不上的不返回：宁可用后端默认
+    day 并由模型说明粒度，也不要把今天的数据说成昨天。
+    """
+    raw = str((date_slot or {}).get("raw") or "")
+    for value, hints in _FLOW_TYPE_HINTS:
+        if any(h in raw for h in hints):
+            return value
+    return None
+
+
 
 def preview_plan(query: str) -> dict:
     slots = extract_person_status_slots(query)
@@ -103,7 +128,17 @@ def preview_plan(query: str) -> dict:
             "args": {},
             "note": f"query_type={query_type} 后端暂不支持，应直接告知用户",
         }
-    return {"domain": "person_status", "tool": tool, "args": {}, "note": "按今天口径查询"}
+    args: dict = {}
+    if query_type == "flow":
+        flow_type = _flow_type(slots.get("date") or {})
+        if flow_type:
+            args["type"] = flow_type
+    return {
+        "domain": "person_status",
+        "tool": tool,
+        "args": args,
+        "note": f"流动粒度={args['type']}" if args.get("type") else "按今天口径查询",
+    }
 
 
 def route_plan(query: str) -> DomainPlan:
@@ -130,10 +165,15 @@ def build_domain(toolbox: McpToolbox) -> DomainSpec:
                 is_error=True,
             )
 
-        # 大屏口径默认「今天」，现有图也是这个默认；这里先不传时间参数，
-        # 需要历史区间时再按 Java 侧 schema 补 startTime/endTime。
+        # 「人员流动」的粒度由 type 决定（day=今天按小时 / week=近7天 / month=近30天）。
+        # 不传就是后端默认 day —— 用户问「本周进出」会拿到今天的按小时数据。
+        args: dict = {}
+        if query_type == "flow":
+            flow_type = _flow_type(slots.get("date") or {})
+            if flow_type:
+                args["type"] = flow_type
         try:
-            raw = await toolbox.call(SERVER, tool_name, {})
+            raw = await toolbox.call(SERVER, tool_name, args)
         except Exception as exc:
             logger.warning(f"[loop] 人员态势查询失败（{tool_name}）：{exc}")
             return ToolOutcome(f"人员态势查询失败：{exc}", is_error=True)
@@ -154,6 +194,9 @@ def build_domain(toolbox: McpToolbox) -> DomainSpec:
                     "工具会自己判断是人数、进出、流动还是结构，调用方不需要指定子类型。"
                     "注意：后端返回的是**中文文本**（如「实时在园人数：375人；今日进入…」），"
                     "不是 JSON；本工具已按用户问的那一项抽好，直接读文本作答即可。"
+                    "「人员流动」只有三种粒度：今天按小时(day)、近 7 天按天(week)、"
+                    "近 30 天按天(month)，没有按任意日期回溯的能力。用户问「昨天/某天"
+                    "的人员流动」时，如实说明只有这三种粒度，不要拿今天的数据当昨天。"
                 ),
                 parameters=tool_schema(_QUERY_PARAM, ["query"]),
                 execute=person_status,
