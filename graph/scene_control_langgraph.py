@@ -252,6 +252,81 @@ def _clean_scene_text(raw: str) -> str:
     return "\n".join(lines).strip()
 
 
+# 动作成功后，sidecar 返回的是执行细节（工具名 + 参数），属于 UE 指令层：
+# 用户看不懂，也不需要看。给用户的是一句助手口吻的话，原始指令只进日志。
+_SCENE_FAILURE = re.compile(r"失败|未连接|未下发|未执行|不可用|超时")
+
+# 少数动作值得单独措辞；其余用 _TOOL_LABELS 的中文动作名套通用句式。
+_ACTION_SENTENCES = {
+    "scene_reset_view": "已为您重置视角。",
+    "scene_recover_view": "已为您恢复上一个视角。",
+    "scene_close_detail": "已为您关闭详情面板。",
+    "scene_reset_all": "已为您清空场景效果，回到初始状态。",
+    "scene_show_visitor_track": "已为您展示访客轨迹。",
+    "scene_show_camera": "已为您调出监控画面。",
+    "scene_show_inspection": "已为您展示巡检信息。",
+    "scene_show_meeting_rooms": "已为您展示会议室分布。",
+    "scene_show_dining": "已为您展示食堂情况。",
+    "scene_show_area_overview": "已为您展示防区总览。",
+    "scene_show_device_category": "已为您按类目展示设备点位。",
+    "scene_show_fusion": "已为您切换虚实融合视图。",
+    "scene_focus_actor": "已为您聚焦该对象。",
+    "scene_set_actor_visible": "已为您调整该对象的显隐。",
+    "scene_set_poi_visible": "已为您调整 POI 点位的显隐。",
+    "scene_set_area_state": "已为该防区下发状态变更。",
+    "scene_set_inspection_state": "已为该巡检任务下发状态变更。",
+}
+
+
+
+
+def _action_sentence(tool_name: str, arguments: dict) -> str:
+    """把一次 UE 动作翻成一句助手口吻的话；概括不了时返回空串。"""
+    if tool_name == "scene_switch_floor":
+        floor = arguments.get("floor")
+        # sidecar 约定：11 / 99 = 整栋楼，-1 = B1
+        if floor in (11, 99):
+            return "已为您切换到整栋楼视角。"
+        if floor == -1:
+            return "已为您切换到地下一层（B1）视角。"
+        if isinstance(floor, int):
+            return f"已为您切换到 {floor} 楼视角。"
+        return "已为您切换了楼层视角。"
+    if tool_name == "scene_set_env":
+        changes = []
+        if arguments.get("env_time"):
+            changes.append(f"时间调整为 {arguments['env_time']}")
+        if arguments.get("env_weather"):
+            changes.append(f"天气切换为{arguments['env_weather']}")
+        if changes:
+            return "已为您把场景" + "、".join(changes) + "。"
+        return "已为您调整场景环境效果。"
+    fixed = _ACTION_SENTENCES.get(tool_name)
+    if fixed:
+        return fixed
+    label = _TOOL_LABELS.get(tool_name)
+    return f"已为您执行「{label}」。" if label else ""
+
+
+def _friendly_action(tool_name: str, arguments: dict, raw_text: str) -> str:
+    """动作成功后的用户可见文案（原始 UE 指令由调用方写日志，不进回答）。
+
+    sidecar 原文形如「已下发动作 scene_switch_floor（floor=5, focus=true）。」，
+    直接透给用户既看不懂又像内部日志。这里翻成「已为您切换到 5 楼视角。」。
+
+    两个不能踩的点：
+    - 失败不能包装成成功：sidecar 明确说失败时（未连接/未下发…）原样转述；
+    - UE 不回执，所以统一说「已为您…」（= 已下发），不说"已完成"。
+    """
+    detail = _clean_scene_text(raw_text)
+    if detail and _SCENE_FAILURE.search(detail):
+        return detail
+    sentence = _action_sentence(tool_name, arguments)
+    if sentence:
+        return sentence
+    return detail or f"已为您下发「{_TOOL_LABELS.get(tool_name, tool_name)}」。"
+
+
 def _format_catalog(tools: list) -> tuple:
     """把 MCP tools/list 结果整理成提示词里的工具清单；返回 (catalog_text, tool_map)"""
     tool_map = {}
@@ -871,15 +946,14 @@ def build_scene_control_graph(client: Any, llm: Any = None) -> StateGraph:
         arguments = plan.get("arguments") or {}
         sid = state.get("scene_session_id")
 
-        print(f"[SCENE MCP CALL] tool={tool_name}, args={arguments}, x_session_id={sid}")
+        logger.info(f"[scene] 下发 tool={tool_name} args={arguments} x_session_id={sid}")
         try:
             raw_text = await client.call_tool(tool_name, arguments, sid)
-            print(f"[SCENE MCP RAW RESULT] tool={tool_name}, result={raw_text}")
+            logger.info(f"[scene] UE 原始返回 tool={tool_name} -> {raw_text}")
 
-            answer_text = _clean_scene_text(raw_text)
-            if not answer_text:
-                # 协议层成功但没有文本：不能替服务端宣称"已下发"
-                answer_text = f"动作 {tool_name} 已提交，场景服务未返回明细，请以页面实际显示为准。"
+            # 用户看到的是助手口吻的一句话；UE 原始指令（工具名 + 参数）
+            # 由上面的日志留存，不进回答。
+            answer_text = _friendly_action(tool_name, arguments, raw_text)
 
             # 破坏性动作额外提示（sidecar 放行时也提醒用户留意现场状态）
             if tool_name in _DESTRUCTIVE_TOOLS:
