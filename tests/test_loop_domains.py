@@ -608,3 +608,34 @@ def test_zero_values_keep_units_and_lines_end_with_punctuation():
     assert "- 09:00 进入 12 人、离开 0 人；" in flow, flow
     for line in flow.splitlines()[1:]:
         assert line.endswith("；"), line
+
+
+def test_energy_overall_json_gets_units_and_punctuation():
+    """总体能耗只回数字（{"electricity":{"annual","today"},...}），必须补单位。
+
+    线上回答是「今日用电量：0」——没有单位也没有标点，语音播报容易读糊或跳过。
+    单位按项目既有口径：电→千瓦时，水→吨。
+    """
+    import json as jsonlib
+
+    from agent.loop.domains.energy_status import CONFIG, _format_overall_energy
+
+    assert CONFIG.formatter is not None, "energy 域必须挂 formatter，否则模型拿到裸数字"
+    text = _format_overall_energy(
+        jsonlib.dumps(
+            {
+                "electricity": {"annual": 171856.3, "today": 0},
+                "water": {"annual": 0, "today": 0},
+            }
+        ),
+        "overall_energy",
+    )
+    lines = text.splitlines()
+    # 0 也要写「0 千瓦时」「0 吨」，不能只剩一个 0
+    assert lines[0] == "今日用电 0 千瓦时；今日用水 0 吨。", text
+    assert lines[1] == "年度累计用电 171856.3 千瓦时；年度累计用水 0 吨。", text
+    for line in lines:
+        assert line.endswith("。"), line
+    # 其他子类型（排行/表具/设备状态）不能被这个 formatter 改写
+    assert _format_overall_energy('{"a": 1}', "electricity_rank") == '{"a": 1}'
+    assert _format_overall_energy("null", "overall_energy") == "null"
