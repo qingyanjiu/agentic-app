@@ -47,7 +47,8 @@ def _format_equip_class(raw: str, query_type: str) -> str:
     for name, value in sorted(items, key=lambda kv: kv[1], reverse=True):
         share = f"（{value / total * 100:.0f}%）" if total else ""
         shown = int(value) if value == int(value) else value
-        lines.append(f"- {name} {shown} 台{share}")
+        # 行尾带分号：这段会直接进语音播报，没标点会连读下一行
+        lines.append(f"- {name} {shown} 台{share}；")
     return "\n".join(lines)
 
 CONFIG = QueryDomain(

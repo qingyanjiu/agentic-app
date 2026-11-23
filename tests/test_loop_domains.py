@@ -227,10 +227,11 @@ def test_person_status_picks_the_asked_number():
     from agent.loop.domains.person_status import _pick
 
     raw = "实时在园人数：375人；今日进入人数：472人；今日离开人数：97人。"
-    assert _pick(raw, "realtime") == "实时在园人数：375人"
-    assert _pick(raw, "count") == "实时在园人数：375人"
-    assert _pick(raw, "enter") == "今日进入人数：472人"
-    assert _pick(raw, "leave") == "今日离开人数：97人"
+    # 数字带单位、句号收尾：这段常被 L1 直出，没标点会粘下一句
+    assert _pick(raw, "realtime") == "实时在园人数：375人。"
+    assert _pick(raw, "count") == "实时在园人数：375人。"
+    assert _pick(raw, "enter") == "今日进入人数：472人。"
+    assert _pick(raw, "leave") == "今日离开人数：97人。"
 
 
 def test_person_status_keeps_chart_data_untouched():
@@ -328,10 +329,11 @@ def test_equip_class_json_becomes_readable_list():
 
     assert "{" not in text and "itemStyle" not in text
     lines = text.splitlines()
+    # 行尾必须带分号：清单会进语音播报，没标点会连读下一行
     assert lines[0] == "设备类型统计（各类合计 386 台）："
-    assert lines[1] == "- 监控 268 台（69%）"
-    assert lines[2] == "- 门禁 97 台（25%）"
-    assert lines[3] == "- 广播 21 台（5%）"
+    assert lines[1] == "- 监控 268 台（69%）；"
+    assert lines[2] == "- 门禁 97 台（25%）；"
+    assert lines[3] == "- 广播 21 台（5%）；"
 
 
 def test_equip_class_formatter_is_scoped():
@@ -575,3 +577,34 @@ class TestTimeArgs:
         # 不是 JSON 就原样返回，别把正常文本吃掉
         assert _format_flow("null", "day") == "null"
         assert _format_flow("实时在园人数：375人", "day") == "实时在园人数：375人"
+
+
+def test_zero_values_keep_units_and_lines_end_with_punctuation():
+    """0 也要带单位、每行以标点结尾 —— 这段会直接进语音播报。
+
+    裸数字容易被 TTS 吞掉或读糊；行尾没标点会把下一行连读成一句话。
+    """
+    import json as jsonlib
+
+    from agent.loop.domains.device_status import _format_equip_class
+    from agent.loop.domains.person_status import _format_flow
+
+    text = _format_equip_class(
+        jsonlib.dumps(
+            [{"name": "消防", "value": 386}, {"name": "空调", "value": 0}],
+            ensure_ascii=False,
+        ),
+        "equip_class",
+    )
+    # 0 值类目照样写「0 台（0%）」，不能只剩一个 0
+    assert "- 空调 0 台（0%）；" in text, text
+    for line in text.splitlines()[1:]:
+        assert line.endswith("；"), line
+
+    flow = _format_flow(
+        '{"category":["09:00"],"data":{"oneData":[12],"twoData":[0]}}', "day"
+    )
+    # 离开为 0 也要写「0 人」，且整行以分号收尾
+    assert "- 09:00 进入 12 人、离开 0 人；" in flow, flow
+    for line in flow.splitlines()[1:]:
+        assert line.endswith("；"), line
