@@ -195,7 +195,7 @@ def test_rule_fallback_switch_floor():
 
     assert _action_calls(client) == [("scene_switch_floor", {"floor": 3, "focus": True}, "scene-abc")]
     # 助手口吻；底线是不能宣称"已完成"（UE 不回执）
-    assert answers_of(final)[0] == "已为您切换到 3 楼视角。"
+    assert answers_of(final)[0] == "指令已下发。"
 
 
 def test_rule_fallback_reset_view():
@@ -464,37 +464,35 @@ def test_action_answer_is_friendly_not_ue_command():
     )
     text = _friendly_action("scene_switch_floor", {"floor": 5, "focus": True}, raw)
 
-    assert text == "已为您切换到 5 楼视角。", text
+    assert text == "指令已下发。", text
     # 工具名、参数名这类内部指令不能出现在回答里
     assert "scene_switch_floor" not in text
     assert "focus" not in text
     assert "已下发动作" not in text
 
 
-def test_action_answer_floor_variants():
+def test_every_action_uses_the_same_sentence():
+    """所有 scene 动作统一一句「指令已下发。」，不为工具配专属文案。
+
+    场景工具以后还会加，逐个配文案迟早漏；新增工具落到同一句即可。
+    """
     from graph.scene_control_langgraph import _friendly_action
 
-    raw = _UE_RAW.format(tool="scene_switch_floor")
-    assert _friendly_action("scene_switch_floor", {"floor": 99}, raw) == "已为您切换到整栋楼视角。"
-    assert _friendly_action("scene_switch_floor", {"floor": 11}, raw) == "已为您切换到整栋楼视角。"
-    assert _friendly_action("scene_switch_floor", {"floor": -1}, raw) == \
-        "已为您切换到地下一层（B1）视角。"
-
-
-def test_action_answer_for_env_and_simple_actions():
-    from graph.scene_control_langgraph import _friendly_action
-
-    env = _UE_RAW.format(tool="scene_set_env")
-    assert _friendly_action("scene_set_env", {"env_time": "20:00:00"}, env) == \
-        "已为您把场景时间调整为 20:00:00。"
-    assert _friendly_action("scene_set_env", {"env_weather": "小雨"}, env) == \
-        "已为您把场景天气切换为小雨。"
-    assert _friendly_action("scene_set_env", {}, env) == "已为您调整场景环境效果。"
-    # 通用动作统一一句话：不再为每个工具配文案
-    assert _friendly_action("scene_reset_view", {}, _UE_RAW.format(tool="scene_reset_view")) == \
-        "指令已下发。"
-    assert _friendly_action("scene_show_camera", {"tag": "jk_001"},
-                            _UE_RAW.format(tool="scene_show_camera")) == "指令已下发。"
+    cases = [
+        ("scene_switch_floor", {"floor": 5}),
+        ("scene_switch_floor", {"floor": 99}),
+        ("scene_switch_floor", {"floor": -1}),
+        ("scene_set_env", {"env_time": "20:00:00"}),
+        ("scene_set_env", {"env_weather": "小雨"}),
+        ("scene_set_env", {}),
+        ("scene_reset_view", {}),
+        ("scene_show_camera", {"tag": "jk_001"}),
+        ("scene_set_area_state", {"tag": "A-01", "state": "撤防"}),
+        ("a_future_tool", {"whatever": 1}),
+    ]
+    for tool, args in cases:
+        text = _friendly_action(tool, args, _UE_RAW.format(tool=tool))
+        assert text == "指令已下发。", (tool, args, text)
 
 
 def test_failure_is_not_dressed_as_success():
