@@ -456,7 +456,7 @@ _UE_RAW = '已下发动作 {tool}。\n回复用户时不要说"已完成"，只�
 
 
 def test_action_answer_is_friendly_not_ue_command():
-    from graph.scene_control_langgraph import _friendly_action
+    from agent.scene_control import _friendly_action
 
     raw = (
         '已下发动作 scene_switch_floor（floor=5, focus=True）。\n'
@@ -476,7 +476,7 @@ def test_every_action_uses_the_same_sentence():
 
     场景工具以后还会加，逐个配文案迟早漏；新增工具落到同一句即可。
     """
-    from graph.scene_control_langgraph import _friendly_action
+    from agent.scene_control import _friendly_action
 
     cases = [
         ("scene_switch_floor", {"floor": 5}),
@@ -497,7 +497,7 @@ def test_every_action_uses_the_same_sentence():
 
 def test_failure_is_not_dressed_as_success():
     """sidecar 明确失败时不能包装成「已为您…」。"""
-    from graph.scene_control_langgraph import _friendly_action
+    from agent.scene_control import _friendly_action
 
     raw = "调用 scene_switch_floor（floor=5） 失败：场景页面未连接，无法执行。"
     text = _friendly_action("scene_switch_floor", {"floor": 5}, raw)
