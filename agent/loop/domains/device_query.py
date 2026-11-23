@@ -594,7 +594,8 @@ def _format_rows(
         if status_text:
             parts_row.append(f"状态 {status_text}")
         parts_row.append(f"类型 {_sync_source_name(row.get('syncSource'))}")
-        lines.append("｜".join(parts_row))
+        # 行尾分号：清单会直接进语音播报，没标点会连读下一台
+        lines.append("｜".join(parts_row) + "；")
 
     if len(rows) > MAX_ROWS:
         lines.append(f"（其余 {len(rows) - MAX_ROWS} 台未展示，可加楼层或名称缩小范围）")

@@ -90,7 +90,9 @@ def _pick(raw: str, query_type: str, query: str = "") -> str:
     match = re.search(pattern, raw or "")
     if not match:
         return raw
-    return f"{label}：{match.group(1)}人"
+    # 句号收尾 + 数字带单位（0 也是「0人」）：这段常被 L1 直出、直接拿去
+    # 语音播报，没标点会粘到下一句
+    return f"{label}：{match.group(1)}人。"
 
 # 「人员流动」的粒度只有三档，由 sidecar 的 type 参数决定，不能传区间。
 # 顺序有意义：month 先判（「本月」里也有「月」），再 week，最后 day。
@@ -156,7 +158,9 @@ def _format_flow(raw: str, flow_type: str | None) -> str:
         # 小时粒度有 24 个点、大部分是 0，全列出来会把有用信息冲掉
         if not going_in and not going_out:
             continue
-        rows.append(f"- {label} 进入 {going_in} 人、离开 {going_out} 人")
+        # 行尾分号 + 数字带单位（0 也写「0 人」）：语音播报靠标点断句，
+        # 裸数字容易被吞掉或读糊
+        rows.append(f"- {label} 进入 {going_in} 人、离开 {going_out} 人；")
 
     total_in = sum(x for x in enter if isinstance(x, (int, float)))
     total_out = sum(x for x in leave if isinstance(x, (int, float)))
