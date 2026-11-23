@@ -257,47 +257,25 @@ def _clean_scene_text(raw: str) -> str:
 _SCENE_FAILURE = re.compile(r"失败|未连接|未下发|未执行|不可用|超时")
 
 
-def _action_sentence(tool_name: str, arguments: dict) -> str:
-    """把一次 UE 动作翻成一句助手口吻的话；概括不了时返回空串。"""
-    if tool_name == "scene_switch_floor":
-        floor = arguments.get("floor")
-        # sidecar 约定：11 / 99 = 整栋楼，-1 = B1
-        if floor in (11, 99):
-            return "已为您切换到整栋楼视角。"
-        if floor == -1:
-            return "已为您切换到地下一层（B1）视角。"
-        if isinstance(floor, int):
-            return f"已为您切换到 {floor} 楼视角。"
-        return "已为您切换了楼层视角。"
-    if tool_name == "scene_set_env":
-        changes = []
-        if arguments.get("env_time"):
-            changes.append(f"时间调整为 {arguments['env_time']}")
-        if arguments.get("env_weather"):
-            changes.append(f"天气切换为{arguments['env_weather']}")
-        if changes:
-            return "已为您把场景" + "、".join(changes) + "。"
-        return "已为您调整场景环境效果。"
-    # 其余动作统一由调用方说「指令已下发。」—— 不再维护工具名 → 文案的字典
-    return ""
-
 
 def _friendly_action(tool_name: str, arguments: dict, raw_text: str) -> str:
     """动作成功后的用户可见文案（原始 UE 指令由调用方写日志，不进回答）。
 
     sidecar 原文形如「已下发动作 scene_switch_floor（floor=5, focus=true）。」，
-    直接透给用户既看不懂又像内部日志。这里翻成「已为您切换到 5 楼视角。」。
+    直接透给用户既看不懂又像内部日志。
 
-    三条规则：
+    **所有动作统一一句「指令已下发。」** —— 不为工具配专属文案：场景工具以后
+    还会加，配了就得跟着加，迟早漏。tool_name / arguments 仍留在签名里，是为了
+    调用方不必改动，也方便以后真要细分时有据可依。
+
+    两条底线：
     - 失败不能包装成成功：sidecar 明确说失败时（未连接/未下发…）原样转述；
-    - 楼层/环境这类"参数本身就是答案"的，说清楚切到几楼、什么时间天气；
-    - 其余一律「指令已下发。」—— 不维护"工具名 → 文案"字典，场景工具以后
-      还会加，字典迟早漏配。新增工具自动落到这句，不用改代码。
+    - UE 不回执，所以不说"已完成"。
     """
     detail = _clean_scene_text(raw_text)
     if detail and _SCENE_FAILURE.search(detail):
         return detail
-    return _action_sentence(tool_name, arguments) or "指令已下发。"
+    return "指令已下发。"
 
 
 def _format_catalog(tools: list) -> tuple:
