@@ -148,7 +148,8 @@ def test_llm_plan_calls_tool_with_scene_session():
     ]
 
     answer = answers_of(final)[0]
-    assert "已下发" in answer
+    assert answer == "已为您调出监控画面。", answer
+    assert "已完成" not in answer
     # 内部提示不能透给用户
     assert "回复用户时" not in answer
     assert "已完成" not in answer
@@ -193,7 +194,8 @@ def test_rule_fallback_switch_floor():
     final = run(graph.ainvoke(_input("切换到3楼")))
 
     assert _action_calls(client) == [("scene_switch_floor", {"floor": 3, "focus": True}, "scene-abc")]
-    assert "已下发" in answers_of(final)[0]
+    # 助手口吻；底线是不能宣称"已完成"（UE 不回执）
+    assert answers_of(final)[0] == "已为您切换到 3 楼视角。"
 
 
 def test_rule_fallback_reset_view():
@@ -298,7 +300,9 @@ def test_destructive_tool_adds_state_change_warning():
     final = run(graph.ainvoke(_input("把A-01防区撤防")))
 
     answer = answers_of(final)[0]
-    assert "已下发" in answer
+    # 助手口吻；底线不变：不能宣称"已完成"（UE 不回执）
+    assert answer.startswith("已为该防区下发状态变更。"), answer
+    assert "已完成" not in answer
     assert "会改变现场状态" in answer
 
 
@@ -443,3 +447,62 @@ def test_llm_invalid_time_asks_instead_of_calling():
     assert _action_calls(client) == []
     question = asks_of(final)[0]["question"]
     assert "下午一点" in question
+
+
+# ------------------------------------------------------------ 回答要说人话
+# 线上原文：「已下发动作 scene_switch_floor（floor=5, focus=True）。」
+# 用户要的是助手口吻，UE 指令只该进日志。
+_UE_RAW = '已下发动作 {tool}。\n回复用户时不要说"已完成"，只能说"已下发"。'
+
+
+def test_action_answer_is_friendly_not_ue_command():
+    from graph.scene_control_langgraph import _friendly_action
+
+    raw = (
+        '已下发动作 scene_switch_floor（floor=5, focus=True）。\n'
+        '回复用户时不要说"已完成"，只能说"已下发"。'
+    )
+    text = _friendly_action("scene_switch_floor", {"floor": 5, "focus": True}, raw)
+
+    assert text == "已为您切换到 5 楼视角。", text
+    # 工具名、参数名这类内部指令不能出现在回答里
+    assert "scene_switch_floor" not in text
+    assert "focus" not in text
+    assert "已下发动作" not in text
+
+
+def test_action_answer_floor_variants():
+    from graph.scene_control_langgraph import _friendly_action
+
+    raw = _UE_RAW.format(tool="scene_switch_floor")
+    assert _friendly_action("scene_switch_floor", {"floor": 99}, raw) == "已为您切换到整栋楼视角。"
+    assert _friendly_action("scene_switch_floor", {"floor": 11}, raw) == "已为您切换到整栋楼视角。"
+    assert _friendly_action("scene_switch_floor", {"floor": -1}, raw) == \
+        "已为您切换到地下一层（B1）视角。"
+
+
+def test_action_answer_for_env_and_simple_actions():
+    from graph.scene_control_langgraph import _friendly_action
+
+    env = _UE_RAW.format(tool="scene_set_env")
+    assert _friendly_action("scene_set_env", {"env_time": "20:00:00"}, env) == \
+        "已为您把场景时间调整为 20:00:00。"
+    assert _friendly_action("scene_set_env", {"env_weather": "小雨"}, env) == \
+        "已为您把场景天气切换为小雨。"
+    assert _friendly_action("scene_set_env", {}, env) == "已为您调整场景环境效果。"
+
+    assert _friendly_action("scene_reset_view", {}, _UE_RAW.format(tool="scene_reset_view")) == \
+        "已为您重置视角。"
+    assert _friendly_action("scene_show_camera", {"tag": "jk_001"},
+                            _UE_RAW.format(tool="scene_show_camera")) == "已为您调出监控画面。"
+
+
+def test_failure_is_not_dressed_as_success():
+    """sidecar 明确失败时不能包装成「已为您…」。"""
+    from graph.scene_control_langgraph import _friendly_action
+
+    raw = "调用 scene_switch_floor（floor=5） 失败：场景页面未连接，无法执行。"
+    text = _friendly_action("scene_switch_floor", {"floor": 5}, raw)
+
+    assert "失败" in text, text
+    assert not text.startswith("已为您"), text
