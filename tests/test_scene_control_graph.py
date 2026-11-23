@@ -148,7 +148,7 @@ def test_llm_plan_calls_tool_with_scene_session():
     ]
 
     answer = answers_of(final)[0]
-    assert answer == "已为您调出监控画面。", answer
+    assert answer == "指令已下发。", answer
     assert "已完成" not in answer
     # 内部提示不能透给用户
     assert "回复用户时" not in answer
@@ -301,7 +301,7 @@ def test_destructive_tool_adds_state_change_warning():
 
     answer = answers_of(final)[0]
     # 助手口吻；底线不变：不能宣称"已完成"（UE 不回执）
-    assert answer.startswith("已为该防区下发状态变更。"), answer
+    assert answer.startswith("指令已下发。"), answer
     assert "已完成" not in answer
     assert "会改变现场状态" in answer
 
@@ -490,11 +490,11 @@ def test_action_answer_for_env_and_simple_actions():
     assert _friendly_action("scene_set_env", {"env_weather": "小雨"}, env) == \
         "已为您把场景天气切换为小雨。"
     assert _friendly_action("scene_set_env", {}, env) == "已为您调整场景环境效果。"
-
+    # 通用动作统一一句话：不再为每个工具配文案
     assert _friendly_action("scene_reset_view", {}, _UE_RAW.format(tool="scene_reset_view")) == \
-        "已为您重置视角。"
+        "指令已下发。"
     assert _friendly_action("scene_show_camera", {"tag": "jk_001"},
-                            _UE_RAW.format(tool="scene_show_camera")) == "已为您调出监控画面。"
+                            _UE_RAW.format(tool="scene_show_camera")) == "指令已下发。"
 
 
 def test_failure_is_not_dressed_as_success():
