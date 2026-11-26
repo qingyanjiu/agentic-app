@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """LLM 配置测试：环境变量覆盖、默认值回退、思考开关（纯函数/构造，不发起请求）。"""
-from models.llm import build_model_config, resolve_reasoning_effort, resolve_thinking
+from models.llm import build_model_config, ensure_user_turn, resolve_reasoning_effort, resolve_thinking
 
 
 def test_model_config_wins(monkeypatch):
@@ -145,3 +145,35 @@ def test_llm_type_invalid_raises(monkeypatch):
     monkeypatch.setenv("LLM_TYPE", "vllm")
     with pytest.raises(ValueError):
         build_model_config()
+
+
+# ------------------------------------------------------------
+# 跨模型兼容：Qwen 的 chat template 要求至少一条 user 消息，
+# 只有 system 的请求会 400 "No user query found in messages."
+# ------------------------------------------------------------
+def test_ensure_user_turn_appends_user_when_system_only():
+    messages = [{"role": "system", "content": "你是报告撰写专家"}]
+    out = ensure_user_turn(messages, "请生成内容。")
+    assert [m["role"] for m in out] == ["system", "user"]
+    assert out[-1]["content"] == "请生成内容。"
+    # 原消息不被修改
+    assert messages == [{"role": "system", "content": "你是报告撰写专家"}]
+
+
+def test_ensure_user_turn_keeps_existing_user():
+    messages = [
+        {"role": "system", "content": "系统"},
+        {"role": "user", "content": "用户问题"},
+    ]
+    assert ensure_user_turn(messages) is messages
+
+
+def test_ensure_user_turn_treats_blank_user_as_missing():
+    messages = [
+        {"role": "system", "content": "系统"},
+        {"role": "user", "content": "   "},
+    ]
+    out = ensure_user_turn(messages)
+    assert len(out) == 3
+    assert out[-1]["role"] == "user"
+    assert out[-1]["content"].strip()

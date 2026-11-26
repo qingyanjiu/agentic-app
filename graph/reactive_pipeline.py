@@ -20,6 +20,7 @@ import logging
 
 from dynamic_tools.dynamic_tool_generator import DynamicToolGenerator
 from tools.custom_tool import CustomTool
+from models.llm import ensure_user_turn
 
 '''
 带交互的API查询流程
@@ -308,7 +309,8 @@ MainAgent 回答: {agent_out}
 """
         # 调用 LLM，这里用同步invoke，因为会直接返回结果，否则要拼装chunk，不稳定
         resp = self.llm.invoke(
-            [{"role": "system", "content": eval_prompt}],
+            ensure_user_turn([{"role": "system", "content": eval_prompt}],
+                             "请判断并按要求只返回结论。"),
             config=config
         )
         
@@ -350,7 +352,8 @@ MainAgent 回答: {agent_out}
         is_think_end = False# 思考是否结束
         output_lines_after_think = 0# 思考后输出的行数计数
         async for chunk in self.llm.astream( # 流式接收LLM的输出
-            [{"role": "system", "content": composer_prompt}],
+            ensure_user_turn([{"role": "system", "content": composer_prompt}],
+                             "请根据以上要求输出最终答案。"),
             config=config
         ):
         # 1. 检测思考开始标签
