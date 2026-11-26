@@ -472,3 +472,23 @@ def test_first_time_ambiguity_still_lists_candidates(monkeypatch):
 
     assert clarify != ESCAPE_CLARIFY
     assert len(candidates) == 10
+
+
+def test_restore_view_is_not_a_device_reference():
+    """「恢复视角」「重置视角」是视角操作，不能拿去查台账。
+
+    线上现象：说「恢复视角」回的是
+      「这个条件匹配到 579 台设备（先列出前 12 台）…」+ 一串门禁/广播设备。
+
+    根因：has_device_reference 的判据被改成 bool(residual) —— 剥掉「恢复」
+    后剩「视角」，只要非空就算"说了设备名"。类似的还有「恢复画面」，
+    它走的是 _TYPE_WORD_RE 里的「画面」分支。
+    """
+    from agent.loop.scene_resolve import has_device_reference
+
+    for query in ["恢复视角", "重置视角", "恢复上一个视角", "恢复画面", "重置画面"]:
+        assert has_device_reference(query) is False, query
+
+    # 反例：真的要画面/真要某台设备时，仍必须去解析
+    for query in ["打开画面", "查看7F监控", "恢复7楼的门禁", "打开西电梯"]:
+        assert has_device_reference(query) is True, query

@@ -121,7 +121,6 @@ _FLOOR_PHRASE = re.compile(
     r"|(?:[Bb]|负)\s*(?:1|一)\s*(?:楼|层)?"
     r"|地下\s*(?:一|1)\s*层"
 )
-# 范围词：整栋楼/全部楼层这种是场景视角，不是设备名
 # 范围词：整栋楼/全部楼层这种是场景视角，不是设备名。
 # 「楼栋」「整楼」必须在这里：用户说「恢复楼栋」「切回楼栋」时指的是整栋楼
 # 视角，漏掉就会被当成设备名去查台账，回一句「匹配到 12 台设备，请选择」。
@@ -131,7 +130,14 @@ _SCOPE_WORD = re.compile(
     r"主楼(?!梯)|科研办公楼"
 )
 
-
+# 场景视角类词：剥掉动作词后剩下的「视角」「画面」是场景概念，不是设备名。
+# 「恢复视角」「重置视角」曾因 bool(residual) 判据被当成设备名去查台账，
+# 回了用户「这个条件匹配到 579 台设备」。这里显式排除。
+_SCENE_VIEW_WORD = re.compile(r"视角|画面|镜头|场景|弹窗|全景|俯视|视图")
+_RESTORE_VIEW = re.compile(
+    r"^(?:恢复|复原|还原|重置|复位|回到|返回)\s*(?:到)?\s*"
+    r"(?:视角|画面|镜头|场景|弹窗|全景|俯视|视图)[。！!]?$"
+)
 def _has_device_name_residue(query: str) -> bool:
     """剥掉动作/类型词/指代后，是否还有具体名称或楼层线索。
 
@@ -157,6 +163,10 @@ def has_device_reference(query: str) -> bool:
         return False
     if _ORDINAL_RE.search(text) or _PRONOUN_RE.search(text):
         return True
+    # 「恢复画面」「重置画面」是视角操作，不是要看某一路监控；
+    # 而「打开画面」确实要画面，所以只认"恢复类动词 + 视角类名词"的整句形态。
+    if _RESTORE_VIEW.match(text):
+        return False
     if _TYPE_WORD_RE.search(text):
         return True
     # 环境指令（时间/天气）交给 scene_set_env，不查台账。放在设备类型词之后：
@@ -164,7 +174,10 @@ def has_device_reference(query: str) -> bool:
     if _ENV_WORD.search(text):
         return False
     residual = _STRIP_ACTION.sub("", text).strip(" 的，,。：:")
-    if _SCOPE_WORD.search(residual):
+    # 范围词（整栋楼/全楼层）与场景视角词（视角/画面/镜头…）都不是设备名。
+    # 「恢复视角」剥掉动作词后剩「视角」，没有这条就会去查台账并回一句
+    # 「这个条件匹配到 579 台设备」。
+    if _SCOPE_WORD.search(residual) or _SCENE_VIEW_WORD.search(residual):
         return False
     # 楼层/范围表达不是设备名：`切2楼` / `去2楼` 剥完动作词后只剩 `2楼`，
     # 不能被当成“说了某个设备”。剩下的文本才是真正的名称/位置线索。
