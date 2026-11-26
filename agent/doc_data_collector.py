@@ -619,7 +619,14 @@ class DocDataCollector:
         view = _payload(raw.get("alarm_view"))
         ai_rows = _rows(_payload(raw.get("ai_alert_situation")))
         type_rows = _rows(_payload(raw.get("alarm_list_with_type")))
-        trend_rows = _rows(_payload(raw.get("alert_trend")))
+        trend_payload = _payload(raw.get("alert_trend"))
+        trend_rows = _rows(trend_payload)
+        if not trend_rows and isinstance(trend_payload, dict):
+            # 实际接口返回 {"last30Days":[{date,count}], "last7Days":[...]}，不是 rows
+            trend_rows = (
+                _rows(trend_payload.get("last30Days"))
+                or _rows(trend_payload.get("last7Days"))
+            )
         index_payload = _payload(raw.get("security_index"))
         patrol_payload = _payload(raw.get("patrol"))
 
@@ -741,6 +748,9 @@ class DocDataCollector:
                 "metering": ("energy:getMeteringEquipment", {}),
                 "electricity_rank": ("energy:getElectricityUsageRanking", {}),
                 "water_rank": ("energy:getWaterUsageRanking", {}),
+                # 今日/昨日实时曲线（报告折线图数据源）
+                "elec_curve": ("energy:getRealtimeElectricityUsage", {}),
+                "water_curve": ("energy:getRealtimeWaterUsage", {}),
             },
         )
 
@@ -758,6 +768,12 @@ class DocDataCollector:
 
         elec_rank = _rank_rows(_payload(raw.get("electricity_rank")), limit=5)
         water_rank = _rank_rows(_payload(raw.get("water_rank")), limit=5)
+        elec_curve = _curve_series(_payload(raw.get("elec_curve")))
+        water_curve = _curve_series(_payload(raw.get("water_curve")))
+        if elec_curve is None:
+            logger.info("能耗实时用电曲线为空：energy:getRealtimeElectricityUsage 未返回可用数据")
+        if water_curve is None:
+            logger.info("能耗实时用水曲线为空：energy:getRealtimeWaterUsage 未返回可用数据")
 
         overview = {
             "electricity_annual": elec_annual,
@@ -770,6 +786,8 @@ class DocDataCollector:
             "water_meter_count": water_meters,
             "electricity_rank": elec_rank,
             "water_rank": water_rank,
+            "electricity_curve": elec_curve,
+            "water_curve": water_curve,
         }
 
         parts = []
@@ -797,6 +815,10 @@ class DocDataCollector:
             parts.append(
                 "用水排名：" + "、".join(f"{r['name']} {_fmt_num(r['value'])}" for r in water_rank)
             )
+        if elec_curve:
+            parts.append(f"实时用电曲线覆盖 {len(elec_curve['x'])} 个时点")
+        if water_curve:
+            parts.append(f"实时用水曲线覆盖 {len(water_curve['x'])} 个时点")
 
         period = _period_label(params)
         body = "；".join(parts) + "。" if parts else "能耗数据获取为空。"
@@ -1044,6 +1066,12 @@ def _energy_pair(payload: Any, kind: str) -> Tuple[Optional[float], Optional[flo
             return _num(v.get("annual")), _num(v.get("today"))
         if isinstance(v, (int, float)):
             return _num(v), None
+        # 平铺口径：yearElectricity/todayElectricity、yearWater/todayWater
+        suffix = "Electricity" if kind == "electricity" else "Water"
+        annual = payload.get("year" + suffix)
+        today = payload.get("today" + suffix)
+        if annual is not None or today is not None:
+            return _num(annual), _num(today)
         rows = _rows(payload)
         if rows:
             v2 = rows[0].get(kind)
@@ -1062,6 +1090,48 @@ def _rank_rows(payload: Any, limit: int = 5) -> List[Dict[str, Any]]:
         if name is not None:
             result.append({"name": str(name), "value": value})
     return result
+
+
+def _curve_series(payload: Any) -> Optional[Dict[str, Any]]:
+    """把实时能耗接口的 rows 归一成折线图数据。
+
+    期望口径：rows[{timeLabel, todayValue, yesterdayValue}]，也兼容
+    time/today/yesterday 等常见字段名。数据不足两个时点时返回 None。
+    """
+    rows = _rows(payload)
+    x: List[str] = []
+    today: List[Optional[float]] = []
+    yesterday: List[Optional[float]] = []
+    for row in rows:
+        label = row.get("timeLabel") or row.get("time") or row.get("label") or row.get("x")
+        if label is None:
+            continue
+        today_value = _num(
+            row.get("todayValue") if row.get("todayValue") is not None else row.get("today")
+        )
+        yesterday_value = _num(
+            row.get("yesterdayValue")
+            if row.get("yesterdayValue") is not None
+            else row.get("yesterday")
+        )
+        if today_value is None and yesterday_value is None:
+            continue
+        x.append(str(label))
+        today.append(today_value)
+        yesterday.append(yesterday_value)
+
+    if len(x) < 2:
+        return None
+
+    # 字段名是 today/yesterday，但接口语义是「本周 vs 上周」，图例按实际口径标注
+    series: List[Dict[str, Any]] = []
+    if any(v is not None for v in today):
+        series.append({"name": "本周", "data": today})
+    if any(v is not None for v in yesterday):
+        series.append({"name": "上周", "data": yesterday})
+    if not series:
+        return None
+    return {"x": x, "series": series}
 
 
 def _ratio_of(distribution: List[Dict[str, Any]], keywords: tuple) -> Dict[str, Any]:

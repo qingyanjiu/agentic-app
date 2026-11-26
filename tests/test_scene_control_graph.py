@@ -113,7 +113,7 @@ class FakeSceneClient:
         return self.action_result
 
 
-def _input(query, scene_session_id="scene-abc"):
+def _input(query, scene_session_id="scene-abc", current_query=None):
     return {
         "slots": {},
         "missing_params": [],
@@ -121,6 +121,7 @@ def _input(query, scene_session_id="scene-abc"):
         "unrelated_count": 0,
         "last_question": "",
         "original_query": query,
+        "current_query": current_query if current_query is not None else query,
         "answer": None,
         "error": None,
         "done": False,
@@ -203,6 +204,121 @@ def test_rule_fallback_reset_view():
     run(graph.ainvoke(_input("把视角复位")))
 
     assert _action_calls(client)[0][0] == "scene_reset_view"
+
+
+def test_multi_step_floor_command_asks_instead_of_dispatch():
+    """UE-FAIL-002：多步/巡游类楼层指令不能被降级成单层下发。"""
+    client = FakeSceneClient()
+    llm = FakeLLM('{"tool": "scene_switch_floor", "arguments": {"floor": 2, "focus": true}}')
+    graph = build_scene_control_graph(client, llm=llm)
+
+    final = run(graph.ainvoke(_input("按楼层一层一层从下往上切楼")))
+
+    assert _action_calls(client) == []
+    assert llm.prompts == []
+    assert "一次只能切一层" in asks_of(final)[0]["question"]
+
+
+def test_capability_ask_followup_uses_current_floor():
+    """能力追问后回「3楼」：只按本轮原话规划，不能再次触发多步追问。"""
+    client = FakeSceneClient()
+    llm = FakeLLM('{"tool": "scene_switch_floor", "arguments": {"floor": 3, "focus": true}}')
+    graph = build_scene_control_graph(client, llm=llm)
+    state = _input(
+        "按楼层一层一层从下往上切楼 3楼",
+        current_query="3楼",
+    )
+    state["ask_count"] = 1
+    state["last_question"] = "目前一次只能切一层。您想先切到哪一层？"
+
+    run(graph.ainvoke(state))
+
+    assert _action_calls(client) == [
+        ("scene_switch_floor", {"floor": 3, "focus": True}, "scene-abc")
+    ]
+
+
+# ------------------------------------------------------------
+# 用户可见文案：不输出工具名和原始参数（UE-FAIL-003）
+# ------------------------------------------------------------
+def test_rule_fallback_main_building_switches_floor_99():
+    """「切回主楼」必须等价于整栋楼，而不是重置视角。"""
+    client = FakeSceneClient()
+    graph = build_scene_control_graph(client, llm=None)
+
+    final = run(graph.ainvoke(_input("切回主楼")))
+
+    assert _action_calls(client) == [
+        ("scene_switch_floor", {"floor": 99, "focus": True}, "scene-abc")
+    ]
+    assert "整栋楼" in answers_of(final)[0]
+
+
+def test_whole_building_semantics_overrides_reset_view():
+    """LLM 把「主楼」误判成 scene_reset_view 时，按整栋楼改判。"""
+    client = FakeSceneClient()
+    llm = FakeLLM('{"tool": "scene_reset_view", "arguments": {}}')
+    graph = build_scene_control_graph(client, llm=llm)
+    state = _input("切回主楼那边", current_query="主楼")
+    state["ask_count"] = 1
+    state["last_question"] = "请补充楼层"
+
+    run(graph.ainvoke(state))
+
+    assert _action_calls(client) == [
+        ("scene_switch_floor", {"floor": 99, "focus": True}, "scene-abc")
+    ]
+
+
+def test_answer_humanizes_tool_name_and_args():
+    client = FakeSceneClient(action_result="已下发动作 scene_switch_floor（floor=3, focus=True）。")
+    graph = build_scene_control_graph(client, llm=None)
+
+    final = run(graph.ainvoke(_input("切换到3楼")))
+
+    answer = answers_of(final)[0]
+    assert answer.startswith("已下发：")
+    assert "切换到 3 层" in answer
+    assert "scene_switch_floor" not in answer
+    assert "focus" not in answer
+
+
+def test_answer_humanizes_whole_building():
+    client = FakeSceneClient(action_result="已下发动作 scene_switch_floor（floor=99, focus=true）。")
+    graph = build_scene_control_graph(client, llm=None)
+
+    final = run(graph.ainvoke(_input("展示整栋楼")))
+
+    answer = answers_of(final)[0]
+    assert "整栋楼" in answer
+    assert "scene_switch_floor" not in answer
+
+
+def test_answer_humanizes_env_args():
+    client = FakeSceneClient(action_result="已下发动作 scene_set_env。")
+    graph = build_scene_control_graph(client, llm=None)
+
+    final = run(graph.ainvoke(_input("时间切到晚上")))
+
+    answer = answers_of(final)[0]
+    assert "环境已切换为" in answer
+    assert "时间 20:00" in answer
+    assert "scene_set_env" not in answer
+
+
+def test_error_humanizes_tool_name():
+    client = FakeSceneClient(
+        action_error=RuntimeError("调用 scene_set_area_state 失败：该工具默认禁用")
+    )
+    llm = FakeLLM('{"tool": "scene_set_area_state", "arguments": {"tag": "A-01", "state": "撤防"}}')
+    graph = build_scene_control_graph(client, llm=llm)
+
+    final = run(graph.ainvoke(_input("把A-01防区撤防")))
+
+    errors = events_of(final, "error")
+    assert errors
+    assert "scene_set_area_state" not in errors[0]["content"]
+    assert "变更防区状态" in errors[0]["content"]
 
 
 # ------------------------------------------------------------

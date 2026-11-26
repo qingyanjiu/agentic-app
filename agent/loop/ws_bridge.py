@@ -22,6 +22,7 @@ import time
 from typing import Any
 
 from .pipeline import ChatPipeline, PipelineResult, Session
+from .recent_entities import remember_entities
 from .rollout import RolloutDecision
 
 logger = logging.getLogger(__name__)
@@ -190,6 +191,9 @@ async def handle_chat(
             # 文本回答里也带着逐行明细（旧前端能继续用），这份是为准的。
             payload = data.get("list")
             if payload:
+                # 记一份给下一轮「其中一个 / 第三个」解析用；
+                # 业务/场景通道都能从这里取，不依赖各自的历史。
+                remember_entities(user_id, session_id, payload)
                 await _send(
                     websocket,
                     {"event": "custom", "data": {"type": "list", **payload}},
@@ -213,9 +217,11 @@ async def handle_chat(
     # L1 直出：结构化清单单独发一个 list 事件（文本已经按追加语义发过了）。
     # L2 的清单是执行工具时就发出去的，不在这里重复。
     if result.entities:
+        payload = result.entities.to_dict()
+        remember_entities(user_id, session_id, payload)
         await _send(
             websocket,
-            {"event": "custom", "data": {"type": "list", **result.entities.to_dict()}},
+            {"event": "custom", "data": {"type": "list", **payload}},
         )
 
     if result.stop_reason == "asked":

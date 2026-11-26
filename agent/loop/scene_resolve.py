@@ -40,6 +40,21 @@ _CN_DIGITS = {
 _ORDINAL_RE = re.compile(r"第\s*([一二三四五六七八九十\d]+)\s*(?:个|台|号)?|^([一二三四五六七八九十\d])$")
 # 指代词：没有独立语义，只能靠上一轮候选
 _PRONOUN_RE = re.compile(r"这个|那个|这台|那台|它|该设备")
+# 选择类指代：「其中一个」「随便一台」——比「这个」更需要上一轮列表，
+# 多台时也不能直接选，必须追问。
+_SELECTION_RE = re.compile(
+    r"其中一个|其中一台|里面(?:的)?(?:一个|一台)|随便(?:一个|一台)|"
+    r"任意(?:一个|一台)|哪个都行"
+)
+def _explicit_ordinal_index(query: str) -> int | None:
+    """只认「第三个 / 第2台」这种显式序号；裸数字「3」可能是楼层，不算。"""
+    match = _ORDINAL_RE.search(query or "")
+    if not match or not match.group(1):
+        return None
+    raw = match.group(1)
+    if raw.isdigit():
+        return int(raw)
+    return _CN_DIGITS.get(raw)
 
 
 def _candidate_line(row: dict) -> str:
@@ -77,18 +92,58 @@ ESCAPE_CLARIFY = (
     "我没听明白你要看哪台设备。请直接给出完整的要求，"
     "比如「打开7F西通道西向东的监控」，或者用「第三个」这样选。"
 )
-# 动作词：判断「这句话除动作之外还说了什么」时要先剥掉
+
+
+def _ask_which_no_context() -> str:
+    return (
+        "要操作哪一台？我这边没有上一轮的设备清单，"
+        "请说设备名称/编号，或先让我列出设备。"
+    )
+
+
+def _ask_which_with_pool(count: int) -> str:
+    return (
+        f"要操作哪一台？当前列表有 {count} 台，"
+        "可以点上方设备标签，或说「第几个」/设备名称/编号。"
+    )
+# 动作词：判断「这句话除动作之外还说了什么」时要先剥掉。
+# 裸的「切 / 去 / 转 / 上 / 跳 / 回 / 进」必须收进来：`切2楼` 和 `切到2楼`
+# 语义一样，漏掉裸「切」时前者会残留 `切2楼`，被后面的长度阈值误判成设备线索。
 _STRIP_ACTION = re.compile(
     r"^(?:切回|切到|切换到|切换|回到|返回|退出|关闭|关掉|打开|开启|查看|调出|显示|展示|看看|看一下|看下|看|"
-    r"恢复|复原|还原|重置|复位)+"
+    r"恢复|复原|还原|重置|复位|切|去|转|上|跳|回|进)+"
+)
+
+# 楼层表达：2楼 / 3F / 一层 / 负一层 / B1。
+# 判定“是不是在说某台设备”时先整体剥掉，剩下的才是设备线索。
+_FLOOR_PHRASE = re.compile(
+    r"(?:第)?[0-9一二两三四五六七八九十]+\s*(?:楼|层|[Ff])"
+    r"|(?:[Bb]|负)\s*(?:1|一)\s*(?:楼|层)?"
+    r"|地下\s*(?:一|1)\s*层"
 )
 # 范围词：整栋楼/全部楼层这种是场景视角，不是设备名
 # 范围词：整栋楼/全部楼层这种是场景视角，不是设备名。
 # 「楼栋」「整楼」必须在这里：用户说「恢复楼栋」「切回楼栋」时指的是整栋楼
 # 视角，漏掉就会被当成设备名去查台账，回一句「匹配到 12 台设备，请选择」。
 _SCOPE_WORD = re.compile(
-    r"整栋|全楼|整楼|全栋|楼栋|整个|全部|所有|园区|整层|全层|楼层|大楼|这栋|该栋|本栋"
+    r"整栋|全楼|整楼|全栋|楼栋|整个|全部|所有|园区|整层|全层|楼层|大楼|这栋|该栋|本栋|"
+    # 「主楼 / 科研办公楼」= 整栋楼视角；`主楼(?!梯)` 排除设备名「主楼梯」
+    r"主楼(?!梯)|科研办公楼"
 )
+
+
+def _has_device_name_residue(query: str) -> bool:
+    """剥掉动作/类型词/指代后，是否还有具体名称或楼层线索。
+
+    「打开这个监控」剥完只剩空 → 没有具体对象，不能拿这句去查全表；
+    「打开7F西通道的这个监控」还剩「7F西通道」→ 可以正常按名称/楼层解析。
+    """
+    text = _STRIP_ACTION.sub("", query or "")
+    text = _TYPE_WORD_RE.sub("", text)
+    text = _PRONOUN_RE.sub("", text)
+    text = _SELECTION_RE.sub("", text)
+    text = re.sub(r"[\s的，,。：:楼层整全所有设备点位对象]+", "", text)
+    return bool(text)
 
 
 def has_device_reference(query: str) -> bool:
@@ -109,9 +164,13 @@ def has_device_reference(query: str) -> bool:
     if _ENV_WORD.search(text):
         return False
     residual = _STRIP_ACTION.sub("", text).strip(" 的，,。：:")
-    if len(residual) < 3 or _SCOPE_WORD.search(residual):
+    if _SCOPE_WORD.search(residual):
         return False
-    return True
+    # 楼层/范围表达不是设备名：`切2楼` / `去2楼` 剥完动作词后只剩 `2楼`，
+    # 不能被当成“说了某个设备”。剩下的文本才是真正的名称/位置线索。
+    residual = _FLOOR_PHRASE.sub("", residual)
+    residual = re.sub(r"[\s的，,。：:楼层整全所有]+", "", residual)
+    return bool(residual)
 
 
 def _answers_pick(query: str, keyword: str | None) -> bool:
@@ -170,10 +229,22 @@ def clarify_entities(clarify: str | None, rows: list[dict], scope: str = "") -> 
     """
     if not clarify or "匹配到" not in clarify:
         return None
-    return candidate_entities(rows, scope)
+    # 追问话术里的总数是“过滤后总量”，rows 只是前 N 台；标题要带上真实总量，
+    # 否则用户会以为系统只找到 12 台。
+    match = re.search(r"匹配到\s*(\d+)\s*台", clarify)
+    total = int(match.group(1)) if match else None
+    # 标题直接用追问话术的第一句：前端按 `文本.startsWith(title)` 去重，
+    # 两边不一致会把同一份清单显示两遍。
+    headline = clarify_headline(clarify)
+    return candidate_entities(rows, scope, total=total, title=headline or None)
 
 
-def candidate_entities(rows: list[dict], scope: str = "") -> EntityList | None:
+def candidate_entities(
+    rows: list[dict],
+    scope: str = "",
+    total: int | None = None,
+    title: str | None = None,
+) -> EntityList | None:
     """把追问候选转成前端可点的结构化列表（kind=device）。"""
     items: list[Entity] = []
     for row in rows:
@@ -197,11 +268,19 @@ def candidate_entities(rows: list[dict], scope: str = "") -> EntityList | None:
         )
     if not items:
         return None
-    prefix = f"{scope}匹配到 {len(items)} 台设备" if scope else f"匹配到 {len(items)} 台设备"
+    count = total if total is not None else len(items)
+    if title:
+        final_title = title
+    else:
+        prefix = f"{scope}匹配到 {count} 台设备" if scope else f"匹配到 {count} 台设备"
+        if count > len(items):
+            prefix += f"（先列出前 {len(items)} 台）"
+        final_title = f"{prefix}，请选择"
     return EntityList(
         kind=KIND_DEVICE,
-        title=f"{prefix}，请选择",
+        title=final_title,
         items=items,
+        total=count,
     )
 
 
@@ -219,8 +298,30 @@ async def resolve_scene_device_tag(
     """
     pool = list(candidates or [])
 
+    # 0) 选择类指代必须落在上一轮清单上：
+    #    「其中一个」多台时不能随机选，也不能拿这句话去查全表。
+    if _SELECTION_RE.search(query):
+        if pool:
+            return None, _ask_which_with_pool(len(pool)), pool
+        return None, _ask_which_no_context(), []
+
+    # 0.1) 裸指代（「打开这个监控」「打开那个」）没有候选，也没有具体名称/楼层时：
+    #      直接追问，不要退化成“查全园区前 12 台”。
+    if not pool \
+            and (_PRONOUN_RE.search(query) or _SELECTION_RE.search(query)) \
+            and not _has_device_name_residue(query):
+        return None, _ask_which_no_context(), []
+
     # 1) 用户用序号/指代回复上一轮的候选
     index = _ordinal_index(query) if pool else None
+    if pool and index is not None and index > len(pool):
+        return None, (
+            f"当前列表只展示了前 {len(pool)} 台，请说列表里的序号，"
+            "或补充设备名称/编号。"
+        ), pool
+    if not pool and _explicit_ordinal_index(query) is not None:
+        return None, "请先让我列出设备清单，或直接说设备名称/编号。", []
+
     picked = pool[index - 1] if index and 0 < index <= len(pool) else None
     if picked is None and pool and len(pool) == 1 and _PRONOUN_RE.search(query):
         picked = pool[0]

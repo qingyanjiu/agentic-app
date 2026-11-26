@@ -106,6 +106,19 @@ def test_happy_path_answers(domain_graphs, module_key, slots):
     assert content.strip(), f"{module_key} answer 为空"
 
 
+def test_device_list_emits_clickable_list_event(domain_graphs):
+    """旧业务链路的设备列表也要发 list 事件，前端才能渲染可点标签。"""
+    final = run(domain_graphs("device_query").ainvoke(graph_input({
+        "query_type": "device_list", "area": "A栋3楼",
+    })))
+
+    lists = events_of(final, "list")
+    assert lists, "设备列表应带 list 事件"
+    assert lists[0]["kind"] == "device"
+    assert lists[0]["items"]
+    assert lists[0]["items"][0]["id"]
+
+
 # ------------------------------------------------------------
 # 1.1 车辆域「非今日查询确认」分支：
 #     后端仅支持今日数据，非今天日期先反问"是否看今日"，

@@ -52,6 +52,7 @@ flowchart LR
 |---|---|---|
 | `query` | 是 | 自然语言，场景指令/业务查询都可以 |
 | `scene_session_id` | 否 | 场景页面会话 id，逐请求注入 `X-Session-Id`；不带则走 sidecar 单场景会话兜底 |
+| `floor` | 否 | 场景页当前楼层（`3` / `3F` / `B1`）。用于把「这层楼 / 当前层」补成具体楼层；不带时后端向 `get_scene_state` 读取一次。也兼容 `current_floor` / `currentFloor` / `floorNum` |
 | `mode` | 否 | 显式强制：`"scene"` 跳过意图识别直接进场景图，`"kb"` 走知识库。**正常使用不需要** |
 
 > `scene_session_id` 也兼容 `sceneSessionId` / `sceneId` / `scene_id` / `X-Session-Id` / `x_session_id`。
@@ -281,11 +282,12 @@ query_vec
 ### 成功下发
 
 ```json
-{"event":"custom","data":{"type":"answer","content":"已下发动作 scene_switch_floor（floor=3, focus=true）。\n注意：这只代表动作帧已送到场景页面，UE 不回执，不代表场景已经改变。"}}
+{"event":"custom","data":{"type":"answer","content":"已下发：切换到 3 层。"}}
 {"event":"custom","data":{"type":"done"}}
 ```
 
 回答只会说 **“已下发”**，不会说“已完成”——UE 不回执，后端无法确认场景真的变了。
+用户可见文案**不出现工具名和原始参数**（`scene_switch_floor`、`focus` 等只进日志）；
 sidecar 返回文本里“回复用户时不要说已完成”这类内部提示已被 `_clean_scene_text()` 清掉。
 
 ### 需要补充参数（多轮）

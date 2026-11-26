@@ -1,4 +1,6 @@
 """安防态势业务域（11 个子类型）。"""
+import re
+
 from agent.intent.slots import extract_security_status_slots
 
 from ._generic import (
@@ -23,6 +25,24 @@ _DATE_ARGS = time_args_for("inspection_trend", mode="date")
 
 def _security_args(slots: dict) -> dict:
     return _YMD_ARGS(slots) or _ISO_ARGS(slots) or _DATE_ARGS(slots)
+
+
+# 安防接口（getSecurityAlarmList / getAiAlertSituation / getSecurityIndex ...）
+# 只接受时间/园区范围，没有楼层参数。带楼层的问法必须先说清楚，
+# 不能把园区范围的结果套上「7楼没有告警」这种错误结论。
+_FLOOR_INTENT_RE = re.compile(
+    r"(?:[0-9一二两三四五六七八九十]+\s*(?:楼|层|[Ff])|[Bb]\s*1|负一|地下一层|"
+    r"这层|当前层|本层|该层|楼层|每层|各层|逐层)"
+)
+
+
+def _floor_capability_precheck(query: str) -> str | None:
+    if _FLOOR_INTENT_RE.search(query or ""):
+        return (
+            "安防态势接口目前只支持按园区和时间查询，不能按楼层筛选。"
+            "请把范围改成园区或指定时间段。"
+        )
+    return None
 
 
 CONFIG = QueryDomain(
@@ -56,6 +76,7 @@ CONFIG = QueryDomain(
     empty_hint="这个时间段没有安防告警事件",
     required={"alarm_detail": ("alarm_id",)},
     missing_hint={"alarm_id": "缺少要查询的告警。请向用户确认告警编号"},
+    precheck=_floor_capability_precheck,
 )
 
 

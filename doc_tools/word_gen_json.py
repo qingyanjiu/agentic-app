@@ -541,7 +541,45 @@ class CustomWordGenerator:
         # 表格居中
         table.alignment = WD_TABLE_ALIGNMENT.CENTER
         self.doc.add_paragraph()
-    
+
+    def add_picture(self, image_path: str, width_cm: float = 14.5, caption: str = "") -> Optional[str]:
+        """插入一张图片（可选图注），图片缺失/插入失败时跳过并返回 None。"""
+        if not self.doc:
+            raise ValueError("文档未初始化")
+        if not image_path or not os.path.exists(image_path):
+            logger.warning("图片不存在，跳过插入：%s", image_path)
+            return None
+
+        try:
+            self.doc.add_picture(image_path, width=Cm(width_cm))
+            # 图片段落居中
+            self.doc.paragraphs[-1].alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
+        except Exception as exc:  # noqa: BLE001 - 单张图失败不影响整份报告
+            logger.warning("插入图片失败 %s：%s", image_path, exc)
+            return None
+
+        if caption:
+            try:
+                # 直接建段落，不走 add_paragraph 的 style_override，
+                # 避免 _merge_configs 就地修改共享的 normal 样式。
+                para = self.doc.add_paragraph()
+                run = para.add_run(caption)
+                # 显式继承正文字体（宋体），否则会落到主题字体：
+                # 数字走 Cambria、中文走宋体，图注前后看起来不一致。
+                font_config = dict(
+                    self.styles_config["styles"].get("normal", {}).get("font", {})
+                )
+                font_config["size"] = Pt(9)
+                font_config["color"] = "6B7280"
+                self._apply_run_style(run, font_config)
+                para.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
+                para.paragraph_format.space_before = Pt(3)
+                para.paragraph_format.space_after = Pt(8)
+                para.paragraph_format.first_line_indent = Pt(0)
+            except Exception as exc:  # noqa: BLE001 - 图注失败不影响图片
+                logger.warning("写入图注失败：%s", exc)
+        return image_path
+
     # ===================== 辅助方法 =====================
     def _apply_run_style(self, run, font_config: Dict):
         """应用字符样式"""

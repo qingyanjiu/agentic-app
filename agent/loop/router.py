@@ -91,6 +91,24 @@ def asks_for_list(query: str) -> bool:
     """用户是不是在要一份清单（「有哪些」「几个」），而不是要开画面/补参数。"""
     return bool(_LIST_QUESTION.search(query or ""))
 
+
+# 多步/流程类场景指令：工具都是单次动作，要交给场景通道回“一次只能做一步”，
+# 不能让 L2 模型自己挑其中一步执行。与 app.py 的 _SCENE_MULTI_STEP_RE 同口径。
+_MULTI_STEP_SCENE_RE = re.compile(
+    r"一层一层|一层层|逐层|逐个|依次|挨个|每一层|每层|从下往上|从上往下|循环|自动巡游"
+)
+_SCENE_ACTION_WORD_RE = re.compile(r"切|换|巡")
+
+
+def is_multi_step_scene_command(query: str) -> bool:
+    """「一层一层切楼」「依次打开每层监控」这类多步场景指令。"""
+    text = query or ""
+    return bool(
+        _MULTI_STEP_SCENE_RE.search(text)
+        and _SCENE_ACTION_WORD_RE.search(text)
+        and not _DATA_VETO.search(text)
+    )
+
 # 「监控/摄像头」后面直接跟了具体设备名或编号 → 用户问的是这台设备，不是开关画面。
 #   「查看 监控5F客梯厅」  → 命中 → 不算场景，走设备查询
 #   「打开5F客梯厅的监控」  → 类型词在句末，不命中 → 仍是场景指令
@@ -236,6 +254,18 @@ class Router:
                 tool=None,
                 confidence=1.0,
                 reason="scene_monitor",
+                needs_confirm=True,
+            )
+
+        # ②.7 多步/流程类场景指令：交给场景通道回能力话术，别让 L2 猜一步
+        if is_multi_step_scene_command(query):
+            logger.info(f"[route] 多步场景指令，交回旧链路：{query}")
+            return RoutePlan(
+                level="L0",
+                domain="scene",
+                tool=None,
+                confidence=1.0,
+                reason="scene_multi_step",
                 needs_confirm=True,
             )
 

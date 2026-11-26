@@ -184,6 +184,9 @@ class QueryDomain:
     formatter: Callable[[str, str], str] | None = None
     # 可选：query_type → 接口超时时的业务话术（默认按域描述拼一个）
     timeout_hints: dict[str, str] = field(default_factory=dict)
+    # 可选：调用接口前的能力校验。返回字符串表示“这个域做不了”，
+    # 直接作为工具结果交给模型转述，不去调 MCP（如安防不支持按楼层筛选）。
+    precheck: Callable[[str], str | None] | None = None
 
     def resolve(self, query: str) -> tuple[str, str | None, dict, list[str]]:
         slots = self.extract_slots(query) or {}
@@ -245,6 +248,11 @@ def build_from(cfg: QueryDomain, toolbox: McpToolbox) -> DomainSpec:
         query = str(raw_args.get("query") or "").strip()
         if not query:
             return ToolOutcome("缺少用户问题，无法解析查询条件。", is_error=True)
+
+        if cfg.precheck is not None:
+            note = cfg.precheck(query)
+            if note:
+                return ToolOutcome(note, is_error=True)
 
         query_type, tool, args, missing = cfg.resolve(query)
 

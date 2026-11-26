@@ -272,6 +272,7 @@ docker exec -it langchain-agent-dev /bin/bash
 
 # 在容器内启动服务
 cd /root/agentic-app
+export Agent_mode=loop
 python app.py 或者 python -m uvicorn app:app --host 0.0.0.0 --port 8001 --reload
 ```
 
