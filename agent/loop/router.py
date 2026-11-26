@@ -233,8 +233,11 @@ class Router:
                     reason="scene_command",
                     needs_confirm=True,
                 )
-        except Exception:  # 分类器依赖缺失时不影响主流程
-            pass
+        except Exception as exc:  # 分类器依赖缺失时不影响主流程
+            # 别静默：这条判定负责把「恢复视角」「重置视角」这类强场景指令
+            # 直接送进场景通道。跳过之后请求落进 L2，模型只能拿查询工具作答，
+            # 现象就是"恢复视角"回了一堆设备。至少留一行痕迹便于定位。
+            logger.warning(f"[route] 场景指令判定失败（已跳过，将走 L2）：{exc}")
 
         # ②.5 监控/摄像头类场景指令（补存量正则失效的那条分支）
         # 与 ② 分开是因为这里要额外排除数据问法：用户可能问「看摄像头在线率」，
@@ -299,8 +302,10 @@ class Router:
                     reason="scene_vector",
                     needs_confirm=True,
                 )
-        except Exception:  # 分类器依赖缺失时不影响业务主流程
-            pass
+        except Exception as exc:  # 分类器依赖缺失时不影响业务主流程
+            # 别静默：场景判定一旦在这里被跳过，请求会掉进 L2，而 L2 手里
+            # 只有查询类工具，「恢复视角」就会被答成一长串设备清单。
+            logger.warning(f"[route] 场景兜底判定失败（已跳过，将走 L2）：{exc}")
 
         if domain in ("", "other"):
             return None
