@@ -11,6 +11,8 @@ from langgraph.runtime import Runtime
 from langchain_core.runnables.config import RunnableConfig
 from langchain_core.language_models import BaseChatModel
 
+from models.llm import ensure_user_turn
+
 import logging
 from dynamic_tools.dynamic_tool_generator import DynamicToolGenerator
 from tools.custom_tool import CustomTool
@@ -387,7 +389,11 @@ class GenDocPipeline:
         self.stream_output(writer, chapter_title, chapter_name)  # 流式输出给前端
         # 3. LLM流式生成
         chapter_content = ""
-        async for chunk in self.llm.astream([{"role": "system", "content": prompt_str}], config=config):
+        async for chunk in self.llm.astream(
+            ensure_user_turn([{"role": "system", "content": prompt_str}],
+                             "请严格按照以上全部要求生成本章节内容。"),
+            config=config,
+        ):
             chapter_content += chunk.content
             self.stream_output(writer, chunk.content, chapter_name)  # 流式输出给前端
         
@@ -434,7 +440,11 @@ class GenDocPipeline:
         self.stream_output(writer, chapter_title, chapter_name)  # 流式输出给前端
         # 流式生成
         chapter_content = ""
-        async for chunk in self.llm.astream([{"role": "system", "content": prompt_str}], config=config):
+        async for chunk in self.llm.astream(
+            ensure_user_turn([{"role": "system", "content": prompt_str}],
+                             "请严格按照以上全部要求生成本章节内容。"),
+            config=config,
+        ):
             chapter_content += chunk.content
             self.stream_output(writer, chunk.content, chapter_name)
         
@@ -482,7 +492,11 @@ class GenDocPipeline:
         self.stream_output(writer, chapter_title, chapter_name)  # 流式输出给前端
         # 流式生成
         chapter_content = ""
-        async for chunk in self.llm.astream([{"role": "system", "content": prompt_str}], config=config):
+        async for chunk in self.llm.astream(
+            ensure_user_turn([{"role": "system", "content": prompt_str}],
+                             "请严格按照以上全部要求生成本章节内容。"),
+            config=config,
+        ):
             chapter_content += chunk.content
             self.stream_output(writer, chunk.content, chapter_name)
         
@@ -549,7 +563,11 @@ class GenDocPipeline:
             full_index = f"\n### {main_index}.{sub_index} {sub_dim}维度分析\n"  # 4.1、4.2、4.3
             self.stream_output(writer,full_index, chapter_name)
            
-            async for chunk in self.llm.astream([{"role": "system", "content": prompt_str}], config=config):
+            async for chunk in self.llm.astream(
+                ensure_user_turn([{"role": "system", "content": prompt_str}],
+                                 "请严格按照以上全部要求生成本章节内容。"),
+                config=config,
+            ):
                 sub_content += chunk.content
                 self.stream_output(writer, chunk.content, chapter_name)
 
@@ -606,7 +624,11 @@ class GenDocPipeline:
         
         # 流式生成
         chapter_content = ""
-        async for chunk in self.llm.astream([{"role": "system", "content": prompt_str}], config=config):
+        async for chunk in self.llm.astream(
+            ensure_user_turn([{"role": "system", "content": prompt_str}],
+                             "请严格按照以上全部要求生成本章节内容。"),
+            config=config,
+        ):
             chapter_content += chunk.content
             self.stream_output(writer, chunk.content, chapter_name)
         
@@ -655,7 +677,11 @@ class GenDocPipeline:
         
         # 流式生成
         chapter_content = ""
-        async for chunk in self.llm.astream([{"role": "system", "content": prompt_str}], config=config):
+        async for chunk in self.llm.astream(
+            ensure_user_turn([{"role": "system", "content": prompt_str}],
+                             "请严格按照以上全部要求生成本章节内容。"),
+            config=config,
+        ):
             chapter_content += chunk.content
             self.stream_output(writer, chunk.content, chapter_name)
         

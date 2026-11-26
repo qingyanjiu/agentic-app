@@ -8,6 +8,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import StreamWriter
 
 from mcp_client.knowledge_http_client import EMPTY_HINT, KnowledgeHttpClient
+from models.llm import ensure_user_turn
 from mcp_client.knowledge_http_client import build_from_env as build_kb_http_client
 from mcp_client.knowledge_mcp_client import KnowledgeMcpClient
 from mcp_client.mcp_loader import load_mcp_config
@@ -141,8 +142,11 @@ class KnowledgeQAPipeline:
         try:
             # 同步 invoke：改写是轻量调用且后续节点依赖结果，无需流式
             resp = self.llm.invoke(
-                [{"role": "system",
-                  "content": self.condense_prompt.format(chat_history=chat_history, query=query)}],
+                ensure_user_turn(
+                    [{"role": "system",
+                      "content": self.condense_prompt.format(chat_history=chat_history, query=query)}],
+                    "请按要求改写问题。",
+                ),
                 config=config,
             )
             rewritten = (resp.content or "").strip()

@@ -41,7 +41,7 @@ from langchain_openai import ChatOpenAI
 
 # 全局采样参数（与具体模型无关）
 TEMPERATURE = 0  # 0=确定性输出
-MAX_TOKENS = 4096
+MAX_TOKENS = 8192
 
 # 关闭思考级别时允许的写法（不传 reasoning_effort，走模型默认）
 _NO_EFFORT_VALUES = {"", "off", "none", "disable", "disabled", "false"}
@@ -122,6 +122,26 @@ def resolve_thinking(model_config: dict) -> str:
         value = os.getenv("LLM_THINKING")
     value = str(value or "").strip().lower()
     return value if value in _THINKING_VALUES else ""
+
+
+def ensure_user_turn(messages: list[dict], user_content: str = "请严格按照以上要求完成任务。") -> list[dict]:
+    """保证 messages 中至少有一条非空 user 消息，返回可直接发给模型的消息列表。
+
+    为什么要这个：Qwen 的 chat template（vLLM / DashScope / LM Studio 等
+    OpenAI 兼容实现都一样）在 messages 里找不到 user 角色时，会直接返回
+    400 `No user query found in messages.`，而且不可重试。DeepSeek 允许
+    "只有一条 system"的请求，所以历史上那些 system-only 的调用在 DeepSeek
+    上能跑通，一换模型就全部 400。
+
+    这里不改动原 prompt 的内容和角色：已有 user 消息就原样返回，没有才在
+    末尾补一条通用执行指令。对 DeepSeek / Qwen / vLLM / Ollama 都安全。
+    """
+    if any(
+        m.get("role") == "user" and str(m.get("content") or "").strip()
+        for m in messages
+    ):
+        return messages
+    return [*messages, {"role": "user", "content": user_content}]
 
 
 class CustomLLMFactory():
