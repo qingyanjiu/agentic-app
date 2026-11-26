@@ -1,4 +1,5 @@
 # uvicorn app:app --host 0.0.0.0 --port 8000 --reload
+import base64
 import json
 import os
 import re
@@ -292,12 +293,17 @@ async def run_person_status_graph(websocket, state, user_id, session_id):
     keep_state = False
     for chunk in final_state["events"]:
         # 回答已经按 token 流式推过：跳过收尾的完整 answer，避免重复显示
-        if streamed_answer and chunk.get("event") == "custom" \
-                and chunk.get("data", {}).get("type") == "answer":
+        data = chunk.get("data", {}) if chunk.get("event") == "custom" else {}
+        if streamed_answer and data.get("type") == "answer":
             continue
+        # 设备 list 存一份，下一轮「其中一个」才能跨通道解析；
+        # 其他域没有 list 事件，这段是空操作。
+        if data.get("type") == "list":
+            from agent.loop.recent_entities import remember_entities
+            remember_entities(user_id, str(session_id), data)
         text = _safe_serialize(chunk)
         await websocket.send_text(json.dumps(text, ensure_ascii=False))
-        if chunk.get("event") == "custom" and chunk.get("data", {}).get("type") == "ask":
+        if data.get("type") == "ask":
             keep_state = True
 
     if keep_state:
@@ -383,12 +389,17 @@ async def run_security_status_graph(websocket, state, user_id, session_id):
     keep_state = False
     for chunk in final_state["events"]:
         # 回答已经按 token 流式推过：跳过收尾的完整 answer，避免重复显示
-        if streamed_answer and chunk.get("event") == "custom" \
-                and chunk.get("data", {}).get("type") == "answer":
+        data = chunk.get("data", {}) if chunk.get("event") == "custom" else {}
+        if streamed_answer and data.get("type") == "answer":
             continue
+        # 设备 list 存一份，下一轮「其中一个」才能跨通道解析；
+        # 其他域没有 list 事件，这段是空操作。
+        if data.get("type") == "list":
+            from agent.loop.recent_entities import remember_entities
+            remember_entities(user_id, str(session_id), data)
         text = _safe_serialize(chunk)
         await websocket.send_text(json.dumps(text, ensure_ascii=False))
-        if chunk.get("event") == "custom" and chunk.get("data", {}).get("type") == "ask":
+        if data.get("type") == "ask":
             keep_state = True
 
     if keep_state:
@@ -474,12 +485,17 @@ async def run_canteen_status_graph(websocket, state, user_id, session_id):
     keep_state = False
     for chunk in final_state["events"]:
         # 回答已经按 token 流式推过：跳过收尾的完整 answer，避免重复显示
-        if streamed_answer and chunk.get("event") == "custom" \
-                and chunk.get("data", {}).get("type") == "answer":
+        data = chunk.get("data", {}) if chunk.get("event") == "custom" else {}
+        if streamed_answer and data.get("type") == "answer":
             continue
+        # 设备 list 存一份，下一轮「其中一个」才能跨通道解析；
+        # 其他域没有 list 事件，这段是空操作。
+        if data.get("type") == "list":
+            from agent.loop.recent_entities import remember_entities
+            remember_entities(user_id, str(session_id), data)
         text = _safe_serialize(chunk)
         await websocket.send_text(json.dumps(text, ensure_ascii=False))
-        if chunk.get("event") == "custom" and chunk.get("data", {}).get("type") == "ask":
+        if data.get("type") == "ask":
             keep_state = True
 
     if keep_state:
@@ -564,12 +580,17 @@ async def run_vehicle_status_graph(websocket, state, user_id, session_id):
     keep_state = False
     for chunk in final_state["events"]:
         # 回答已经按 token 流式推过：跳过收尾的完整 answer，避免重复显示
-        if streamed_answer and chunk.get("event") == "custom" \
-                and chunk.get("data", {}).get("type") == "answer":
+        data = chunk.get("data", {}) if chunk.get("event") == "custom" else {}
+        if streamed_answer and data.get("type") == "answer":
             continue
+        # 设备 list 存一份，下一轮「其中一个」才能跨通道解析；
+        # 其他域没有 list 事件，这段是空操作。
+        if data.get("type") == "list":
+            from agent.loop.recent_entities import remember_entities
+            remember_entities(user_id, str(session_id), data)
         text = _safe_serialize(chunk)
         await websocket.send_text(json.dumps(text, ensure_ascii=False))
-        if chunk.get("event") == "custom" and chunk.get("data", {}).get("type") == "ask":
+        if data.get("type") == "ask":
             keep_state = True
 
     if keep_state:
@@ -655,12 +676,17 @@ async def run_information_status_graph(websocket, state, user_id, session_id):
     keep_state = False
     for chunk in final_state["events"]:
         # 回答已经按 token 流式推过：跳过收尾的完整 answer，避免重复显示
-        if streamed_answer and chunk.get("event") == "custom" \
-                and chunk.get("data", {}).get("type") == "answer":
+        data = chunk.get("data", {}) if chunk.get("event") == "custom" else {}
+        if streamed_answer and data.get("type") == "answer":
             continue
+        # 设备 list 存一份，下一轮「其中一个」才能跨通道解析；
+        # 其他域没有 list 事件，这段是空操作。
+        if data.get("type") == "list":
+            from agent.loop.recent_entities import remember_entities
+            remember_entities(user_id, str(session_id), data)
         text = _safe_serialize(chunk)
         await websocket.send_text(json.dumps(text, ensure_ascii=False))
-        if chunk.get("event") == "custom" and chunk.get("data", {}).get("type") == "ask":
+        if data.get("type") == "ask":
             keep_state = True
 
     if keep_state:
@@ -746,12 +772,17 @@ async def run_energy_status_graph(websocket, state, user_id, session_id):
     keep_state = False
     for chunk in final_state["events"]:
         # 回答已经按 token 流式推过：跳过收尾的完整 answer，避免重复显示
-        if streamed_answer and chunk.get("event") == "custom" \
-                and chunk.get("data", {}).get("type") == "answer":
+        data = chunk.get("data", {}) if chunk.get("event") == "custom" else {}
+        if streamed_answer and data.get("type") == "answer":
             continue
+        # 设备 list 存一份，下一轮「其中一个」才能跨通道解析；
+        # 其他域没有 list 事件，这段是空操作。
+        if data.get("type") == "list":
+            from agent.loop.recent_entities import remember_entities
+            remember_entities(user_id, str(session_id), data)
         text = _safe_serialize(chunk)
         await websocket.send_text(json.dumps(text, ensure_ascii=False))
-        if chunk.get("event") == "custom" and chunk.get("data", {}).get("type") == "ask":
+        if data.get("type") == "ask":
             keep_state = True
 
     if keep_state:
@@ -837,12 +868,17 @@ async def run_meeting_status_graph(websocket, state, user_id, session_id):
     keep_state = False
     for chunk in final_state["events"]:
         # 回答已经按 token 流式推过：跳过收尾的完整 answer，避免重复显示
-        if streamed_answer and chunk.get("event") == "custom" \
-                and chunk.get("data", {}).get("type") == "answer":
+        data = chunk.get("data", {}) if chunk.get("event") == "custom" else {}
+        if streamed_answer and data.get("type") == "answer":
             continue
+        # 设备 list 存一份，下一轮「其中一个」才能跨通道解析；
+        # 其他域没有 list 事件，这段是空操作。
+        if data.get("type") == "list":
+            from agent.loop.recent_entities import remember_entities
+            remember_entities(user_id, str(session_id), data)
         text = _safe_serialize(chunk)
         await websocket.send_text(json.dumps(text, ensure_ascii=False))
-        if chunk.get("event") == "custom" and chunk.get("data", {}).get("type") == "ask":
+        if data.get("type") == "ask":
             keep_state = True
 
     if keep_state:
@@ -928,12 +964,17 @@ async def run_emergency_fire_graph(websocket, state, user_id, session_id):
     keep_state = False
     for chunk in final_state["events"]:
         # 回答已经按 token 流式推过：跳过收尾的完整 answer，避免重复显示
-        if streamed_answer and chunk.get("event") == "custom" \
-                and chunk.get("data", {}).get("type") == "answer":
+        data = chunk.get("data", {}) if chunk.get("event") == "custom" else {}
+        if streamed_answer and data.get("type") == "answer":
             continue
+        # 设备 list 存一份，下一轮「其中一个」才能跨通道解析；
+        # 其他域没有 list 事件，这段是空操作。
+        if data.get("type") == "list":
+            from agent.loop.recent_entities import remember_entities
+            remember_entities(user_id, str(session_id), data)
         text = _safe_serialize(chunk)
         await websocket.send_text(json.dumps(text, ensure_ascii=False))
-        if chunk.get("event") == "custom" and chunk.get("data", {}).get("type") == "ask":
+        if data.get("type") == "ask":
             keep_state = True
 
     if keep_state:
@@ -1019,12 +1060,17 @@ async def run_emergency_perimeter_graph(websocket, state, user_id, session_id):
     keep_state = False
     for chunk in final_state["events"]:
         # 回答已经按 token 流式推过：跳过收尾的完整 answer，避免重复显示
-        if streamed_answer and chunk.get("event") == "custom" \
-                and chunk.get("data", {}).get("type") == "answer":
+        data = chunk.get("data", {}) if chunk.get("event") == "custom" else {}
+        if streamed_answer and data.get("type") == "answer":
             continue
+        # 设备 list 存一份，下一轮「其中一个」才能跨通道解析；
+        # 其他域没有 list 事件，这段是空操作。
+        if data.get("type") == "list":
+            from agent.loop.recent_entities import remember_entities
+            remember_entities(user_id, str(session_id), data)
         text = _safe_serialize(chunk)
         await websocket.send_text(json.dumps(text, ensure_ascii=False))
-        if chunk.get("event") == "custom" and chunk.get("data", {}).get("type") == "ask":
+        if data.get("type") == "ask":
             keep_state = True
 
     if keep_state:
@@ -1110,12 +1156,17 @@ async def run_device_status_graph(websocket, state, user_id, session_id):
     keep_state = False
     for chunk in final_state["events"]:
         # 回答已经按 token 流式推过：跳过收尾的完整 answer，避免重复显示
-        if streamed_answer and chunk.get("event") == "custom" \
-                and chunk.get("data", {}).get("type") == "answer":
+        data = chunk.get("data", {}) if chunk.get("event") == "custom" else {}
+        if streamed_answer and data.get("type") == "answer":
             continue
+        # 设备 list 存一份，下一轮「其中一个」才能跨通道解析；
+        # 其他域没有 list 事件，这段是空操作。
+        if data.get("type") == "list":
+            from agent.loop.recent_entities import remember_entities
+            remember_entities(user_id, str(session_id), data)
         text = _safe_serialize(chunk)
         await websocket.send_text(json.dumps(text, ensure_ascii=False))
-        if chunk.get("event") == "custom" and chunk.get("data", {}).get("type") == "ask":
+        if data.get("type") == "ask":
             keep_state = True
 
     if keep_state:
@@ -1202,12 +1253,17 @@ async def run_compositive_overview_graph(websocket, state, user_id, session_id):
     keep_state = False
     for chunk in final_state["events"]:
         # 回答已经按 token 流式推过：跳过收尾的完整 answer，避免重复显示
-        if streamed_answer and chunk.get("event") == "custom" \
-                and chunk.get("data", {}).get("type") == "answer":
+        data = chunk.get("data", {}) if chunk.get("event") == "custom" else {}
+        if streamed_answer and data.get("type") == "answer":
             continue
+        # 设备 list 存一份，下一轮「其中一个」才能跨通道解析；
+        # 其他域没有 list 事件，这段是空操作。
+        if data.get("type") == "list":
+            from agent.loop.recent_entities import remember_entities
+            remember_entities(user_id, str(session_id), data)
         text = _safe_serialize(chunk)
         await websocket.send_text(json.dumps(text, ensure_ascii=False))
-        if chunk.get("event") == "custom" and chunk.get("data", {}).get("type") == "ask":
+        if data.get("type") == "ask":
             keep_state = True
 
     if keep_state:
@@ -1294,12 +1350,17 @@ async def run_twins_inspection_graph(websocket, state, user_id, session_id):
     keep_state = False
     for chunk in final_state["events"]:
         # 回答已经按 token 流式推过：跳过收尾的完整 answer，避免重复显示
-        if streamed_answer and chunk.get("event") == "custom" \
-                and chunk.get("data", {}).get("type") == "answer":
+        data = chunk.get("data", {}) if chunk.get("event") == "custom" else {}
+        if streamed_answer and data.get("type") == "answer":
             continue
+        # 设备 list 存一份，下一轮「其中一个」才能跨通道解析；
+        # 其他域没有 list 事件，这段是空操作。
+        if data.get("type") == "list":
+            from agent.loop.recent_entities import remember_entities
+            remember_entities(user_id, str(session_id), data)
         text = _safe_serialize(chunk)
         await websocket.send_text(json.dumps(text, ensure_ascii=False))
-        if chunk.get("event") == "custom" and chunk.get("data", {}).get("type") == "ask":
+        if data.get("type") == "ask":
             keep_state = True
 
     if keep_state:
@@ -1376,12 +1437,17 @@ async def run_device_query_graph(websocket, state, user_id, session_id):
     keep_state = False
     for chunk in final_state["events"]:
         # 回答已经按 token 流式推过：跳过收尾的完整 answer，避免重复显示
-        if streamed_answer and chunk.get("event") == "custom" \
-                and chunk.get("data", {}).get("type") == "answer":
+        data = chunk.get("data", {}) if chunk.get("event") == "custom" else {}
+        if streamed_answer and data.get("type") == "answer":
             continue
+        # 设备 list 存一份，下一轮「其中一个」才能跨通道解析；
+        # 其他域没有 list 事件，这段是空操作。
+        if data.get("type") == "list":
+            from agent.loop.recent_entities import remember_entities
+            remember_entities(user_id, str(session_id), data)
         text = _safe_serialize(chunk)
         await websocket.send_text(json.dumps(text, ensure_ascii=False))
-        if chunk.get("event") == "custom" and chunk.get("data", {}).get("type") == "ask":
+        if data.get("type") == "ask":
             keep_state = True
 
     if keep_state:
@@ -1572,6 +1638,41 @@ _scene_client = None
 _scene_graph = None
 
 
+# 「这层 / 当前层 / 本层」需要场景页的当前楼层。前端没带 floor 时，
+# 向场景 MCP 的 get_scene_state 读一次（只读缓存，不下发动作）。
+async def _resolve_floor_context(
+    query: str,
+    payload: dict,
+    scene_session_id: Optional[str],
+) -> str:
+    """把「这层 / 当前层」替换成具体楼层；拿不到就原样返回。"""
+    from agent.floor_context import (
+        FLOOR_CONTEXT_RE,
+        parse_scene_floor,
+        payload_floor,
+        replace_floor_context,
+    )
+
+    text = query or ""
+    if not FLOOR_CONTEXT_RE.search(text):
+        return text
+    floor = payload_floor(payload)
+    if floor is None and scene_session_id:
+        try:
+            client = _scene_client
+            if client is None and _scene_mcp_url():
+                await get_scene_graph()
+                client = _scene_client
+            if client is not None:
+                raw = await asyncio.wait_for(
+                    client.get_scene_state(scene_session_id), timeout=2.0
+                )
+                floor = parse_scene_floor(raw)
+        except Exception as e:
+            logger.info(f"[场景] 取当前楼层失败，按原话继续: {e}")
+    return replace_floor_context(text, floor)
+
+
 def _extract_scene_session_id(payload: dict) -> Optional[str]:
     """从前端 payload 里取场景页面会话 id（即业务路由头 X-Session-Id 的值）。
 
@@ -1708,6 +1809,13 @@ async def _prewarm_business_graphs() -> None:
         await asyncio.sleep(0)
 
 
+# 新的设备查询（「7楼得设备」「2楼的门禁」）不是场景追问的补答，
+# 不能被 `_scene_followup_pending` 拦下来交给旧业务链路。
+_DEVICE_QUERY_HINT = re.compile(
+    r"设备|监控|摄像头|画面|视频|门禁|道闸|梯控|广播|电表|水表"
+)
+
+
 def _scene_followup_pending(user_id: str, session_id: str, query: str) -> bool:
     """上一轮场景追问还没结束、本轮像是补答 → 交回场景通道处理。
 
@@ -1726,7 +1834,62 @@ def _scene_followup_pending(user_id: str, session_id: str, query: str) -> bool:
 
     if asks_for_list(text):
         return False
+    # 「7楼得设备」是新的设备查询，不是“选哪台设备”的补答；
+    # 明确带场景动作词（打开2楼的监控）时仍按场景追问处理。
+    if _DEVICE_QUERY_HINT.search(text) and not has_strong_scene_cue(text):
+        return False
     # 短句（「第三个」「7F中通道东向西」）或序号/指代开头，都算补答
+    return len(text) <= 12 or bool(re.match(r"^(第|这|那|\d)", text))
+
+
+# 多步/流程类场景指令：一次只能执行一个动作，不能静默降级成单步。
+# 与 graph/scene_control_langgraph.py 的 _MULTI_STEP_RE 保持同口径。
+_SCENE_MULTI_STEP_RE = re.compile(
+    r"一层一层|一层层|逐层|逐个|依次|挨个|每一层|每层|从下往上|从上往下|循环|自动巡游"
+)
+# 多步判定只认楼层切换/巡游类动词；「依次打开每层监控」这类由
+# has_strong_scene_cue 负责，避免把「显示每层的设备」这种清单问法抢到场景。
+_SCENE_ACTION_WORD_RE = re.compile(r"切|换|巡")
+# 数据词否决：带“多少/统计/清单”的多步问法是业务查询，不能抢到场景。
+_SCENE_DATA_VETO_RE = re.compile(
+    r"数据|统计|数量|多少|在线率|占比|排名|趋势|报表|明细|清单|列表|情况|记录|日志|台账"
+)
+
+
+def _is_new_scene_instruction(query: str) -> bool:
+    """追问态下的这句话，是不是一条新的场景指令（而不是对上一问的补答）。
+
+    典型：「按楼层一层一层从下往上切楼」「重置视角」「打开7楼监控」。
+    这些不能拼进上一轮追问，否则旧参数会污染本轮规划。
+    """
+    text = (query or "").strip()
+    if not text:
+        return False
+    if _SCENE_MULTI_STEP_RE.search(text) and _SCENE_ACTION_WORD_RE.search(text) \
+            and not _SCENE_DATA_VETO_RE.search(text):
+        return True
+    return has_strong_scene_cue(text)
+
+
+def _business_followup_pending(user_id: str, session_id, query: str) -> bool:
+    """业务域正在等参数，且本轮像是补值 → 优先交给业务追问，别被 loop/场景截胡。
+
+    典型：业务问「查哪一层」→ 用户回「三楼」。如果没有这条，loop 会先跑，
+    裸楼层可能被场景向量接走（UE-FAIL-006）。
+    """
+    prev = session_state.get(user_id, session_id)
+    if prev is None or prev.done or prev.module not in BUSINESS_MODULES:
+        return False
+    text = (query or "").strip()
+    if not text:
+        return False
+    # 明确的新场景指令 / 要清单，不算补值
+    if _is_new_scene_instruction(text):
+        return False
+    from agent.loop.router import asks_for_list
+
+    if asks_for_list(text):
+        return False
     return len(text) <= 12 or bool(re.match(r"^(第|这|那|\d)", text))
 
 
@@ -1803,6 +1966,19 @@ async def run_scene_control_graph(websocket, query: str, user_id: str, session_i
     prev_candidates = []
     if prev is not None and prev.module == "scene_control":
         prev_candidates = (prev.slots or {}).get("device_candidates") or []
+    # 上一轮是业务/loop 列出的设备清单时，场景会话里没有候选。
+    # 从跨通道的“最近一次清单”补上，用户说「其中一个 / 第三个」才有对象。
+    if not prev_candidates:
+        from agent.loop.recent_entities import (
+            get_recent_entities, recent_entities_to_rows,
+        )
+        snapshot = get_recent_entities(user_id, str(session_id))
+        if snapshot:
+            prev_candidates = recent_entities_to_rows(snapshot)
+            if prev_candidates:
+                logger.info(
+                    f"[场景] 使用最近一次清单作候选：{len(prev_candidates)} 台"
+                )
 
     # 有候选时也要走解析：用户可能只回「第三个」，句子里没有设备类型词
     # 只有本轮真说了设备线索才去查台账。追问态下「切回整栋楼」这类视角指令
@@ -1835,9 +2011,12 @@ async def run_scene_control_graph(websocket, query: str, user_id: str, session_i
                 # 同时把追问话术里的候选明细行去掉，避免和标签重复。
                 entities = clarify_entities(clarify, candidates)
                 if entities:
+                    payload = entities.to_dict()
+                    from agent.loop.recent_entities import remember_entities
+                    remember_entities(user_id, str(session_id), payload)
                     await websocket.send_text(json.dumps({
                         "event": "custom",
-                        "data": {"type": "list", **entities.to_dict()},
+                        "data": {"type": "list", **payload},
                     }, ensure_ascii=False))
                     clarify = clarify_headline(clarify) or clarify
             await websocket.send_text(json.dumps({
@@ -1867,6 +2046,7 @@ async def run_scene_control_graph(websocket, query: str, user_id: str, session_i
         "unrelated_count": 0,
         "last_question": last_question,
         "original_query": query,
+        "current_query": resolve_query or query,
         "answer": None,
         "error": None,
         "done": False,
@@ -2042,6 +2222,24 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
                 logging.info(f"kb answer done -- {user_id}-{session_id}")
                 continue
 
+            # 「这层 / 当前层」需要场景页的当前楼层：
+            # 前端可以在聊天 payload 里带 floor；没带就向场景 MCP 读一次
+            # get_scene_state（只读缓存）。拿不到就保持原话，由业务侧追问。
+            if query:
+                _scene_sid_for_floor = _extract_scene_session_id(payload)
+                if not _scene_sid_for_floor:
+                    _prev_floor = session_state.get(user_id, session_id)
+                    if _prev_floor and _prev_floor.module == "scene_control":
+                        _scene_sid_for_floor = (_prev_floor.slots or {}).get("scene_session_id")
+                resolved_query = await _resolve_floor_context(
+                    query, payload, _scene_sid_for_floor
+                )
+                if resolved_query != query:
+                    logging.info(
+                        f"[场景] 当前楼层补全: {query!r} → {resolved_query!r}"
+                    )
+                    query = resolved_query
+
             # ============================================================
             # Loop Agent 灰度（新链路）
             # 命中条件：payload.mode=loop，或灰度比例/白名单命中
@@ -2058,9 +2256,9 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
                     )
                     # 场景追问态（上轮列了候选等用户选）优先交回场景通道：
                     # 否则 loop 会把「第三个」「这个」当成新问题，模型手上没有清单。
-                    if loop_decision.enabled and not _scene_followup_pending(
-                        user_id, session_id, query
-                    ):
+                    if loop_decision.enabled \
+                            and not _scene_followup_pending(user_id, session_id, query) \
+                            and not _business_followup_pending(user_id, session_id, query):
                         # 本轮放任务里跑，主循环趁机继续收消息 →
                         # 用户点"停止"能立刻置 cancel，不用等这一轮跑完
                         turn_task = asyncio.create_task(
@@ -2101,6 +2299,13 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
             scene_waiting = bool(
                 scene_prev and scene_prev.module == "scene_control" and not scene_prev.done
             )
+            # 追问态下用户下了新指令（重置视角 / 打开某监控 / 多步流程）：
+            # 不能把新指令拼进旧追问，否则上一轮的设备/楼层参数会污染本轮规划。
+            if scene_waiting and _is_new_scene_instruction(query):
+                logging.info(f"[场景] 追问态下收到新指令，放弃旧追问: {query!r}")
+                session_state.clear(user_id, session_id)
+                scene_prev = None
+                scene_waiting = False
             route_to_scene = False
             scene_query = query
             # 自动识别时顺带算出的业务意图，供下面复用，避免重复编码
@@ -2167,6 +2372,14 @@ async def agent_ws(websocket: WebSocket, user_id: str, session_id: Optional[str]
                         f" biz_center={intent_info.get('business_query_score', -1.0):.4f},"
                         f" matched={intent_info['scene_matched']}, route={route_to_scene}"
                     )
+
+                # 多步/流程类场景指令：分类器很可能给 other，但必须交给场景图
+                # 回“一次只能做一步”的能力话术，不能掉到业务兜底。
+                if _SCENE_MULTI_STEP_RE.search(query) \
+                        and _SCENE_ACTION_WORD_RE.search(query) \
+                        and not _SCENE_DATA_VETO_RE.search(query) \
+                        and _scene_mcp_url():
+                    route_to_scene = True
 
             if route_to_scene:
                 await run_scene_control_graph(
@@ -2927,6 +3140,58 @@ async def doc_ws(websocket: WebSocket, user_id: str, session_id: Optional[str] =
             # 接收前端传入的JSON数据
             data = await websocket.receive_text()
             payload = json.loads(data)
+
+            # ========== 报告文件下载（走同一条 WS，避免前端还要能访问 8001） ==========
+            # 前端点「下载 DOCX」时发 {"action": "download_report", "file_name": "..."}，
+            # 这里把文件按 base64 分块推回去。文件只在"生成它的那个智能体实例"上，
+            # 用 HTTP /reports 可能落到另一个实例而 404。
+            action = str(payload.get("action") or "").strip()
+            if action in ("download", "download_report"):
+                file_name = os.path.basename(str(payload.get("file_name") or "").strip())
+                if not file_name.lower().endswith(".docx"):
+                    await send_event({"type": "report_file_error", "content": "文件名不合法"})
+                    continue
+
+                file_path = os.path.join(REPORT_DIR, file_name)
+                if not os.path.isfile(file_path):
+                    await send_event({
+                        "type": "report_file_error",
+                        "file_name": file_name,
+                        "content": "报告文件不存在，请重新生成",
+                    })
+                    continue
+
+                try:
+                    with open(file_path, "rb") as f:
+                        raw = f.read()
+                    encoded = base64.b64encode(raw).decode("ascii")
+                except OSError as e:
+                    await send_event({
+                        "type": "report_file_error",
+                        "content": f"读取报告失败：{e}",
+                    })
+                    continue
+
+                # 分块发送：sidecar 的 WS 单帧/缓冲区可能只有 8KB，不能一次发整份文件
+                chunk_size = 6000
+                total = max(1, (len(encoded) + chunk_size - 1) // chunk_size)
+                mime = (
+                    "application/vnd.openxmlformats-officedocument"
+                    ".wordprocessingml.document"
+                )
+                for seq in range(total):
+                    ok = await send_event({
+                        "type": "report_file_chunk",
+                        "file_name": file_name,
+                        "seq": seq,
+                        "total": total,
+                        "content": encoded[seq * chunk_size:(seq + 1) * chunk_size],
+                        "mime": mime,
+                    })
+                    if not ok:
+                        break
+                continue
+
             instruction = (payload.get("instruction") or "").strip()
             query = payload.get("query")
             style = payload.get("style")

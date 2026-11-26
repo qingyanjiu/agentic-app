@@ -91,6 +91,20 @@ _FAST_PATH_TOOLS = {
 # 复合句（“切到3楼，再重置视角”）不走快通道，仍交给 LLM 做取舍。
 _COMPOUND_COMMAND_RE = re.compile(r"然后|再|并且|同时|顺便|之后|，|,|；|;")
 
+# 多步/流程类场景指令：工具都是单次动作，不能静默降级成其中一步。
+# 与 app.py 的 _SCENE_MULTI_STEP_RE 保持同口径。
+_MULTI_STEP_RE = re.compile(
+    r"一层一层|一层层|逐层|逐个|依次|挨个|每一层|每层|从下往上|从上往下|循环|自动巡游"
+)
+
+# 整栋楼语义：用户说「主楼 / 科研办公楼」时，指的就是整栋楼（floor=99）。
+# `主楼(?!梯)` 排除设备名「主楼梯」，避免把楼梯点位当成整栋楼。
+_WHOLE_BUILDING_RE = re.compile(
+    r"整栋|全楼|整座|整幢|整楼|全栋|楼栋|主楼(?!梯)|科研办公楼"
+)
+# 明确在说相机视角时，不要用整栋楼规则覆盖用户的视角指令。
+_VIEW_ONLY_RE = re.compile(r"视角|视野|镜头|画面|相机")
+
 # scene_set_env.env_weather 的合法枚举（运行时优先取 sidecar tools/list 里的 enum，
 # 这里只是兜底，避免 LLM/规则把"雨""雪""晴"这类口语值直接传给 sidecar 被拒）
 _ENV_WEATHER_VALUES = (
@@ -252,30 +266,101 @@ def _clean_scene_text(raw: str) -> str:
     return "\n".join(lines).strip()
 
 
-# 动作成功后，sidecar 返回的是执行细节（工具名 + 参数），属于 UE 指令层：
-# 用户看不懂，也不需要看。给用户的是一句助手口吻的话，原始指令只进日志。
-_SCENE_FAILURE = re.compile(r"失败|未连接|未下发|未执行|不可用|超时")
+# 用户可见的动作用语。不要直接把工具名/参数发给用户：
+#   scene_switch_floor(floor=3, focus=true) → 已下发：切换到 3 层。
+_SCENE_ACTION_TEXT = {
+    "scene_reset_view": "重置视角",
+    "scene_recover_view": "恢复上一个视角",
+    "scene_close_detail": "关闭详情",
+    "scene_reset_all": "清场并回到整栋楼",
+    "scene_show_visitor_track": "展示访客轨迹",
+    "scene_show_camera": "打开监控画面",
+    "scene_show_inspection": "展示巡检路线",
+    "scene_show_meeting_rooms": "展示会议室",
+    "scene_show_dining": "展示食堂位置",
+    "scene_show_area_overview": "展示防区总览",
+    "scene_show_device_category": "展示设备点位",
+    "scene_show_fusion": "展示虚实融合",
+    "scene_focus_actor": "聚焦到目标",
+    "scene_set_actor_visible": "更新对象显隐",
+    "scene_set_poi_visible": "更新点位显隐",
+    "scene_set_area_state": "变更防区状态",
+    "scene_set_inspection_state": "变更巡检任务状态",
+}
 
 
+def _floor_text(value) -> str:
+    """楼层参数 → 用户话术（-1=B1，11/99=整栋）。"""
+    try:
+        floor = int(value)
+    except (TypeError, ValueError):
+        return "目标楼层"
+    if floor in (11, 99):
+        return "整栋楼"
+    if floor == -1:
+        return "B1（地下一层）"
+    if floor < 0:
+        return f"B{abs(floor)}"
+    return f"{floor} 层"
 
-def _friendly_action(tool_name: str, arguments: dict, raw_text: str) -> str:
-    """动作成功后的用户可见文案（原始 UE 指令由调用方写日志，不进回答）。
 
-    sidecar 原文形如「已下发动作 scene_switch_floor（floor=5, focus=true）。」，
-    直接透给用户既看不懂又像内部日志。
+def _env_text(arguments: dict) -> str:
+    """scene_set_env 参数 → “时间 18:00，天气 小雨”。"""
+    parts = []
+    env_time = arguments.get("env_time")
+    if env_time:
+        text = str(env_time)
+        # 18:00:00 → 18:00，少一秒的噪音
+        if re.fullmatch(r"\d{1,2}:\d{2}:00", text):
+            text = text[:5]
+        parts.append(f"时间 {text}")
+    env_weather = arguments.get("env_weather")
+    if env_weather:
+        parts.append(f"天气 {env_weather}")
+    return "，".join(parts)
 
-    **所有动作统一一句「指令已下发。」** —— 不为工具配专属文案：场景工具以后
-    还会加，配了就得跟着加，迟早漏。tool_name / arguments 仍留在签名里，是为了
-    调用方不必改动，也方便以后真要细分时有据可依。
 
-    两条底线：
-    - 失败不能包装成成功：sidecar 明确说失败时（未连接/未下发…）原样转述；
-    - UE 不回执，所以不说"已完成"。
+def _humanize_tool_names(text: str) -> str:
+    """错误文案里的英文工具名换成中文，避免内部字段直出。
+
+    优先用 `_SCENE_ACTION_TEXT` 的动作用语（“变更防区状态”），
+    没有再回退到 `_TOOL_LABELS` 的名词短语（“防区状态”）。
     """
-    detail = _clean_scene_text(raw_text)
-    if detail and _SCENE_FAILURE.search(detail):
-        return detail
-    return "指令已下发。"
+    names = set(_TOOL_LABELS) | set(_SCENE_ACTION_TEXT)
+    for name in sorted(names, key=len, reverse=True):
+        label = _SCENE_ACTION_TEXT.get(name) or _TOOL_LABELS.get(name) or "场景操作"
+        text = text.replace(name, label)
+    return text
+
+
+def _format_scene_answer(tool_name: str, arguments: dict, raw_text: str = "") -> str:
+    """把工具调用结果整理成用户能看懂的一句话。
+
+    - 成功动作统一以“已下发：”开头（前端/用户只需要知道做了什么）；
+    - 不输出工具名、`focus` 等原始参数；
+    - `get_scene_state` 是查询类，原文就是答案，保留 sidecar 文本。
+    """
+    if tool_name == "get_scene_state":
+        return _clean_scene_text(raw_text) or "场景状态暂时取不到，请稍后再试。"
+
+    args = arguments if isinstance(arguments, dict) else {}
+    if tool_name == "scene_switch_floor":
+        floor_value = args.get("floor")
+        if floor_value in (None, ""):
+            detail = "切换楼层"
+        else:
+            floor_text = _floor_text(floor_value)
+            # “切换到整栋楼”比“切换到 整栋楼”自然
+            detail = f"切换到{floor_text}" \
+                if floor_text == "整栋楼" else f"切换到 {floor_text}"
+    elif tool_name == "scene_set_env":
+        env = _env_text(args)
+        detail = f"环境已切换为 {env}" if env else "环境已切换"
+    else:
+        detail = _SCENE_ACTION_TEXT.get(tool_name) \
+            or _TOOL_LABELS.get(tool_name) \
+            or "场景操作"
+    return f"已下发：{detail}。"
 
 
 def _format_catalog(tools: list) -> tuple:
@@ -536,9 +621,10 @@ def _missing_required_args(tool_name: str, tool: dict, arguments: dict) -> list:
 # ============================================================
 def _extract_floor(query: str) -> Optional[int]:
     q = query
-    # 「楼栋」「整楼」= 整栋楼（sidecar 约定 floor=99）。漏掉这几个词，
-    # 「恢复楼栋」就抽不到楼层，快通道出不了计划，最后落到设备名解析上。
-    if re.search(r"整栋|全楼|整座|整幢|整楼|全栋|楼栋", q):
+    # 「楼栋」「整楼」「主楼」「科研办公楼」= 整栋楼（sidecar 约定 floor=99）。
+    # 漏掉这几个词，「恢复楼栋」「切回主楼」就抽不到楼层，快通道出不了计划，
+    # 最后落到 LLM 猜工具（曾把「切回主楼」猜成 scene_reset_view）。
+    if _WHOLE_BUILDING_RE.search(q):
         return 99
     if re.search(r"(?:B|负)\s*1|地下\s*(?:一|1)\s*层|地下一层", q, re.I):
         return -1
@@ -688,6 +774,9 @@ class SceneControlGraphState(TypedDict):
     events: Annotated[list, _merge_lists]
     # 场景页面会话 id（前端 WS hello 声明），逐请求注入 X-Session-Id
     scene_session_id: Optional[str]
+    # 本轮用户原话。`original_query` 在追问轮可能是“上一轮原话 + 本轮补充”的
+    # 拼接串；能力判定/参数接地必须看本轮原话，不能被旧参数带走。
+    current_query: Optional[str]
     # LLM/规则产出的执行计划 {"tool":..., "arguments":...} 或 {"need_clarify":...}
     plan: Optional[dict]
     # 工具原始返回（调试用）
@@ -716,12 +805,14 @@ def build_scene_control_graph(client: Any, llm: Any = None) -> StateGraph:
 
     def init_state(state: SceneControlGraphState) -> dict:
         slots = state.get("slots") or {}
+        original_query = state.get("original_query") or ""
         return {
             "slots": slots,
             "ask_count": state.get("ask_count") or 0,
             "unrelated_count": state.get("unrelated_count") or 0,
             "last_question": state.get("last_question") or "",
-            "original_query": state.get("original_query") or "",
+            "original_query": original_query,
+            "current_query": state.get("current_query") or original_query,
             "done": bool(state.get("done")),
         }
 
@@ -743,6 +834,23 @@ def build_scene_control_graph(client: Any, llm: Any = None) -> StateGraph:
 
     async def plan_action(state: SceneControlGraphState) -> dict:
         query = state.get("original_query") or ""
+        current_query = state.get("current_query") or query
+
+        # 多步/流程诉求：工具都是单次动作，不做静默降级。
+        # 必须先于快通道和 LLM，否则「按楼层一层一层从下往上切楼」会被
+        # _extract_floor 从“一层一层”里抠出一层，或让 LLM 从旧上下文里抓一层。
+        if _MULTI_STEP_RE.search(current_query):
+            if re.search(r"切|换|巡", current_query) and re.search(r"楼|层", current_query):
+                question = "目前一次只能切一层。您想先切到哪一层？"
+            else:
+                question = "目前一次只能执行一个场景动作，请先告诉我要做哪一个。"
+            return {"plan": {"need_clarify": True, "question": question}}
+
+        # 能力追问的下一轮：用户只回「3楼」这种值，不要再用上一轮的
+        # 多步原话（“一层一层…”）去规划，否则会再次触发同一条能力追问。
+        last_question = state.get("last_question") or ""
+        if state.get("ask_count") and "一次只能" in last_question:
+            query = current_query
 
         # 设备名称已在 app.py 侧解析成点位 tag（scene_show_camera 要的是设备编号）。
         # 直接拼进规划用的 query：LLM 提示和 `_extract_tag` 都能取到，
@@ -785,7 +893,9 @@ def build_scene_control_graph(client: Any, llm: Any = None) -> StateGraph:
                 "规则：\n"
                 "1. 只能从工具清单里选，工具名必须逐字一致；\n"
                 "2. 参数严格按 schema 的类型、必填要求和枚举取值；楼层语义：-1=B1，"
-                "1~N=具体楼层，11/99=整栋楼（用户说“楼栋/整楼/全楼”都填 99）；"
+                "1~N=具体楼层，11/99=整栋楼（用户说“楼栋/整楼/全楼/主楼/科研办公楼”"
+                "都填 99；「回到整栋楼/切回主楼」选 scene_switch_floor，不要选 "
+                "scene_reset_view，后者只复位相机、不退出楼层隔离）；"
                 "带“取值:”的字段必须原样使用其中的值，"
                 "例如 env_weather 只能填“晴天/小雨/小雪”等枚举值，不能填“雨”“雪”“晴”；"
                 "env_time 必须是 24 小时制 HH:MM:SS，例如“下午一点”填“13:00:00”，"
@@ -820,6 +930,20 @@ def build_scene_control_graph(client: Any, llm: Any = None) -> StateGraph:
             return {"plan": plan}
 
         tool_name = plan.get("tool")
+        # 整栋楼语义被 LLM 误判成“重置视角”：改判为切回整栋楼。
+        # 明确在说相机视角时让位（「恢复视角」仍是 scene_recover_view）。
+        if tool_name == "scene_reset_view" \
+                and _WHOLE_BUILDING_RE.search(current_query) \
+                and not _VIEW_ONLY_RE.search(current_query):
+            logger.info(
+                f"[SCENE] 「{current_query}」是整栋楼语义，"
+                f"scene_reset_view 改判 scene_switch_floor(99)"
+            )
+            plan = {
+                "tool": "scene_switch_floor",
+                "arguments": {"floor": 99, "focus": True},
+            }
+            tool_name = "scene_switch_floor"
         tool = tool_map.get(tool_name)
         if not tool:
             return {
@@ -904,7 +1028,11 @@ def build_scene_control_graph(client: Any, llm: Any = None) -> StateGraph:
 
             # 用户看到的是助手口吻的一句话；UE 原始指令（工具名 + 参数）
             # 由上面的日志留存，不进回答。
-            answer_text = _friendly_action(tool_name, arguments, raw_text)
+            answer_text = _format_scene_answer(tool_name, arguments, raw_text)
+            if not answer_text:
+                # 协议层成功但没有文本：不能替服务端宣称“已下发”
+                label = _TOOL_LABELS.get(tool_name) or "场景操作"
+                answer_text = f"已提交：{label}，场景服务未返回明细，请以页面实际显示为准。"
 
             # 破坏性动作额外提示（sidecar 放行时也提醒用户留意现场状态）
             if tool_name in _DESTRUCTIVE_TOOLS:
@@ -921,8 +1049,9 @@ def build_scene_control_graph(client: Any, llm: Any = None) -> StateGraph:
         except Exception as e:
             tb = traceback.format_exc()
             logger.error(f"调用场景工具失败: {e}\n{tb}")
-            # sidecar 的失败文案里带"不要告诉用户已经执行了"这类内部提示，透传前清掉
-            detail = _clean_scene_text(str(e)) or "场景服务返回异常"
+            # sidecar 的失败文案里带"不要告诉用户已经执行了"这类内部提示，
+            # 透传前清掉；同时把英文工具名换成人话，避免内部字段直出。
+            detail = _clean_scene_text(_humanize_tool_names(str(e))) or "场景服务返回异常"
             return {
                 "error": str(e),
                 "done": True,

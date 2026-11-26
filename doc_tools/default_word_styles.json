@@ -12,13 +12,31 @@
         }
     },
     "styles": {
-             
-            "heading1": {
+        "heading1": {
+            "name": "报告标题",
+            "font": {
+                "name": "宋体",
+                "size": 22,
+                "bold": true,
+                "italic": false,
+                "color": "000000",
+                "underline": false
+            },
+            "paragraph": {
+                "alignment": "CENTER",
+                "space_before": 0,
+                "space_after": 24,
+                "keep_with_next": true,
+                "page_break_before": false
+            },
+            "outline_level": 1
+        },
+        "heading2": {
             "name": "一级标题",
             "font": {
-                "name": "微软雅黑",
-                "size": 26,
-                "bold": true,
+                "name": "黑体",
+                "size": 16,
+                "bold": false,
                 "italic": false,
                 "color": "000000",
                 "underline": false
@@ -27,43 +45,24 @@
                 "alignment": "LEFT",
                 "space_before": 12,
                 "space_after": 6,
-                "keep_with_next": false,
-                "page_break_before": false
-            },
-            "outline_level": 1
-        },
-        "heading2": {
-            "name": "二级标题",
-            "font": {
-                "name": "微软雅黑",
-                "size": 18,
-                "bold": true,
-                "italic": false,
-                "color": "2E74B5",
-                "underline": false
-            },
-            "paragraph": {
-                "alignment": "LEFT",
-                "space_before": 19,
-                "space_after": 7,
                 "keep_with_next": true,
                 "page_break_before": true
             },
             "outline_level": 2
         },
         "heading3": {
-            "name": "三级标题",
+            "name": "二级标题",
             "font": {
-                "name": "微软雅黑",
+                "name": "黑体",
                 "size": 14,
-                "bold": true,
+                "bold": false,
                 "italic": false,
                 "color": "000000",
                 "underline": false
             },
             "paragraph": {
                 "alignment": "LEFT",
-                "space_before": 16,
+                "space_before": 10,
                 "space_after": 6,
                 "keep_with_next": true,
                 "page_break_before": false
@@ -71,32 +70,31 @@
             "outline_level": 3
         },
         "heading4": {
-            "name": "四级标题",
+            "name": "三级标题",
             "font": {
-                "name": "微软雅黑",
-                "size": 11,
-                "bold": true,
+                "name": "黑体",
+                "size": 12,
+                "bold": false,
                 "italic": false,
                 "color": "000000",
                 "underline": false
             },
             "paragraph": {
                 "alignment": "LEFT",
-                "space_before": 16,
-                "space_after": 6,
+                "space_before": 6,
+                "space_after": 4,
                 "keep_with_next": true,
                 "page_break_before": false
             },
             "outline_level": 4
         },
-                
-            "title": {
+        "title": {
             "name": "文档标题",
             "font": {
-                "name": "微软雅黑",
+                "name": "宋体",
                 "size": 22,
                 "bold": true,
-                "color": "1F4E78"
+                "color": "000000"
             },
             "paragraph": {
                 "alignment": "CENTER",
@@ -108,16 +106,16 @@
         "normal": {
             "name": "正文",
             "font": {
-                "name": "微软雅黑",
+                "name": "宋体",
                 "size": 12,
                 "bold": false,
                 "color": "000000"
             },
             "paragraph": {
                 "alignment": "JUSTIFY",
-                "space_before": 6,
-                "space_after": 6,
-                "first_line_indent": 21,
+                "space_before": 0,
+                "space_after": 0,
+                "first_line_indent": 24,
                 "line_spacing": 1.5
             }
         },
@@ -125,52 +123,51 @@
             "name": "引用",
             "font": {
                 "name": "楷体",
-                "size": 11,
-                "italic": true,
-                "color": "666666"
+                "size": 12,
+                "italic": false,
+                "color": "000000"
             },
             "paragraph": {
                 "alignment": "JUSTIFY",
-                "left_indent": 21,
-                "right_indent": 21,
-                "space_before": 6,
-                "space_after": 6
+                "left_indent": 24,
+                "right_indent": 24,
+                "space_before": 0,
+                "space_after": 0
             }
         },
         "list_item": {
             "name": "列表项",
             "font": {
-                "name": "微软雅黑",
+                "name": "宋体",
                 "size": 12
             },
             "paragraph": {
                 "alignment": "LEFT",
-                "left_indent": 21,
-                "hanging_indent": 21,
+                "left_indent": 24,
+                "hanging_indent": 24,
                 "space_before": 0,
                 "space_after": 0
             }
         }
     },
-           
-        "table": {
+    "table": {
         "default_style": "Light Grid Accent 1",
         "header": {
             "font": {
-                "name": "微软雅黑",
-                "size": 10,
-                "bold": true,
-                "color": "FFFFFF"
+                "name": "黑体",
+                "size": 10.5,
+                "bold": false,
+                "color": "000000"
             },
-            "background_color": "2E74B5",
+            "background_color": "D9E2F3",
             "alignment": "CENTER",
             "space_before": 2,
             "space_after": 2
         },
         "row": {
             "font": {
-                "name": "微软雅黑",
-                "size": 10,
+                "name": "宋体",
+                "size": 10.5,
                 "bold": false,
                 "color": "000000"
             },
@@ -178,11 +175,11 @@
             "background_odd": "F2F2F2",
             "alignment": "CENTER",
             "height": 30,
-            "height_rule": "AUTO" 
+            "height_rule": "AUTO"
         },
         "column_width": {
-            "default": 6,  
-                    "header": 6
+            "default": 6,
+            "header": 6
         }
     },
     "toc": {

@@ -17,6 +17,7 @@ from tools.custom_tool import CustomTool
 from agent.executor import AgentExecutorWrapper
 # from doc_tools.word_generator import CustomWordGenerator
 from doc_tools.word_gen_json import CustomWordGenerator
+from doc_tools.chart_generator import render_line_chart
 # 自定义模块导入
 from agent.doc_gen_prompt.normal_prompt import normal_prompt
 # 各章节/维度专属Prompt
@@ -130,6 +131,9 @@ class GenDocPipeline:
         self.main_node_system_prompt = main_node_system_prompt
         # 初始化 Word 生成器（每个实例一个）
         self.word_generator = CustomWordGenerator()
+        # 图表输出目录与图号（每次生成报告时重置）
+        self.chart_dir = ""
+        self.chart_seq = 0
         self.max_retries_per_chapter = 2  # 每个章节最多重试2次
         # 主逻辑agent智能体
         self.main_agent = AgentExecutorWrapper(
@@ -204,6 +208,15 @@ class GenDocPipeline:
             # 生成基础路径（绝对路径，避免启动目录不同导致 /reports 404）
             self.word_file_path = os.path.join(_REPORT_DIR, file_name)
             self.word_file_name = file_name
+            # 图表放在报告同级的 _assets 目录，随报告一起生成
+            self.chart_dir = os.path.join(
+                _REPORT_DIR, "_assets", os.path.splitext(file_name)[0]
+            )
+            try:
+                os.makedirs(self.chart_dir, exist_ok=True)
+            except OSError as exc:
+                logging.warning("创建图表目录失败：%s", exc)
+                self.chart_dir = ""
             # 绝对确保路径非空
             if not self.word_file_path or self.word_file_path.strip() == "":
                 self.word_file_path = f"report_fallback_{timestamp}.docx"
@@ -248,6 +261,88 @@ class GenDocPipeline:
         else:
             logging.error("word_file_path 未设置")
             return None
+
+    # ===================== 图表（折线图） =====================
+    def _build_line_charts(self, sub_dim: str, overview: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """按子维度从 overview 组装折线图配置；数据不足时返回空列表。"""
+        overview = overview or {}
+        charts: List[Dict[str, Any]] = []
+
+        if sub_dim == "安防":
+            x, y = [], []
+            for row in overview.get("alarm_trend") or []:
+                if not isinstance(row, dict):
+                    continue
+                label = row.get("date")
+                count = row.get("count")
+                if label is None or count is None:
+                    continue
+                x.append(str(label))
+                y.append(count)
+            if len(x) >= 2:
+                charts.append({
+                    "title": "安防告警趋势",
+                    "caption": "安防告警趋势",
+                    "x_label": "日期",
+                    "y_label": "告警次数",
+                    "data": {"x": x, "name": "告警次数", "data": y},
+                })
+        elif sub_dim == "能耗":
+            for key, title, unit in (
+                ("electricity_curve", "本周与上周用电量对比", "用电量（kWh）"),
+                ("water_curve", "本周与上周用水量对比", "用水量（吨）"),
+            ):
+                curve = overview.get(key)
+                if not isinstance(curve, dict) or not curve.get("x") or not curve.get("series"):
+                    continue
+                charts.append({
+                    "title": title,
+                    "caption": title,
+                    "x_label": "时间",
+                    "y_label": unit,
+                    "data": curve,
+                })
+        return charts
+
+    def add_line_charts(self, sub_dim: str, overview: Dict[str, Any], writer: StreamWriter = None) -> None:
+        """在维度章节正文后插入折线图；无数据或渲染失败时静默跳过。"""
+        if not self.word_generator or not self.chart_dir:
+            return
+
+        specs = self._build_line_charts(sub_dim, overview)
+        if not specs:
+            logging.info("维度【%s】无可用折线图数据，跳过插图", sub_dim)
+            return
+
+        for spec in specs:
+            self.chart_seq += 1
+            chart_no = "4-%d" % self.chart_seq
+            safe_dim = re.sub(r'[\\/:*?"<>|\s]+', '', str(sub_dim)) or "维度"
+            out_path = os.path.join(self.chart_dir, "%s_%s.png" % (chart_no, safe_dim))
+            saved = render_line_chart(
+                spec["data"],
+                title=spec["title"],
+                x_label=spec.get("x_label", ""),
+                y_label=spec.get("y_label", ""),
+                out_path=out_path,
+            )
+            if not saved:
+                continue
+
+            caption = "图 %s %s" % (chart_no, spec["caption"])
+            if not self.word_generator.add_picture(saved, width_cm=14.5, caption=caption):
+                continue
+            # 图片先落盘，避免后续章节异常时丢失
+            if self.word_file_path:
+                self.word_generator.save(self.word_file_path)
+            if writer:
+                writer({
+                    "type": "chart",
+                    "chapter": "维度深度分析",
+                    "dimension": sub_dim,
+                    "caption": caption,
+                    "file_path": saved,
+                })
 
     def get_chapter_config(self, chapter_name: str) -> Dict:
         """根据章节名获取配置"""
@@ -461,6 +556,8 @@ class GenDocPipeline:
             sub_block = f"{full_index}{sub_content}"
             sub_dimension_contents.append(sub_block)
             self.update_word(state, chapter_name, sub_block, writer)
+            # 正文后插入该维度的折线图（数据缺失时自动跳过）
+            self.add_line_charts(sub_dim, sub_dim_data.get("overview", {}), writer)
             # 缓存子维度内容
             state[f"{sub_dim.lower()}_paragraph"] = sub_content
         
@@ -699,6 +796,8 @@ class GenDocPipeline:
         self.word_generator = None
         self.word_file_path = ''
         self.word_file_name = ''
+        self.chart_dir = ''
+        self.chart_seq = 0
         self._added_chapter_set = set()
         self.company = data_json.get("company", "园区")
 

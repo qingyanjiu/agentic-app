@@ -183,6 +183,60 @@ def _format_candidates(rows: list, keyword: str) -> str:
     )
 
 
+# 前端标签墙上限：太多没人看，还会把单帧撑大
+MAX_LIST_ITEMS = 30
+
+
+def _entity_list_event(
+    rows: list,
+    *,
+    title: str = "",
+    total: int | None = None,
+) -> dict | None:
+    """设备行 → 前端可点的 list 事件。
+
+    旧业务链路原先只发文本，设备名不可点击；loop 链路有结构化 list，
+    这里补一份同协议的事件，保证不论走哪条链路都能点。
+    """
+    items = []
+    for row in rows[:MAX_LIST_ITEMS]:
+        code = str(row.get("code") or row.get("id") or "").strip()
+        if not code:
+            continue
+        attrs = {"code": code}
+        space = row.get("spaceName")
+        if space:
+            attrs["space"] = str(space)
+        items.append({
+            "kind": "device",
+            "id": code,
+            "label": str(row.get("name") or row.get("rawName") or code),
+            "attrs": attrs,
+        })
+    if not items:
+        return None
+    count = total if total is not None else len(rows)
+    return {
+        "event": "custom",
+        "data": {
+            "type": "list",
+            "kind": "device",
+            "title": title or f"{count} 台设备，请选择",
+            "items": items,
+            "total": count,
+        },
+    }
+
+
+def _device_list_title(rows: list, *, area: str = "", keyword: str = "") -> str:
+    parts = [f"{len(rows)} 台设备"]
+    if area:
+        parts.append(f"位置 {area}")
+    if keyword:
+        parts.append(f"关键词「{keyword}」")
+    return "，".join(parts)
+
+
 def _tool_arg_names(tool: Any) -> set:
     """
     取工具声明的入参名集合（LangChain StructuredTool 的 .args）
@@ -496,14 +550,24 @@ def make_call_tool_node(tools: dict, llm=None):
         print(f"[MCP RAW RESULT] tool={tool_name}, result={result}")
         return _extract_text(result)
 
-    def _answer(content: str) -> dict:
-        return {
-            "answer": content,
-            "events": [{
-                "event": "custom",
-                "data": {"type": "answer", "content": content},
-            }],
-        }
+    def _answer(
+        content: str,
+        *,
+        list_rows: list | None = None,
+        list_title: str = "",
+    ) -> dict:
+        events = [{
+            "event": "custom",
+            "data": {"type": "answer", "content": content},
+        }]
+        # 设备列表额外发一份可点清单；前端已有 list 协议，旧链路直接复用。
+        if list_rows:
+            list_event = _entity_list_event(
+                list_rows, title=list_title, total=len(list_rows)
+            )
+            if list_event:
+                events.append(list_event)
+        return {"answer": content, "events": events}
 
     async def _search(keyword: str, extra: dict) -> tuple:
         """
@@ -584,7 +648,14 @@ def make_call_tool_node(tools: dict, llm=None):
                 answer_text = await _llm_format_device_query_result(
                     llm, query_type, state, raw_text, area_filtered=area_filtered
                 )
-                return _answer(answer_text)
+                list_rows = matched if area_filtered else rows
+                return _answer(
+                    answer_text,
+                    list_rows=list_rows,
+                    list_title=_device_list_title(
+                        list_rows, area=area, keyword=keyword
+                    ),
+                )
 
             # ---------------- 设备详情 ----------------
             # 1. 先把设备搜出来（详情接口只认内部 id，用户报的是名称或编号）

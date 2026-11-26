@@ -179,6 +179,24 @@ def test_open_monitor_with_trailing_type_word_hands_off():
     assert plan.reason == "scene_monitor"
 
 
+# ---------------------------------------------------------------- 多步场景指令
+def test_multi_step_floor_command_hands_off():
+    """「按楼层一层一层从下往上切楼」不能掉进 L2 让模型猜一步。"""
+    plan = asyncio.run(_router("other", 0.50, 0.30).route("按楼层一层一层从下往上切楼"))
+
+    assert plan is not None
+    assert plan.level == "L0"
+    assert plan.domain == "scene"
+    assert plan.reason == "scene_multi_step"
+
+
+def test_multi_step_data_query_is_not_hijacked():
+    """「每层有多少设备」是多步数据问法，不能被 ②.7 送进场景。"""
+    plan = asyncio.run(_router("device_query", 0.70, 0.40).route("每层有多少设备"))
+
+    assert plan is None or plan.domain != "scene"
+
+
 # ---------------------------------------------------------------- 清单类问句
 def test_asks_for_list_truth_table():
     from agent.loop.router import asks_for_list

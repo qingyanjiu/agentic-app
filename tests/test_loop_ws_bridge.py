@@ -153,6 +153,33 @@ def test_internal_error_event_is_not_forwarded_as_answer(monkeypatch):
     assert all(c["type"] in {"answer", "tool"} for c in custom)
 
 
+def test_entities_are_remembered_for_next_turn(monkeypatch):
+    """list 事件发出去的同时要存一份，下一轮「其中一个」才能解析。"""
+    from agent.loop import recent_entities
+
+    recent_entities.reset_recent_entities()
+    result = PipelineResult(
+        text="1 台设备", level="L1", stop_reason="answered",
+        entities=EntityList(
+            kind=KIND_DEVICE, title="1 台设备",
+            items=[Entity(
+                kind=KIND_DEVICE, id="DEFAULT-0178", label="1F-西电梯MJ",
+                attrs={"code": "DEFAULT-0178", "space": "园区/科研办公楼/1F"},
+            )],
+        ),
+    )
+    pipeline = _FakePipeline([("delta", "1 台设备")], result)
+
+    _run(monkeypatch, pipeline)
+
+    snapshot = recent_entities.get_recent_entities("u", "s")
+    assert snapshot is not None
+    assert snapshot["items"][0]["id"] == "DEFAULT-0178"
+    rows = recent_entities.recent_entities_to_rows(snapshot)
+    assert rows[0]["code"] == "DEFAULT-0178"
+    recent_entities.reset_recent_entities()
+
+
 def test_send_failure_does_not_break_the_turn(monkeypatch):
     """客户端断开后服务端还在推事件：send 失败要被吞掉，不能把整轮打断。
 

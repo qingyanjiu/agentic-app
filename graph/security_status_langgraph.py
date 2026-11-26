@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 import traceback
 from typing import Annotated, Any, Optional, TypedDict
 
@@ -11,6 +12,17 @@ from mcp_client.mcp_loader import get_mcp_tools
 from agent.intent.slots import format_query_time
 
 logger = logging.getLogger(__name__)
+
+# 安防接口只接受时间/园区范围，没有楼层参数。带楼层的问法必须先说清楚，
+# 不能把园区范围的结果套上「7楼没有告警」这种错误结论。
+_FLOOR_INTENT_RE = re.compile(
+    r"(?:[0-9一二两三四五六七八九十]+\s*(?:楼|层|[Ff])|[Bb]\s*1|负一|地下一层|"
+    r"这层|当前层|本层|该层|楼层|每层|各层|逐层)"
+)
+_FLOOR_UNSUPPORTED = (
+    "安防态势接口目前只支持按园区和时间查询，不能按楼层筛选。"
+    "请把范围改成园区或指定时间段。"
+)
 
 
 # ============================================================
@@ -210,6 +222,24 @@ def init_state(state: SecurityStatusGraphState) -> dict:
     if "date" not in slots or not slots.get("date"):
         slots["date"] = {}
     return {"slots": slots}
+
+
+def route_floor_capability(state: SecurityStatusGraphState) -> str:
+    """带楼层的安防问法直接走“不支持楼层”的固定回答。"""
+    if _FLOOR_INTENT_RE.search(state.get("original_query") or ""):
+        return "reject_floor"
+    return "check_missing_params"
+
+
+def reject_floor(state: SecurityStatusGraphState) -> dict:
+    return {
+        "done": True,
+        "events": [
+            {"event": "custom",
+             "data": {"type": "answer", "content": _FLOOR_UNSUPPORTED}},
+            {"event": "custom", "data": {"type": "done"}},
+        ],
+    }
 
 
 def check_missing_params(state: SecurityStatusGraphState) -> dict:
@@ -474,6 +504,7 @@ def build_security_status_graph(tools: dict, llm=None) -> StateGraph:
 
     # 注册节点
     workflow.add_node("init", init_state)
+    workflow.add_node("reject_floor", reject_floor)
     workflow.add_node("check_missing_params", check_missing_params)
     workflow.add_node("ask_param", ask_param)
     workflow.add_node("give_up", give_up)
@@ -485,7 +516,15 @@ def build_security_status_graph(tools: dict, llm=None) -> StateGraph:
 
     # 入口和顺序边
     workflow.set_entry_point("init")
-    workflow.add_edge("init", "check_missing_params")
+    workflow.add_conditional_edges(
+        "init",
+        route_floor_capability,
+        {
+            "reject_floor": "reject_floor",
+            "check_missing_params": "check_missing_params",
+        },
+    )
+    workflow.add_edge("reject_floor", END)
 
     # 缺失参数分支
     workflow.add_conditional_edges(

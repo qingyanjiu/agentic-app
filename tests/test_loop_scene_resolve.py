@@ -157,15 +157,17 @@ def test_pronoun_with_multiple_candidates_escapes_followup(monkeypatch):
     assert candidates == []          # 候选一并清掉，调用方据此清会话态
 
 
-def test_ordinal_out_of_range_falls_through(monkeypatch):
-    """序号超出候选数时不要瞎取，回落正常解析（这里查到 0 台 → 追问）。"""
+def test_ordinal_out_of_range_keeps_candidates(monkeypatch):
+    """序号超出候选数时不要瞎取，也不要拿序号去查全量台账。"""
     _fresh(monkeypatch)
     box = _FakeToolbox([])
 
-    tag, clarify, _ = _resolve(box, "第九个", _six_candidates())
+    tag, clarify, candidates = _resolve(box, "第九个", _six_candidates())
 
     assert tag is None
-    assert clarify
+    assert clarify and "前 6 台" in clarify
+    assert candidates == _six_candidates()
+    assert box.calls == 0
 
 
 def test_reuses_device_cache(monkeypatch):
