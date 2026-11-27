@@ -849,7 +849,7 @@ class DocDataCollector:
             "parking": ("vehicle_status:getParkingSpace", {}),
             "canteen": ("canteen:getDiningCount", dict(window)),
             "meeting": ("meeting:getMeetingStatistics", {}),
-            "inspection": ("inspection:getTodayInspection", {}),
+            "inspection": ("inspection:getTodayOverview", {}),
             "equip_class": ("device:getEquipClass", {}),
         }
         if op_topics:

@@ -15,17 +15,19 @@ logger = logging.getLogger(__name__)
 
 # ============================================================
 # Python query_type 到 Java MCP 工具名的映射
-# 与 Java 侧 InspectionMcpServerConfig / PlatformInspectionMcp 对齐：
-#   today_inspection             -> inspection:getTodayInspection
-#   today_tasks                  -> inspection:getTodayTasks
-#   inspection_statistics        -> inspection:getInspectionStatistics
-#   inspection_execution_status  -> inspection:getInspectionExecutionStatus
+# 以 sidecar 真实工具列表为准（agent/loop/domains/twins_inspection.py 同源）：
+#   today_inspection             -> inspection:getTodayOverview
+#   today_tasks                  -> inspection:getTodayTaskList
+#   inspection_statistics        -> inspection:getStatistics
+#   inspection_execution_status  -> inspection:getExecutionStatus
+# 旧名 getTodayInspection/getTodayTasks/getInspectionStatistics/
+# getInspectionExecutionStatus 在 sidecar 不存在，会导致整张图加载不到工具。
 # ============================================================
 _JAVA_TOOL_MAP = {
-    "today_inspection": "inspection:getTodayInspection",
-    "today_tasks": "inspection:getTodayTasks",
-    "inspection_statistics": "inspection:getInspectionStatistics",
-    "inspection_execution_status": "inspection:getInspectionExecutionStatus",
+    "today_inspection": "inspection:getTodayOverview",
+    "today_tasks": "inspection:getTodayTaskList",
+    "inspection_statistics": "inspection:getStatistics",
+    "inspection_execution_status": "inspection:getExecutionStatus",
 }
 
 # 巡检子类型反问的固定选项顺序（与 _JAVA_TOOL_MAP / 反问文案顺序一致），

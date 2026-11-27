@@ -236,16 +236,16 @@ DOMAIN_TOOL_RESULTS = {
             '"lifeRate":{"current":85,"total":100,"percent":85}}]}',
     },
     "twins_inspection": {
-        "inspection:getTodayInspection":
+        "inspection:getTodayOverview":
             '{"code":200,"data":{"taskCount":8,"pointCount":46,"completionRate":87.5,'
             '"chartData":{"xData":["08:00","10:00"],"yData1":[2,3],"yData2":[2,2]}}}',
-        "inspection:getTodayTasks":
+        "inspection:getTodayTaskList":
             '{"code":200,"total":1,"rows":[{"name":"张伟","type":"日常巡检","state":"已完成",'
             '"stateClass":"success","team":"巡检一班","time":"08:30"}]}',
-        "inspection:getInspectionStatistics":
+        "inspection:getStatistics":
             '{"code":200,"data":{"avgTime":"25分钟","pointCount":320,"hazardCount":6,'
             '"chartData":[{"value":12,"name":"日常巡检"}]}}',
-        "inspection:getInspectionExecutionStatus":
+        "inspection:getExecutionStatus":
             '{"code":200,"data":{"xData":["张伟","李娜"],"yData1":[12,10],"yData2":[1,0]}}',
     },
 }

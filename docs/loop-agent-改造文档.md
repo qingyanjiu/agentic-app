@@ -574,6 +574,8 @@ L2 兜底：6 条（security / information / energy / meeting / device_status / 
 发现并修复：`twins_inspection` 的 4 个 MCP 工具名是旧名（`getTodayInspection` 等），
 真实后端为 `getTodayOverview` / `getTodayTaskList` / `getStatistics` / `getExecutionStatus`。
 旧图里也是旧名，说明**旧链路的巡检一直在报错**，只是回答被兜底成"接口报错"没被发现。
+（旧图 `graph/twins_inspection_langgraph.py` 与报告取数 `agent/doc_data_collector.py`
+已于 2026-11-27 同步修正。）
 
 ---
 

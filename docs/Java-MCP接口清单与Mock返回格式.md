@@ -169,14 +169,14 @@
 
 ### 13. /mcp/inspection 孪生巡检（前缀 `inspection:`）
 
-全部无参。
+全部无参。sidecar 直接透传平台数据，**没有 `code/data` 外层包装**（下例为形状示意）。
 
 | 工具名 | 返回示例 |
 |---|---|
-| `inspection:getTodayInspection` | `{"code":200,"data":{"taskCount":8,"pointCount":46,"completionRate":87.5,"chartData":{"xData":["08:00","10:00"],"yData1":[2,3],"yData2":[2,2]}}}` |
-| `inspection:getTodayTasks` | `{"code":200,"total":1,"rows":[{"name":"张伟","type":"日常巡检","state":"已完成","stateClass":"success","team":"巡检一班","time":"08:30"}]}` |
-| `inspection:getInspectionStatistics` | `{"code":200,"data":{"avgTime":"25分钟","pointCount":320,"hazardCount":6,"chartData":[{"value":12,"name":"日常巡检"}]}}` |
-| `inspection:getInspectionExecutionStatus` | `{"code":200,"data":{"xData":["张伟","李娜"],"yData1":[12,10],"yData2":[1,0]}}`（按人正常/异常两条柱） |
+| `inspection:getTodayOverview` | `{"taskCount":8,"pointCount":46,"completionRate":87.5,"chartData":{"xData":["08:00","10:00"],"yData1":[2,3],"yData2":[2,2]}}` |
+| `inspection:getTodayTaskList` | `[{"name":"张伟","type":"日常巡检","state":"已完成","stateClass":"success","team":"巡检一班","time":"08:30"}]` |
+| `inspection:getStatistics` | `{"avgTime":"25分钟","pointCount":320,"hazardCount":6,"chartData":[{"value":12,"name":"日常巡检"}]}` |
+| `inspection:getExecutionStatus` | `{"xData":["张伟","李娜"],"yData1":[12,10],"yData2":[1,0]}`（按人正常/异常两条柱） |
 
 ---
 
